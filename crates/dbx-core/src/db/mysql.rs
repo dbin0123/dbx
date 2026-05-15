@@ -282,7 +282,7 @@ pub async fn get_columns(pool: &MySqlPool, database: &str, table: &str) -> Resul
 pub async fn execute_query(pool: &MySqlPool, sql: &str, bare: bool) -> Result<QueryResult, String> {
     let start = Instant::now();
 
-    if starts_with_executable_sql_keyword(sql, &["SELECT", "SHOW", "DESCRIBE", "EXPLAIN"]) {
+    if is_result_set_query(sql) {
         if bare {
             let mut stream = sqlx::raw_sql(sql).fetch(&*pool);
             let mut columns: Vec<String> = vec![];
@@ -361,6 +361,10 @@ pub async fn execute_query(pool: &MySqlPool, sql: &str, bare: bool) -> Result<Qu
             truncated: false,
         })
     }
+}
+
+fn is_result_set_query(sql: &str) -> bool {
+    starts_with_executable_sql_keyword(sql, &["SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "WITH"])
 }
 
 pub async fn list_indexes(pool: &MySqlPool, database: &str, table: &str) -> Result<Vec<IndexInfo>, String> {
@@ -443,6 +447,13 @@ pub async fn list_triggers(pool: &MySqlPool, database: &str, table: &str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mysql_with_queries_are_treated_as_result_sets() {
+        let sql = "WITH RECURSIVE org_tree AS (SELECT 1 AS id) SELECT id FROM org_tree";
+
+        assert!(is_result_set_query(sql));
+    }
 
     #[test]
     fn numeric_metadata_accepts_unsigned_information_schema_values() {
