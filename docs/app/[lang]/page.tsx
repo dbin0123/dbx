@@ -5,11 +5,14 @@ import { InfiniteMovingCards } from '@/components/aceternity/InfiniteMovingCards
 import { Spotlight } from '@/components/aceternity/Spotlight';
 import { LandingNav } from '@/components/landing/LandingNav';
 import { InstallTabs } from '@/components/landing/InstallTabs';
+import { LandingLatestUpdates } from '@/components/landing/LandingLatestUpdates';
 import { RevealSection } from '@/components/landing/RevealSection';
+import { getAppVersion } from '@/lib/appVersion';
+import { fetchChangelog } from '@/lib/changelog';
+import { fetchLatestReleaseInfo } from '@/lib/latestRelease';
 import {
   ArrowRight,
   Bot,
-  CheckCircle2,
   Database,
   FileCode,
   GitCompare,
@@ -164,33 +167,6 @@ const capabilities = {
     { icon: FileCode, label: 'CSV、Excel、SQL 文件、完整导出和跨引擎传输' },
     { icon: Zap, label: '桌面应用与自托管 Web 部署来自同一个项目' },
   ],
-};
-
-const latestUpdates = {
-  en: {
-    version: 'v0.5.4',
-    title: 'Latest updates',
-    desc: 'Mirrored from the latest GitHub release notes.',
-    link: 'Read the changelog',
-    items: [
-      'JDBC SSH tunnels and proxy support',
-      'Grouped object browser with context menus',
-      'Redis batch operations and command runner',
-      'LIKE / NOT LIKE filters in the data grid',
-    ],
-  },
-  cn: {
-    version: 'v0.5.4',
-    title: '最近更新',
-    desc: '同步 GitHub 最新 Release Notes。',
-    link: '查看更新日志',
-    items: [
-      'JDBC SSH 隧道和代理支持',
-      '对象浏览器分组与右键菜单',
-      'Redis 批量操作和命令行',
-      '数据表格 LIKE / NOT LIKE 过滤',
-    ],
-  },
 };
 
 const testimonials = {
@@ -402,7 +378,9 @@ export default async function LandingPage({
   const capabilityItems = capabilities[l];
   const starLabel = await getGitHubStarLabel();
   const metricItems = metrics(starLabel)[l];
-  const latest = latestUpdates[l];
+  const appVersion = getAppVersion();
+  const [initialChangelog, initialLatestRelease] = await Promise.all([fetchChangelog(l), fetchLatestReleaseInfo()]);
+  const initialDownloadVersion = initialLatestRelease?.version ?? appVersion;
   const testimonialItems = testimonials[l];
 
   return (
@@ -422,7 +400,7 @@ export default async function LandingPage({
               {t.heroSubtitle}
             </p>
             <div className="w-full max-w-[520px] mt-10">
-              <InstallTabs lang={l} />
+              <InstallTabs lang={l} version={initialDownloadVersion} />
             </div>
           </div>
           <HeroProductStage />
@@ -524,25 +502,7 @@ export default async function LandingPage({
       </RevealSection>
 
       {/* Updates */}
-      <RevealSection className="grid grid-cols-[minmax(86px,0.16fr)_minmax(210px,0.32fr)_minmax(0,0.38fr)_max-content] gap-[22px] items-center max-w-[1180px] mx-auto px-7 border-t border-b border-landing-line mt-[62px] py-6 max-[1040px]:grid-cols-[minmax(0,1fr)_max-content] max-[760px]:block max-[760px]:px-[18px]">
-        <div className="landing-update-version w-max rounded-[7px] px-2.5 py-[7px] text-[13px] font-[720]">{latest.version}</div>
-        <div className="max-[1040px]:col-span-full max-[760px]:mt-4">
-          <h2 className="m-0 text-[21px] font-[720] text-landing-ink">{latest.title}</h2>
-          <p className="mt-1.5 text-landing-muted text-[13px] leading-[1.55]">{latest.desc}</p>
-        </div>
-        <ul className="grid gap-2 m-0 p-0 list-none max-[1040px]:col-span-full max-[760px]:mt-4">
-          {latest.items.map((item) => (
-            <li key={item} className="flex gap-2 items-center text-[13px] font-[560] leading-[1.45] text-[color-mix(in_srgb,var(--color-landing-ink)_88%,var(--color-landing-muted))]" data-stagger>
-              <CheckCircle2 size={14} className="shrink-0 text-landing-green" />
-              <span>{item}</span>
-            </li>
-          ))}
-        </ul>
-        <Link href={`/${l}/changelog`} className="landing-inline-link flex shrink-0 items-center gap-[7px] text-sm font-[650] max-[760px]:mt-4">
-          {latest.link}
-          <ArrowRight size={15} />
-        </Link>
-      </RevealSection>
+      <LandingLatestUpdates lang={l} fallbackVersion={appVersion} initialRelease={initialChangelog.releases[0]} initialLatestRelease={initialLatestRelease} />
 
       {/* Final CTA */}
       <RevealSection className="flex items-center justify-between gap-6 max-w-[1180px] mx-auto px-7 border border-landing-line rounded-[10px] bg-landing-panel mt-[72px] mb-14 py-[30px] max-[760px]:block max-[760px]:px-[18px]">

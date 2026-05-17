@@ -2,32 +2,12 @@
 
 import { ChevronDown, Download, Server } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { createInstallOptions, type InstallOption } from '@/lib/downloadLinks';
+import { fetchLatestReleaseInfo } from '@/lib/latestRelease';
 
 type InstallTabsProps = {
   lang: 'en' | 'cn';
-};
-
-type InstallOption = {
-  id: string;
-  label: string;
-  href: string;
-};
-
-const allOptions: Record<string, InstallOption[]> = {
-  en: [
-    { id: 'macos-arm', label: 'For macOS (Apple Silicon)', href: 'https://dl.dbxio.com/releases/latest/DBX_0.5.9_aarch64.dmg' },
-    { id: 'macos-intel', label: 'For macOS (Intel)', href: 'https://dl.dbxio.com/releases/latest/DBX_0.5.9_x64.dmg' },
-    { id: 'windows', label: 'For Windows', href: 'https://dl.dbxio.com/releases/latest/DBX_0.5.9_x64-setup.exe' },
-    { id: 'linux', label: 'For Linux x64', href: 'https://dl.dbxio.com/releases/latest/DBX_0.5.9_amd64.AppImage' },
-    { id: 'linux-arm', label: 'For Linux ARM64', href: 'https://dl.dbxio.com/releases/latest/DBX_0.5.9_aarch64.AppImage' },
-  ],
-  cn: [
-    { id: 'macos-arm', label: '适用于 macOS (Apple Silicon)', href: 'https://dl.dbxio.com/releases/latest/DBX_0.5.9_aarch64.dmg' },
-    { id: 'macos-intel', label: '适用于 macOS (Intel)', href: 'https://dl.dbxio.com/releases/latest/DBX_0.5.9_x64.dmg' },
-    { id: 'windows', label: '适用于 Windows', href: 'https://dl.dbxio.com/releases/latest/DBX_0.5.9_x64-setup.exe' },
-    { id: 'linux', label: '适用于 Linux x64', href: 'https://dl.dbxio.com/releases/latest/DBX_0.5.9_amd64.AppImage' },
-    { id: 'linux-arm', label: '适用于 Linux ARM64', href: 'https://dl.dbxio.com/releases/latest/DBX_0.5.9_aarch64.AppImage' },
-  ],
+  version: string;
 };
 
 const downloadLabel = { en: 'Download DBX', cn: '下载 DBX' };
@@ -63,14 +43,30 @@ function PlatformIcon({ id, size, variant }: { id: string; size: number; variant
   return <img alt="" aria-hidden="true" height={size} src={src} width={size} />;
 }
 
-export function InstallTabs({ lang }: InstallTabsProps) {
-  const options = allOptions[lang];
+export function InstallTabs({ lang, version }: InstallTabsProps) {
+  const [downloadVersion, setDownloadVersion] = useState(version);
+  const options = useMemo(() => createInstallOptions(lang, downloadVersion), [lang, downloadVersion]);
   const [open, setOpen] = useState(false);
   const [platformId, setPlatformId] = useState('macos-arm');
 
   useEffect(() => {
     setPlatformId(detectPlatformId());
   }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    setDownloadVersion(version);
+    fetchLatestReleaseInfo().then((release) => {
+      if (active && release?.version) {
+        setDownloadVersion(release.version);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [version]);
 
   const primary = useMemo(() => options.find((o) => o.id === platformId) ?? options[0], [options, platformId]);
   const menuOptions = useMemo(() => options.filter((o) => o.id !== platformId), [options, platformId]);

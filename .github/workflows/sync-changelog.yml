@@ -3,10 +3,14 @@ name: Sync Changelog to R2
 on:
   release:
     types: [published]
+  workflow_run:
+    workflows: ['Release']
+    types: [completed]
   workflow_dispatch:
 
 jobs:
   sync:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +28,10 @@ jobs:
       - name: Upload to R2
         run: |
           pip install awscli --quiet
+          aws s3api put-bucket-cors \
+            --bucket "${R2_BUCKET_NAME}" \
+            --cors-configuration file://.github/r2-cors.json \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           aws s3 cp releases-cn.json "s3://${R2_BUCKET_NAME}/changelog/releases-cn.json" \
             --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
             --content-type application/json

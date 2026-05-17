@@ -1,6 +1,6 @@
-import { fetchChangelog } from '@/lib/changelog';
 import { LandingNav } from '@/components/landing/LandingNav';
-import { ChangelogList } from '@/components/landing/ChangelogList';
+import { ChangelogRuntime } from '@/components/landing/ChangelogRuntime';
+import { fetchChangelog } from '@/lib/changelog';
 
 const i18n = {
   en: {
@@ -17,7 +17,7 @@ export default async function ChangelogPage({ params }: { params: Promise<{ lang
   const { lang } = await params;
   const l = lang === 'cn' ? 'cn' : 'en';
   const t = i18n[l];
-  const data = await fetchChangelog(l);
+  const initialData = await fetchChangelog(l);
 
   return (
     <div className="min-h-screen bg-[#0b1120] text-landing-ink">
@@ -29,11 +29,7 @@ export default async function ChangelogPage({ params }: { params: Promise<{ lang
       </div>
 
       <div className="max-w-[860px] mx-auto px-6 pb-24">
-        {data.releases.length === 0 ? (
-          <p className="text-landing-muted py-12">No releases found.</p>
-        ) : (
-          <ChangelogList releases={data.releases} lang={l} />
-        )}
+        <ChangelogRuntime lang={l} initialReleases={initialData.releases} />
       </div>
     </div>
   );
