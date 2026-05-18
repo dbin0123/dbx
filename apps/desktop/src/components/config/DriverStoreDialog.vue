@@ -437,12 +437,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="h-full flex flex-col">
+  <div class="driver-store-page h-full flex flex-col">
     <div class="flex-1 min-h-0 overflow-y-auto">
-      <div class="max-w-4xl mx-auto px-6 py-6">
+      <div class="max-w-5xl mx-auto px-7 py-7">
         <Tabs default-value="agent">
           <div class="flex items-center justify-between">
-            <TabsList class="w-fit">
+            <TabsList class="driver-store-segmented w-fit">
               <TabsTrigger value="agent">内置驱动</TabsTrigger>
               <TabsTrigger value="jdbc">JDBC 驱动</TabsTrigger>
             </TabsList>
@@ -461,7 +461,7 @@ onUnmounted(() => {
           <!-- Agent Tab -->
           <TabsContent value="agent" class="mt-5 space-y-5">
             <!-- Java Runtime Mode -->
-            <div class="rounded-xl border bg-muted/20 p-4 space-y-3">
+            <div class="driver-store-panel space-y-3">
               <div class="flex flex-wrap items-end gap-3">
                 <div class="min-w-[220px] flex-1 space-y-1.5">
                   <Label>Java 运行时</Label>
@@ -477,7 +477,7 @@ onUnmounted(() => {
                   </Select>
                 </div>
                 <Button
-                  class="h-8 shrink-0 text-xs"
+                  class="driver-store-action-primary h-8 shrink-0 text-xs"
                   :disabled="savingJavaRuntime || (javaRuntimeConfig.mode === 'custom' && !customJavaPath.trim())"
                   @click="saveJavaRuntimeConfig"
                 >
@@ -491,7 +491,11 @@ onUnmounted(() => {
                   placeholder="/path/to/java 或 /path/to/jdk"
                   @keydown.enter.prevent="saveJavaRuntimeConfig"
                 />
-                <Button variant="outline" class="h-8 shrink-0 text-xs" @click="chooseCustomJavaPath">
+                <Button
+                  variant="outline"
+                  class="driver-store-action-secondary h-8 shrink-0 text-xs"
+                  @click="chooseCustomJavaPath"
+                >
                   <FolderOpen class="h-3.5 w-3.5" />
                   选择
                 </Button>
@@ -502,8 +506,8 @@ onUnmounted(() => {
             </div>
 
             <!-- JRE Runtime -->
-            <div v-if="installedJres.length > 0" class="rounded-xl border bg-muted/20 p-4 space-y-2.5">
-              <div v-for="jre in installedJres" :key="jre.key" class="flex items-center justify-between gap-3">
+            <div v-if="installedJres.length > 0" class="driver-store-panel">
+              <div v-for="jre in installedJres" :key="jre.key" class="driver-store-row min-h-12 justify-between">
                 <div class="min-w-0">
                   <div class="text-sm font-medium">JRE {{ jre.key }} 运行时</div>
                 </div>
@@ -520,7 +524,7 @@ onUnmounted(() => {
                     type="button"
                     variant="default"
                     size="sm"
-                    class="h-8 text-xs"
+                    class="driver-store-action-primary h-8 text-xs"
                     :disabled="reinstallingJre !== null || installing !== null"
                     @click="reinstallJre(jre.key)"
                   >
@@ -532,7 +536,7 @@ onUnmounted(() => {
                     type="button"
                     variant="outline"
                     size="sm"
-                    class="h-8 text-xs"
+                    class="driver-store-action-secondary h-8 text-xs"
                     :disabled="reinstallingJre !== null || installing !== null"
                     @click="reinstallJre(jre.key)"
                   >
@@ -544,7 +548,7 @@ onUnmounted(() => {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    class="text-muted-foreground hover:text-destructive"
+                    class="h-8 text-xs text-muted-foreground hover:text-destructive"
                     :disabled="reinstallingJre !== null || installing !== null"
                     @click="uninstallJre(jre.key)"
                   >
@@ -553,19 +557,19 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
-            <div v-else class="rounded-xl border bg-muted/20 p-4">
+            <div v-else class="driver-store-panel">
               <div class="text-sm font-medium">JRE 运行时</div>
               <p class="text-xs text-muted-foreground mt-0.5">首次安装驱动时自动下载</p>
             </div>
 
             <!-- Driver List -->
             <div v-if="drivers.length === 0" class="py-12 text-center text-sm text-muted-foreground">加载中...</div>
-            <div v-else class="rounded-md border divide-y">
-              <div v-if="updatableCount > 0" class="flex items-center justify-between px-4 py-2 bg-muted/30">
+            <div v-else class="driver-store-list">
+              <div v-if="updatableCount > 0" class="driver-store-list-banner">
                 <span class="text-xs text-muted-foreground">{{ updatableCount }} 个驱动可更新</span>
                 <Button
                   size="sm"
-                  class="h-7 text-xs"
+                  class="driver-store-action-primary h-7 text-xs"
                   :disabled="installing !== null || upgradingAll"
                   @click="upgradeAll"
                 >
@@ -574,12 +578,8 @@ onUnmounted(() => {
                   {{ upgradingAll ? `升级中 (${upgradingIndex}/${upgradingTotal})` : "全部升级" }}
                 </Button>
               </div>
-              <div
-                v-for="driver in drivers"
-                :key="driver.db_type"
-                class="flex items-center gap-3 px-4 py-2.5 transition hover:bg-muted/30"
-              >
-                <span class="flex h-9 w-9 items-center justify-center rounded-lg bg-muted/60 shrink-0">
+              <div v-for="driver in drivers" :key="driver.db_type" class="driver-store-row min-h-16">
+                <span class="driver-store-icon">
                   <DatabaseIcon :db-type="driver.db_type" class="h-5 w-5" />
                 </span>
                 <div class="min-w-0 flex-1">
@@ -588,39 +588,33 @@ onUnmounted(() => {
                 <div class="flex shrink-0 items-center gap-1.5">
                   <span
                     v-if="driver.jre"
-                    class="rounded-full px-2 py-0.5 text-[11px]"
+                    class="driver-store-badge"
                     :class="driver.jre !== '17' ? 'bg-blue-500/10 text-blue-600' : 'bg-muted text-muted-foreground'"
                     >JRE {{ driver.jre }}</span
                   >
                   <template v-if="driver.installed">
-                    <span class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
+                    <span class="driver-store-badge bg-muted text-muted-foreground"
                       >v{{ driver.installed_version }}</span
                     >
-                    <span
-                      v-if="driver.update_available"
-                      class="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-600"
+                    <span v-if="driver.update_available" class="driver-store-badge bg-amber-500/15 text-amber-600"
                       >→ v{{ driver.version }}</span
                     >
                   </template>
                   <template v-else>
-                    <span
-                      v-if="driver.version"
-                      class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
+                    <span v-if="driver.version" class="driver-store-badge bg-muted text-muted-foreground"
                       >v{{ driver.version }}</span
                     >
                   </template>
-                  <span
-                    v-if="formatSize(driver.size)"
-                    class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
-                    >{{ formatSize(driver.size) }}</span
-                  >
+                  <span v-if="formatSize(driver.size)" class="driver-store-badge bg-muted text-muted-foreground">{{
+                    formatSize(driver.size)
+                  }}</span>
                 </div>
                 <div class="flex shrink-0 items-center gap-2">
                   <Button
                     v-if="!driver.installed && isDriverQueued(driver.db_type)"
                     size="sm"
                     variant="outline"
-                    class="h-7 border-green-500/30 bg-green-500/10 text-xs text-green-700 hover:bg-green-500/15"
+                    class="driver-store-action-secondary h-7 border-green-500/30 bg-green-500/10 text-xs text-green-700 hover:bg-green-500/15"
                     :disabled="upgradingAll"
                     @click="removeQueuedDriverInstall(driver.db_type)"
                   >
@@ -635,7 +629,7 @@ onUnmounted(() => {
                   <Button
                     v-else-if="!driver.installed"
                     size="sm"
-                    class="h-7 text-xs"
+                    class="driver-store-action-primary h-7 text-xs"
                     :disabled="upgradingAll"
                     @click="installDriver(driver.db_type)"
                   >
@@ -648,7 +642,7 @@ onUnmounted(() => {
                       v-if="driver.update_available && isDriverQueued(driver.db_type)"
                       size="sm"
                       variant="outline"
-                      class="h-7 border-green-500/30 bg-green-500/10 text-xs text-green-700 hover:bg-green-500/15"
+                      class="driver-store-action-secondary h-7 border-green-500/30 bg-green-500/10 text-xs text-green-700 hover:bg-green-500/15"
                       :disabled="upgradingAll"
                       @click="removeQueuedDriverInstall(driver.db_type)"
                     >
@@ -664,7 +658,7 @@ onUnmounted(() => {
                       v-else-if="driver.update_available"
                       size="sm"
                       variant="outline"
-                      class="h-7 text-xs"
+                      class="driver-store-action-secondary h-7 text-xs"
                       :disabled="upgradingAll"
                       @click="installDriver(driver.db_type)"
                     >
@@ -688,7 +682,7 @@ onUnmounted(() => {
           <!-- JDBC Tab -->
           <TabsContent value="jdbc" class="mt-5 space-y-5">
             <!-- JDBC Plugin -->
-            <div class="rounded-xl border bg-muted/20 p-4">
+            <div class="driver-store-panel">
               <div class="flex min-h-12 items-center justify-between gap-3">
                 <div class="min-w-0 space-y-1">
                   <Label>{{ t("settings.jdbcPlugin") }}</Label>
@@ -712,13 +706,14 @@ onUnmounted(() => {
                   </span>
                   <span
                     v-if="jdbcPluginStatus?.installed && jdbcPluginStatus.update_available"
-                    class="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-600"
+                    class="driver-store-badge bg-amber-500/15 text-amber-600"
                     >→ v{{ jdbcPluginStatus.latest_version }}</span
                   >
                   <Button
                     v-if="jdbcPluginStatus?.installed && jdbcPluginStatus.update_available"
                     type="button"
                     variant="outline"
+                    class="driver-store-action-secondary"
                     :disabled="isInstallingJdbcPlugin"
                     @click="installJdbcPlugin"
                   >
@@ -728,6 +723,7 @@ onUnmounted(() => {
                     v-if="jdbcPluginStatus?.installed"
                     type="button"
                     variant="outline"
+                    class="driver-store-action-secondary"
                     :disabled="isUninstallingJdbcPlugin"
                     @click="uninstallJdbcPlugin"
                   >
@@ -737,6 +733,7 @@ onUnmounted(() => {
                     v-else
                     type="button"
                     variant="default"
+                    class="driver-store-action-primary"
                     :disabled="isInstallingJdbcPlugin"
                     @click="installJdbcPlugin"
                   >
@@ -746,6 +743,7 @@ onUnmounted(() => {
                     v-if="!jdbcPluginStatus?.installed"
                     type="button"
                     variant="outline"
+                    class="driver-store-action-secondary"
                     :disabled="isInstallingJdbcPlugin"
                     @click="installJdbcPluginLocal"
                   >
@@ -768,30 +766,37 @@ onUnmounted(() => {
                   :placeholder="t('settings.jdbcDriverPathPlaceholder')"
                   @keydown.enter.prevent="importJdbcDriverPathInput"
                 />
-                <Button variant="outline" :disabled="!jdbcDriverPathInput.trim()" @click="importJdbcDriverPathInput">
+                <Button
+                  variant="outline"
+                  class="driver-store-action-secondary"
+                  :disabled="!jdbcDriverPathInput.trim()"
+                  @click="importJdbcDriverPathInput"
+                >
                   {{ t("settings.jdbcImportPath") }}
                 </Button>
-                <Button class="shrink-0" @click="importJdbcDrivers">
+                <Button class="driver-store-action-primary shrink-0" @click="importJdbcDrivers">
                   <FolderOpen class="h-4 w-4" />
                   {{ t("settings.jdbcImport") }}
                 </Button>
               </div>
             </div>
 
-            <div class="rounded-md border">
+            <div class="driver-store-list">
               <div v-if="isLoadingJdbcDrivers" class="p-4 text-sm text-muted-foreground">
                 {{ t("common.loading") }}
               </div>
               <div v-else-if="jdbcDrivers.length === 0" class="p-4 text-sm text-muted-foreground">
                 {{ t("settings.jdbcNoDrivers") }}
               </div>
-              <div v-else class="divide-y">
-                <div v-for="driver in jdbcDrivers" :key="driver.path" class="flex items-center gap-3 p-3">
+              <div v-else>
+                <div v-for="driver in jdbcDrivers" :key="driver.path" class="driver-store-row min-h-14">
                   <div class="min-w-0 flex-1">
                     <div class="truncate text-sm font-medium">{{ driver.name }}</div>
                     <div class="truncate text-xs text-muted-foreground">{{ driver.path }}</div>
                   </div>
-                  <div class="shrink-0 text-xs text-muted-foreground">{{ formatBytes(driver.size) }}</div>
+                  <div class="driver-store-badge shrink-0 bg-muted text-muted-foreground">
+                    {{ formatBytes(driver.size) }}
+                  </div>
                   <Button variant="ghost" size="icon" class="h-8 w-8 shrink-0" @click="deleteJdbcDriver(driver.path)">
                     <Trash2 class="h-4 w-4" />
                   </Button>
@@ -804,3 +809,161 @@ onUnmounted(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.driver-store-page {
+  background: linear-gradient(180deg, oklch(0.985 0 0) 0%, oklch(0.965 0 0) 100%), var(--background);
+}
+
+.driver-store-segmented {
+  height: 32px;
+  border: 0.5px solid oklch(0 0 0 / 0.1);
+  border-radius: 9px;
+  background: oklch(1 0 0 / 0.7);
+  padding: 2px;
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.7);
+}
+
+.driver-store-panel,
+.driver-store-list {
+  border: 0.5px solid oklch(0 0 0 / 0.11);
+  border-radius: 12px;
+  background: oklch(1 0 0 / 0.82);
+  box-shadow:
+    0 18px 46px oklch(0 0 0 / 0.045),
+    inset 0 1px 0 oklch(1 0 0 / 0.7);
+  overflow: hidden;
+}
+
+.driver-store-panel {
+  padding: 16px;
+}
+
+.driver-store-list-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: oklch(0.965 0 0 / 0.7);
+  border-bottom: 0.5px solid oklch(0 0 0 / 0.08);
+}
+
+.driver-store-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 16px;
+  transition:
+    background-color 120ms ease,
+    transform 120ms ease;
+}
+
+.driver-store-row + .driver-store-row {
+  border-top: 0.5px solid oklch(0 0 0 / 0.08);
+}
+
+.driver-store-row:hover {
+  background: oklch(0.97 0 0 / 0.74);
+}
+
+.driver-store-icon {
+  display: flex;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: linear-gradient(180deg, oklch(1 0 0), oklch(0.965 0 0));
+  box-shadow:
+    0 1px 2px oklch(0 0 0 / 0.08),
+    inset 0 0 0 0.5px oklch(0 0 0 / 0.08);
+}
+
+.driver-store-badge {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+}
+
+.driver-store-action-primary {
+  border-radius: 999px;
+  background: oklch(0.18 0 0);
+  color: white;
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.12);
+}
+
+.driver-store-action-primary:hover {
+  background: oklch(0.25 0 0);
+}
+
+.driver-store-action-secondary {
+  border-radius: 999px;
+  background: oklch(1 0 0 / 0.72);
+}
+
+:deep(.driver-store-segmented [data-state="active"]) {
+  border-radius: 7px;
+  background: oklch(1 0 0);
+  box-shadow:
+    0 1px 3px oklch(0 0 0 / 0.12),
+    inset 0 0 0 0.5px oklch(0 0 0 / 0.08);
+}
+
+:deep(.driver-store-segmented [role="tab"]) {
+  height: 26px;
+  min-width: 84px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.dark .driver-store-page {
+  background: linear-gradient(180deg, oklch(0.18 0 0) 0%, oklch(0.145 0 0) 100%), var(--background);
+}
+
+.dark .driver-store-segmented,
+.dark .driver-store-panel,
+.dark .driver-store-list {
+  border-color: oklch(1 0 0 / 0.11);
+  background: oklch(0.23 0 0 / 0.82);
+  box-shadow:
+    0 18px 46px oklch(0 0 0 / 0.18),
+    inset 0 1px 0 oklch(1 0 0 / 0.05);
+}
+
+.dark .driver-store-list-banner {
+  background: oklch(0.27 0 0 / 0.55);
+  border-bottom-color: oklch(1 0 0 / 0.08);
+}
+
+.dark .driver-store-row + .driver-store-row {
+  border-top-color: oklch(1 0 0 / 0.08);
+}
+
+.dark .driver-store-row:hover {
+  background: oklch(0.28 0 0 / 0.72);
+}
+
+.dark .driver-store-icon {
+  background: linear-gradient(180deg, oklch(0.32 0 0), oklch(0.24 0 0));
+  box-shadow:
+    0 1px 2px oklch(0 0 0 / 0.24),
+    inset 0 0 0 0.5px oklch(1 0 0 / 0.08);
+}
+
+.dark .driver-store-action-primary {
+  background: oklch(0.94 0 0);
+  color: oklch(0.16 0 0);
+}
+
+.dark .driver-store-action-primary:hover {
+  background: white;
+}
+
+.dark .driver-store-action-secondary {
+  background: oklch(0.3 0 0 / 0.72);
+}
+</style>
