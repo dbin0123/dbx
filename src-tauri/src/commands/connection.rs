@@ -153,8 +153,14 @@ pub async fn test_connection(state: State<'_, Arc<AppState>>, config: Connection
                 Err(e) => Err(e),
             },
             DatabaseType::Redis => db::redis_driver::connect(&url).await.map(|_| "Connection successful".to_string()),
-            DatabaseType::DuckDb => db::duckdb_driver::connect_path(&expand_tilde(&config.host))
-                .map(|_| "Connection successful".to_string()),
+            DatabaseType::DuckDb => {
+                if state.duckdb_existing_pool_is_usable_for_config(&config).await? {
+                    Ok("Connection successful".to_string())
+                } else {
+                    db::duckdb_driver::connect_path(&expand_tilde(&config.host))
+                        .map(|_| "Connection successful".to_string())
+                }
+            }
             DatabaseType::MongoDb => {
                 let native_err = match db::mongo_driver::connect(&url).await {
                     Ok(client) => match db::mongo_driver::test_connection(&client).await {

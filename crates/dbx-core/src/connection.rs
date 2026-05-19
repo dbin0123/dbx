@@ -413,6 +413,38 @@ impl AppState {
         self.get_or_create_pool(connection_id, database).await
     }
 
+    pub async fn duckdb_existing_pool_is_usable_for_config(&self, config: &ConnectionConfig) -> Result<bool, String> {
+        if config.db_type != DatabaseType::DuckDb {
+            return Ok(false);
+        }
+
+        let matches_existing_config = {
+            let configs = self.configs.read().await;
+            configs.get(&config.id).is_some_and(|existing| {
+                existing.db_type == DatabaseType::DuckDb && duckdb_paths_match(&existing.host, &config.host)
+            })
+        };
+        if !matches_existing_config {
+            return Ok(false);
+        }
+
+        let duckdb_pool = {
+            let conns = self.connections.read().await;
+            match conns.get(&config.id) {
+                Some(PoolKind::DuckDb(con)) => Some(con.clone()),
+                _ => None,
+            }
+        };
+
+        let Some(con) = duckdb_pool else {
+            return Ok(false);
+        };
+
+        let locked = con.lock().map_err(|e| e.to_string())?;
+        locked.execute_batch("SELECT 1;").map_err(|e| format!("DuckDb connection failed: {e}"))?;
+        Ok(true)
+    }
+
     pub async fn reset_connection_transport(&self, connection_id: &str) {
         self.tunnels.stop_tunnel(connection_id).await;
         self.proxy_tunnels.stop_tunnel(connection_id).await;
@@ -515,6 +547,25 @@ fn oracle_jdbc_connection_string(config: &ConnectionConfig, host: &str, port: u1
         format!("jdbc:oracle:thin:@{host}:{port}:{database}")
     } else {
         format!("jdbc:oracle:thin:@//{host}:{port}/{database}")
+    }
+}
+
+fn duckdb_paths_match(left: &str, right: &str) -> bool {
+    let left = expand_tilde(left);
+    let right = expand_tilde(right);
+
+    if db::duckdb_driver::is_memory_database_path(&left) || db::duckdb_driver::is_memory_database_path(&right) {
+        return left.trim().eq_ignore_ascii_case(right.trim());
+    }
+
+    if let (Ok(left_path), Ok(right_path)) = (std::fs::canonicalize(&left), std::fs::canonicalize(&right)) {
+        return left_path == right_path;
+    }
+
+    if cfg!(windows) {
+        left.eq_ignore_ascii_case(&right)
+    } else {
+        left == right
     }
 }
 
@@ -773,6 +824,26 @@ mod tests {
         let databases = schema::list_databases_core(&state, "sqlite-conn").await.unwrap();
         assert_eq!(databases.len(), 1);
         assert_eq!(databases[0].name, "main");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn duckdb_existing_pool_can_be_used_for_connection_test() {
+        let (state, dir) = test_app_state().await;
+        let db_path = dir.join("app.duckdb");
+        duckdb::Connection::open(&db_path).unwrap();
+        let mut config = mysql_config(None);
+        config.id = "duckdb-conn".to_string();
+        config.name = "DuckDB".to_string();
+        config.db_type = DatabaseType::DuckDb;
+        config.host = db_path.to_string_lossy().to_string();
+        config.port = 0;
+
+        state.configs.write().await.insert(config.id.clone(), config.clone());
+        state.get_or_create_pool("duckdb-conn", None).await.unwrap();
+
+        assert!(state.duckdb_existing_pool_is_usable_for_config(&config).await.unwrap());
 
         let _ = std::fs::remove_dir_all(dir);
     }
