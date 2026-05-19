@@ -725,6 +725,7 @@ export default {
   },
   tree: {
     savedSql: "SQL 库",
+    defaultDatabase: "默认库",
     columns: "字段",
     indexes: "索引",
     foreignKeys: "外键",

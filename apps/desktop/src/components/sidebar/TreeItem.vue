@@ -105,6 +105,7 @@ import { buildRenameObjectSql, supportsObjectRename, type RenameableObjectType }
 import { buildRoutineRenameObjectSourceStatements, supportsSourceBackedRoutineRename } from "@/lib/objectSourceEditor";
 import { hexToRgba } from "@/lib/color";
 import { focusSidebarRenameInput, shouldPreventRenameCloseAutoFocus } from "@/lib/sidebarRenameFocus";
+import { hasTreeNodeDatabaseContext } from "@/lib/treeNodeContext";
 import DangerConfirmDialog from "@/components/editor/DangerConfirmDialog.vue";
 import { isTauriRuntime } from "@/lib/tauriRuntime";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
@@ -250,6 +251,7 @@ function isGroupLabel(node: TreeNode): boolean {
 
 function displayLabel(node: TreeNode): string {
   if (node.type === "object-browser") return t(node.label, { count: node.objectCount ?? 0 });
+  if (node.label === "tree.defaultDatabase") return t(node.label);
   return isGroupLabel(node) ? t(node.label) : node.label;
 }
 
@@ -308,7 +310,7 @@ async function toggle() {
       const tabTitle = `${node.database}.${node.label}`;
       const tab = queryStore.createTab(node.connectionId, node.database, tabTitle, "mongo");
       queryStore.updateSql(tab, node.label);
-    } else if (node.type === "database" && node.connectionId && node.database) {
+    } else if (node.type === "database" && node.connectionId && hasTreeNodeDatabaseContext(node)) {
       const config = connectionStore.getConfig(node.connectionId);
       if (config?.db_type === "sqlserver") {
         await connectionStore.loadSqlServerDatabaseObjects(node.connectionId, node.database);
@@ -317,17 +319,36 @@ async function toggle() {
       } else {
         await connectionStore.loadTables(node.connectionId, node.database);
       }
-    } else if (node.type === "schema" && node.connectionId && node.database && node.schema) {
+    } else if (node.type === "schema" && node.connectionId && hasTreeNodeDatabaseContext(node) && node.schema) {
       await connectionStore.loadTables(node.connectionId, node.database, node.schema);
-    } else if ((node.type === "table" || node.type === "view") && node.connectionId && node.database) {
+    } else if (
+      (node.type === "table" || node.type === "view") &&
+      node.connectionId &&
+      hasTreeNodeDatabaseContext(node)
+    ) {
       await connectionStore.loadTableGroups(node.connectionId, node.database, node.label, node.schema, node.id);
-    } else if (node.type === "group-columns" && node.connectionId && node.database && node.tableName) {
+    } else if (
+      node.type === "group-columns" &&
+      node.connectionId &&
+      hasTreeNodeDatabaseContext(node) &&
+      node.tableName
+    ) {
       await connectionStore.loadColumns(node.connectionId, node.database, node.tableName, node.schema, node.id);
-    } else if (node.type === "group-indexes" && node.connectionId && node.database && node.tableName) {
+    } else if (
+      node.type === "group-indexes" &&
+      node.connectionId &&
+      hasTreeNodeDatabaseContext(node) &&
+      node.tableName
+    ) {
       await connectionStore.loadIndexes(node.connectionId, node.database, node.tableName, node.schema, node.id);
-    } else if (node.type === "group-fkeys" && node.connectionId && node.database && node.tableName) {
+    } else if (node.type === "group-fkeys" && node.connectionId && hasTreeNodeDatabaseContext(node) && node.tableName) {
       await connectionStore.loadForeignKeys(node.connectionId, node.database, node.tableName, node.schema, node.id);
-    } else if (node.type === "group-triggers" && node.connectionId && node.database && node.tableName) {
+    } else if (
+      node.type === "group-triggers" &&
+      node.connectionId &&
+      hasTreeNodeDatabaseContext(node) &&
+      node.tableName
+    ) {
       await connectionStore.loadTriggers(node.connectionId, node.database, node.tableName, node.schema, node.id);
     }
     emit("node-toggled", node, wasExpanded);

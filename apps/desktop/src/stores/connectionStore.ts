@@ -32,6 +32,11 @@ import {
   expandCachedObjectBrowserNodes,
   objectGroupRefreshParentId,
 } from "@/lib/tableTree";
+import {
+  hasTreeNodeDatabaseContext,
+  normalizeCataloglessDatabaseNodes,
+  treeNodeSchemaCachePrefix,
+} from "@/lib/treeNodeContext";
 import { decodeSchemaTreeCache, encodeSchemaTreeCache } from "@/lib/schemaTreeCache";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
 
@@ -355,7 +360,7 @@ export const useConnectionStore = defineStore("connection", () => {
     const payload = await api.loadSchemaCache<unknown>(cacheKey).catch(() => null);
     const decoded = decodeSchemaTreeCache<TreeNode[]>(payload);
     if (!decoded) return { hit: false, isStale: false };
-    const normalizedChildren = expandCachedObjectBrowserNodes(decoded.children);
+    const normalizedChildren = normalizeCataloglessDatabaseNodes(expandCachedObjectBrowserNodes(decoded.children));
     setChildren(
       node,
       node.type === "connection" && node.connectionId
@@ -394,16 +399,7 @@ export const useConnectionStore = defineStore("connection", () => {
   }
 
   function schemaCachePrefixForNode(node: TreeNode): string | null {
-    if (node.type === "connection" && node.connectionId) {
-      return `${schemaCacheKey(node.connectionId)}:`;
-    }
-    if (node.type === "database" && node.connectionId && node.database) {
-      return `${schemaCacheKey(node.connectionId, node.database)}:`;
-    }
-    if (node.type === "schema" && node.connectionId && node.database && node.schema) {
-      return `${schemaCacheKey(node.connectionId, node.database, node.schema)}:`;
-    }
-    return null;
+    return treeNodeSchemaCachePrefix(node);
   }
 
   async function clearPersistedTreeCacheForNode(node: TreeNode) {
@@ -692,7 +688,13 @@ export const useConnectionStore = defineStore("connection", () => {
         );
         const visibleNameSet = new Set(visibleNames);
         const visibleDatabases = databases.filter((database) => visibleNameSet.has(database.name));
-        const children = withSavedSqlRoot(connectionId, buildDatabaseTreeNodes(connectionId, visibleDatabases), node);
+        const children = withSavedSqlRoot(
+          connectionId,
+          buildDatabaseTreeNodes(connectionId, visibleDatabases, {
+            includeDefaultWhenEmpty: usesTreeSchemaMode(config?.db_type),
+          }),
+          node,
+        );
         setChildren(node, children);
         await savePersistedTreeChildren(cacheKey, children);
       }
@@ -1161,7 +1163,7 @@ export const useConnectionStore = defineStore("connection", () => {
       }
     } else if (node.type === "mongo-db" && node.connectionId && node.database) {
       await loadMongoCollections(node.connectionId, node.database);
-    } else if (node.type === "database" && node.connectionId && node.database) {
+    } else if (node.type === "database" && node.connectionId && hasTreeNodeDatabaseContext(node)) {
       const config = getConfig(node.connectionId);
       if (config?.db_type === "sqlserver") {
         await loadSqlServerDatabaseObjects(node.connectionId, node.database, options);
@@ -1170,17 +1172,36 @@ export const useConnectionStore = defineStore("connection", () => {
       } else {
         await loadTables(node.connectionId, node.database, undefined, options);
       }
-    } else if (node.type === "schema" && node.connectionId && node.database && node.schema) {
+    } else if (node.type === "schema" && node.connectionId && hasTreeNodeDatabaseContext(node) && node.schema) {
       await loadTables(node.connectionId, node.database, node.schema, options);
-    } else if ((node.type === "table" || node.type === "view") && node.connectionId && node.database) {
+    } else if (
+      (node.type === "table" || node.type === "view") &&
+      node.connectionId &&
+      hasTreeNodeDatabaseContext(node)
+    ) {
       await loadTableGroups(node.connectionId, node.database, node.label, node.schema, node.id);
-    } else if (node.type === "group-columns" && node.connectionId && node.database && node.tableName) {
+    } else if (
+      node.type === "group-columns" &&
+      node.connectionId &&
+      hasTreeNodeDatabaseContext(node) &&
+      node.tableName
+    ) {
       await loadColumns(node.connectionId, node.database, node.tableName, node.schema, node.id);
-    } else if (node.type === "group-indexes" && node.connectionId && node.database && node.tableName) {
+    } else if (
+      node.type === "group-indexes" &&
+      node.connectionId &&
+      hasTreeNodeDatabaseContext(node) &&
+      node.tableName
+    ) {
       await loadIndexes(node.connectionId, node.database, node.tableName, node.schema, node.id);
-    } else if (node.type === "group-fkeys" && node.connectionId && node.database && node.tableName) {
+    } else if (node.type === "group-fkeys" && node.connectionId && hasTreeNodeDatabaseContext(node) && node.tableName) {
       await loadForeignKeys(node.connectionId, node.database, node.tableName, node.schema, node.id);
-    } else if (node.type === "group-triggers" && node.connectionId && node.database && node.tableName) {
+    } else if (
+      node.type === "group-triggers" &&
+      node.connectionId &&
+      hasTreeNodeDatabaseContext(node) &&
+      node.tableName
+    ) {
       await loadTriggers(node.connectionId, node.database, node.tableName, node.schema, node.id);
     } else if (
       node.type === "group-tables" ||

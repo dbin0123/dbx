@@ -744,6 +744,7 @@ export default {
   },
   tree: {
     savedSql: "SQL Library",
+    defaultDatabase: "Default DB",
     columns: "Columns",
     indexes: "Indexes",
     foreignKeys: "Foreign Keys",
