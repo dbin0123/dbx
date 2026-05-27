@@ -52,6 +52,24 @@ impl<'a> FromSql<'a> for PgSystemU32 {
     }
 }
 
+/// A `FromSql` adapter that accepts any PostgreSQL type and reads its raw
+/// bytes as a UTF-8 string. This is used as a last-resort fallback to handle
+/// custom types (enums, domains, etc.) that tokio_postgres cannot map to
+/// built-in Rust types in the binary protocol.
+struct PgAnyString(String);
+
+impl<'a> FromSql<'a> for PgAnyString {
+    fn from_sql(_: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        std::str::from_utf8(raw)
+            .map(|s| PgAnyString(s.to_string()))
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Sync + Send>)
+    }
+
+    fn accepts(_: &Type) -> bool {
+        true
+    }
+}
+
 fn pg_u32_number(v: u32) -> serde_json::Value {
     serde_json::Value::Number(serde_json::Number::from(v))
 }
@@ -121,6 +139,9 @@ fn pg_array_to_json_value(row: &Row, idx: usize) -> Option<serde_json::Value> {
     }
     if let Ok(values) = row.try_get::<_, Vec<Option<f64>>>(idx) {
         return Some(pg_optional_array_to_json(values, pg_float_number));
+    }
+    if let Ok(values) = row.try_get::<_, Vec<Option<PgAnyString>>>(idx) {
+        return Some(pg_optional_array_to_json(values, |v| serde_json::Value::String(v.0)));
     }
     None
 }
@@ -206,6 +227,7 @@ fn pg_value_to_json(row: &Row, idx: usize, type_name: &str) -> serde_json::Value
         .or_else(|_| row.try_get::<_, uuid::Uuid>(idx).map(|v| serde_json::Value::String(v.to_string())))
         .or_else(|e| pg_temporal_to_json_value(row, idx).ok_or(e))
         .or_else(|_| row.try_get::<_, Vec<u8>>(idx).map(|bytes| super::binary_value_to_json(&bytes)))
+        .or_else(|_| row.try_get::<_, PgAnyString>(idx).map(|v| serde_json::Value::String(v.0)))
         .unwrap_or(serde_json::Value::Null)
 }
 
@@ -1102,6 +1124,25 @@ mod tests {
         assert!(PgSystemU32::accepts(&Type::CID));
         assert!(!PgSystemU32::accepts(&Type::OID));
         assert!(!PgSystemU32::accepts(&Type::INT4));
+    }
+
+    #[test]
+    fn pg_any_string_accepts_all_types_and_decodes_utf8() {
+        // Accepts any type — built-in, custom enum OIDs, domains, etc.
+        assert!(PgAnyString::accepts(&Type::TEXT));
+        assert!(PgAnyString::accepts(&Type::INT4));
+        assert!(PgAnyString::accepts(&Type::UNKNOWN));
+        assert!(PgAnyString::accepts(&Type::OID));
+        assert!(PgAnyString::accepts(&Type::BOOL));
+
+        let label = PgAnyString::from_sql(&Type::UNKNOWN, b"pending").unwrap();
+        assert_eq!(label.0, "pending");
+
+        let label = PgAnyString::from_sql(&Type::UNKNOWN, b"hello world").unwrap();
+        assert_eq!(label.0, "hello world");
+
+        // Non-UTF-8 bytes should fail gracefully
+        assert!(PgAnyString::from_sql(&Type::UNKNOWN, &[0xFF, 0xFE, 0xFD]).is_err());
     }
 
     #[test]
