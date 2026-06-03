@@ -1044,6 +1044,25 @@ pub fn starts_with_executable_sql_keyword_for_database(sql: &str, keywords: &[&s
     starts_with_executable_sql_keyword_with_options(sql, keywords, SqlParsingOptions::for_database_type(db_type))
 }
 
+pub fn starts_with_duckdb_result_sql_keyword(sql: &str) -> bool {
+    starts_with_executable_sql_keyword(
+        sql,
+        &[
+            "SELECT",
+            "SHOW",
+            "DESCRIBE",
+            "EXPLAIN",
+            "WITH",
+            "PRAGMA",
+            "FROM",
+            "SUMMARIZE",
+            "SUMMARISE",
+            "PIVOT",
+            "UNPIVOT",
+        ],
+    )
+}
+
 pub fn starts_with_executable_sql_keyword_with_options(
     sql: &str,
     keywords: &[&str],

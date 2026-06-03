@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::connection::{AppState, PoolKind};
 use crate::db;
 use crate::models::connection::DatabaseType;
-use crate::sql::{split_sql_batches, split_sql_statements, starts_with_executable_sql_keyword};
+use crate::sql::{split_sql_batches, split_sql_statements, starts_with_duckdb_result_sql_keyword};
 
 pub const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 pub const MAX_ROWS: usize = 10000;
@@ -191,7 +191,7 @@ pub fn duckdb_execute_with_max_rows(
     let start = std::time::Instant::now();
     let row_limit = query_result_row_limit(max_rows);
 
-    if starts_with_executable_sql_keyword(sql, &["SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "WITH", "PRAGMA"]) {
+    if starts_with_duckdb_result_sql_keyword(sql) {
         let mut stmt = con.prepare(sql).map_err(|e| e.to_string())?;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
         let stmt_ref = rows.as_ref().ok_or("DuckDB statement unavailable")?;
@@ -607,7 +607,7 @@ pub async fn do_execute(
             .map(|result| normalize_query_result_for_js(truncate_result_with_max_rows(result, max_rows)))
         }
         PoolKind::ExternalTabular(ext_pool) => {
-            if !starts_with_executable_sql_keyword(sql, &["SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN", "PRAGMA"]) {
+            if !starts_with_duckdb_result_sql_keyword(sql) {
                 return Err("External data sources are read-only. Only SELECT queries are supported.".to_string());
             }
             let con = ext_pool.cache.clone();
@@ -1463,6 +1463,32 @@ mod tests {
         assert_eq!(result.rows[0][0], serde_json::json!(12.345));
         assert_eq!(result.rows[1][0], serde_json::json!(45.678));
         assert_eq!(result.rows[2][0], serde_json::json!(99.999));
+    }
+
+    #[test]
+    fn duckdb_execute_returns_rows_for_from_first_query() {
+        let con = duckdb::Connection::open_in_memory().expect("connect in-memory DuckDB");
+        con.execute_batch("CREATE TABLE users (id INTEGER, name VARCHAR)").expect("create table");
+        con.execute_batch("INSERT INTO users VALUES (2, 'Grace'), (1, 'Ada')").expect("insert");
+
+        let result = duckdb_execute(&con, "FROM users ORDER BY id").expect("execute from-first query");
+
+        assert_eq!(result.columns, vec!["id", "name"]);
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0], vec![serde_json::json!(1), serde_json::json!("Ada")]);
+        assert_eq!(result.rows[1], vec![serde_json::json!(2), serde_json::json!("Grace")]);
+    }
+
+    #[test]
+    fn duckdb_execute_returns_rows_for_summarize_query() {
+        let con = duckdb::Connection::open_in_memory().expect("connect in-memory DuckDB");
+        con.execute_batch("CREATE TABLE metrics (value INTEGER)").expect("create table");
+        con.execute_batch("INSERT INTO metrics VALUES (1), (2), (NULL)").expect("insert");
+
+        let result = duckdb_execute(&con, "SUMMARIZE metrics").expect("execute summarize query");
+
+        assert!(!result.columns.is_empty());
+        assert!(!result.rows.is_empty());
     }
 
     #[test]
