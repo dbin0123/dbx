@@ -67,6 +67,7 @@ import {
 } from "@/lib/editorZoom";
 import { shortcutToCodeMirrorKey } from "@/lib/shortcutRegistry";
 import { trimmedSelectionLayer } from "@/lib/codemirrorTrimmedSelectionLayer";
+import { selectionMatchOccurrences } from "@/lib/codemirrorSelectionMatches";
 import * as api from "@/lib/api";
 import {
   areSqlSemanticDiagnosticsEqual,
@@ -1487,6 +1488,7 @@ onMounted(async () => {
       foldGutter(),
       drawSelection(),
       trimmedSelectionLayer(),
+      selectionMatchOccurrences(),
       dropCursor(),
       EditorState.allowMultipleSelections.of(true),
       indentOnInput(),
