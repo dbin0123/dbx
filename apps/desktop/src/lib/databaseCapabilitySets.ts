@@ -34,13 +34,14 @@ export const SCHEMA_AWARE_TYPES = new Set<DatabaseType>([
   "duckdb",
 ]);
 
-export const SQL_FILE_UNSUPPORTED_TYPES = new Set<DatabaseType>(["redis", "mongodb", "elasticsearch"]);
+export const SQL_FILE_UNSUPPORTED_TYPES = new Set<DatabaseType>(["redis", "mongodb", "elasticsearch", "etcd"]);
 
 export const DIAGRAM_SUPPORTED_TYPES = new Set<DatabaseType>([
   "mysql",
   "postgres",
   "sqlite",
   "rqlite",
+  "turso",
   "sqlserver",
   "oracle",
   "redshift",
@@ -72,6 +73,7 @@ export const DATABASE_SEARCH_SUPPORTED_TYPES = new Set<DatabaseType>([
   "postgres",
   "sqlite",
   "rqlite",
+  "turso",
   "sqlserver",
   "oracle",
   "redshift",
@@ -109,37 +111,18 @@ export const DATABASE_SEARCH_SUPPORTED_TYPES = new Set<DatabaseType>([
   "tdengine",
   "xugu",
   "iotdb",
+  "etcd",
   "iris",
 ]);
 
-export const TABLE_IMPORT_SUPPORTED_TYPES = new Set<DatabaseType>([
-  "mysql",
-  "postgres",
-  "sqlite",
-  "rqlite",
-  "duckdb",
-  "clickhouse",
-  "sqlserver",
-  "oracle",
-  "doris",
-  "starrocks",
-  "redshift",
-  "dameng",
-  "gaussdb",
-  "kwdb",
-  "kingbase",
-  "highgo",
-  "vastbase",
-  "goldendb",
-  "yashandb",
-  "access",
-]);
+export const TABLE_IMPORT_SUPPORTED_TYPES = new Set<DatabaseType>(["mysql", "postgres", "sqlite", "rqlite", "turso", "duckdb", "clickhouse", "sqlserver", "oracle", "doris", "starrocks", "redshift", "dameng", "gaussdb", "kwdb", "kingbase", "highgo", "vastbase", "goldendb", "yashandb", "access"]);
 
 export const TABLE_STRUCTURE_SUPPORTED_TYPES = new Set<DatabaseType>([
   "mysql",
   "postgres",
   "sqlite",
   "rqlite",
+  "turso",
   "duckdb",
   "clickhouse",
   "sqlserver",
@@ -162,44 +145,11 @@ export const TABLE_STRUCTURE_SUPPORTED_TYPES = new Set<DatabaseType>([
   "access",
 ]);
 
-export const CREATE_DATABASE_SUPPORTED_TYPES = new Set<DatabaseType>([
-  "mysql",
-  "postgres",
-  "sqlserver",
-  "clickhouse",
-  "oracle",
-  "dameng",
-  "gaussdb",
-  "kwdb",
-  "opengauss",
-  "oceanbase-oracle",
-  "doris",
-  "starrocks",
-  "redshift",
-]);
+export const CREATE_DATABASE_SUPPORTED_TYPES = new Set<DatabaseType>(["mysql", "postgres", "sqlserver", "clickhouse", "oracle", "gaussdb", "kwdb", "opengauss", "oceanbase-oracle", "doris", "starrocks", "redshift", "influxdb"]);
 
-export const FIELD_LINEAGE_SUPPORTED_TYPES = new Set<DatabaseType>([
-  "mysql",
-  "postgres",
-  "sqlite",
-  "rqlite",
-  "sqlserver",
-  "oracle",
-  "redshift",
-  "dameng",
-  "gaussdb",
-  "kwdb",
-  "opengauss",
-  "oceanbase-oracle",
-]);
+export const FIELD_LINEAGE_SUPPORTED_TYPES = new Set<DatabaseType>(["mysql", "postgres", "sqlite", "rqlite", "turso", "sqlserver", "oracle", "redshift", "dameng", "gaussdb", "kwdb", "opengauss", "oceanbase-oracle"]);
 
-export const SINGLE_DATABASE_TYPES = new Set<DatabaseType>([
-  "oracle",
-  "dameng",
-  "firebird",
-  "oceanbase-oracle",
-  "access",
-]);
+export const SINGLE_DATABASE_TYPES = new Set<DatabaseType>(["oracle", "dameng", "firebird", "oceanbase-oracle", "access"]);
 
 export const FETCH_FIRST_TYPES = new Set<DatabaseType>(["oracle", "dameng"]);
 
@@ -271,37 +221,9 @@ export const AGENT_DRIVER_TYPES = new Set<DatabaseType>([
   "xugu",
   "iotdb",
   "iris",
+  "etcd",
 ]);
 
-export const TRANSFER_SQL_TYPES = new Set<DatabaseType>([
-  "mysql",
-  "postgres",
-  "sqlite",
-  "rqlite",
-  "sqlserver",
-  "oracle",
-  "clickhouse",
-  "duckdb",
-  "hive",
-  "mongodb",
-  "dameng",
-  "gaussdb",
-  "kwdb",
-  "opengauss",
-  "oceanbase-oracle",
-]);
+export const TRANSFER_SQL_TYPES = new Set<DatabaseType>(["mysql", "postgres", "sqlite", "rqlite", "turso", "sqlserver", "oracle", "clickhouse", "duckdb", "hive", "mongodb", "dameng", "gaussdb", "kwdb", "opengauss", "oceanbase-oracle"]);
 
-export const DIAGRAM_SQL_TYPES = new Set<DatabaseType>([
-  "mysql",
-  "postgres",
-  "sqlite",
-  "rqlite",
-  "sqlserver",
-  "oracle",
-  "redshift",
-  "dameng",
-  "gaussdb",
-  "kwdb",
-  "opengauss",
-  "oceanbase-oracle",
-]);
+export const DIAGRAM_SQL_TYPES = new Set<DatabaseType>(["mysql", "postgres", "sqlite", "rqlite", "turso", "sqlserver", "oracle", "redshift", "dameng", "gaussdb", "kwdb", "opengauss", "oceanbase-oracle"]);

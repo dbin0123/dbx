@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::fs;
 use std::time::{Duration, Instant};
 
-use super::with_connection_timeout;
+use super::{http_client_builder, with_connection_timeout};
 use crate::query::MAX_ROWS;
 use crate::sql::starts_with_executable_sql_keyword;
 use crate::types::{ColumnInfo, DatabaseInfo, QueryResult, TableInfo};
@@ -17,7 +17,7 @@ pub struct ChClient {
 
 impl ChClient {
     pub fn new(url: &str, username: Option<String>, password: Option<String>, timeout: Duration) -> Self {
-        let http = HttpClient::builder().connect_timeout(timeout).build().unwrap_or_else(|_| HttpClient::new());
+        let http = http_client_builder(timeout).build().unwrap_or_else(|_| HttpClient::new());
         Self { http, base_url: url.trim_end_matches('/').to_string(), username, password }
     }
 
@@ -28,7 +28,7 @@ impl ChClient {
         ca_cert_path: Option<&str>,
         timeout: Duration,
     ) -> Result<Self, String> {
-        let mut builder = HttpClient::builder().connect_timeout(timeout);
+        let mut builder = http_client_builder(timeout);
         if let Some(path) = ca_cert_path.map(str::trim).filter(|path| !path.is_empty()) {
             let path = expand_cert_path(path);
             let cert_bytes =
@@ -148,13 +148,24 @@ fn query_result_row_limit(max_rows: Option<usize>) -> usize {
 
 fn limited_query_result(result: ChJsonResult, execution_time_ms: u128, max_rows: Option<usize>) -> QueryResult {
     let columns: Vec<String> = result.meta.iter().map(|c| c.name.clone()).collect();
+    let column_types: Vec<String> = result.meta.iter().map(|c| c._type.clone()).collect();
     let mut rows = result.data;
     let row_limit = query_result_row_limit(max_rows);
     let truncated = rows.len() > row_limit;
     if truncated {
         rows.truncate(row_limit);
     }
-    QueryResult { columns, rows, affected_rows: 0, execution_time_ms, truncated, session_id: None, has_more: false }
+    QueryResult {
+        columns,
+        column_types,
+        column_sortables: vec![],
+        rows,
+        affected_rows: 0,
+        execution_time_ms,
+        truncated,
+        session_id: None,
+        has_more: false,
+    }
 }
 
 pub async fn test_connection(client: &ChClient, timeout: Duration) -> Result<(), String> {
@@ -259,6 +270,8 @@ pub async fn execute_query_with_max_rows(
         }
         Ok(QueryResult {
             columns: vec![],
+            column_types: Vec::new(),
+            column_sortables: vec![],
             rows: vec![],
             affected_rows: 0,
             execution_time_ms: start.elapsed().as_millis(),

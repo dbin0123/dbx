@@ -18,10 +18,11 @@ export interface MongoAggregateCommand {
   pipeline: string;
 }
 
-export type MongoWriteCommand =
-  | { kind: "insert"; collection: string; docsJson: string }
-  | { kind: "update"; collection: string; filter: string; update: string; many: boolean }
-  | { kind: "delete"; collection: string; filter: string; many: boolean };
+export interface MongoGetIndexesCommand {
+  collection: string;
+}
+
+export type MongoWriteCommand = { kind: "insert"; collection: string; docsJson: string } | { kind: "update"; collection: string; filter: string; update: string; many: boolean } | { kind: "delete"; collection: string; filter: string; many: boolean };
 
 export interface MongoAggregateSafetyOptions {
   allowWrites?: boolean;
@@ -112,6 +113,23 @@ export function parseMongoAggregateCommand(input: string): MongoAggregateCommand
   };
 }
 
+export function parseMongoGetIndexesCommand(input: string): MongoGetIndexesCommand | null {
+  const source = input.trim().replace(/;$/, "").trim();
+  const target = parseCollectionMethodTarget(source, "getIndexes");
+  if (!target) return null;
+
+  const openIndex = source.indexOf("(", target.methodCallIndex);
+  const closeIndex = findMatchingParen(source, openIndex);
+  if (closeIndex < 0 || source.slice(closeIndex + 1).trim()) return null;
+
+  const args = splitTopLevel(source.slice(openIndex + 1, closeIndex));
+  if (args.some((arg) => arg.trim())) return null;
+
+  return {
+    collection: target.collection,
+  };
+}
+
 export function parseMongoWriteCommand(input: string): MongoWriteCommand | null {
   const source = input.trim().replace(/;$/, "").trim();
   const insertOne = parseCollectionMethodTarget(source, "insertOne");
@@ -128,9 +146,7 @@ export function parseMongoWriteCommand(input: string): MongoWriteCommand | null 
     if (!args || args.length !== 1) return null;
     const docs = normalizeJsonArgument(args[0]);
     if (!docs) return null;
-    return Array.isArray(JSON.parse(docs))
-      ? { kind: "insert", collection: insertMany.collection, docsJson: docs }
-      : null;
+    return Array.isArray(JSON.parse(docs)) ? { kind: "insert", collection: insertMany.collection, docsJson: docs } : null;
   }
 
   for (const method of ["updateOne", "updateMany"] as const) {
@@ -172,10 +188,7 @@ export function mongoAggregateWriteStage(pipelineJson: string): "$out" | "$merge
   return null;
 }
 
-export function evaluateMongoAggregateSafety(
-  command: MongoAggregateCommand,
-  options: MongoAggregateSafetyOptions,
-): { allowed: boolean; reason?: string } {
+export function evaluateMongoAggregateSafety(command: MongoAggregateCommand, options: MongoAggregateSafetyOptions): { allowed: boolean; reason?: string } {
   const writeStage = mongoAggregateWriteStage(command.pipeline);
   if (!writeStage) return { allowed: true };
   if (!options.allowWrites) {
@@ -238,6 +251,27 @@ export function mongoWriteToQueryResult(affectedRows: number, executionTimeMs: n
   };
 }
 
+export function mongoIndexesToQueryResult(
+  indexes: {
+    name: string;
+    columns: string[];
+    is_unique: boolean;
+    is_primary: boolean;
+    filter?: string | null;
+    index_type?: string | null;
+    included_columns?: string[] | null;
+    comment?: string | null;
+  }[],
+  executionTimeMs: number,
+): QueryResult {
+  return {
+    columns: ["name", "columns", "unique", "primary", "type", "filter"],
+    rows: indexes.map((index) => [index.name, index.columns.join(", "), index.is_unique, index.is_primary, index.index_type ?? null, index.filter ?? null]),
+    affected_rows: indexes.length,
+    execution_time_ms: Math.max(0, Math.round(executionTimeMs)),
+  };
+}
+
 function parseFindTarget(source: string): { collection: string; findCallIndex: number } | null {
   const direct = parseCollectionMethodTarget(source, "find");
   if (direct) {
@@ -247,10 +281,7 @@ function parseFindTarget(source: string): { collection: string; findCallIndex: n
   return null;
 }
 
-function parseCollectionMethodTarget(
-  source: string,
-  method: string,
-): { collection: string; methodCallIndex: number } | null {
+function parseCollectionMethodTarget(source: string, method: string): { collection: string; methodCallIndex: number } | null {
   const escapedMethod = escapeRegExp(method);
   const direct = new RegExp(`^db\\.([A-Za-z_$][\\w$]*)\\.${escapedMethod}\\s*\\(`).exec(source);
   if (direct) {
@@ -260,9 +291,7 @@ function parseCollectionMethodTarget(
     };
   }
 
-  const getCollection = new RegExp(
-    `^db\\.getCollection\\s*\\(\\s*(["'])(.*?)\\1\\s*\\)\\.${escapedMethod}\\s*\\(`,
-  ).exec(source);
+  const getCollection = new RegExp(`^db\\.getCollection\\s*\\(\\s*(["'])(.*?)\\1\\s*\\)\\.${escapedMethod}\\s*\\(`).exec(source);
   if (getCollection) {
     return {
       collection: getCollection[2],
@@ -276,9 +305,7 @@ function parseCollectionMethodTarget(
 function normalizeJsonArgument(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return "{}";
-  const preprocessed = quoteUnquotedObjectKeys(
-    convertSingleQuotedStrings(trimmed.replace(/ObjectId\s*\(\s*["']([^"']+)["']\s*\)/g, '{"$oid":"$1"}')),
-  );
+  const preprocessed = quoteUnquotedObjectKeys(convertSingleQuotedStrings(trimmed.replace(/ObjectId\s*\(\s*["']([^"']+)["']\s*\)/g, '{"$oid":"$1"}')));
   try {
     JSON.parse(preprocessed);
     return preprocessed;

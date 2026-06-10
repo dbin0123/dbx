@@ -32,11 +32,20 @@ pub struct TabRuntimeCacheEntry {
 pub struct DesktopSettings {
     pub show_tray_icon: bool,
     pub icon_theme: DesktopIconTheme,
+    #[serde(default)]
+    pub debug_logging_enabled: bool,
+    #[serde(default)]
+    pub saved_sql_sync_dir: Option<String>,
 }
 
 impl Default for DesktopSettings {
     fn default() -> Self {
-        Self { show_tray_icon: true, icon_theme: DesktopIconTheme::Default }
+        Self {
+            show_tray_icon: true,
+            icon_theme: DesktopIconTheme::Default,
+            debug_logging_enabled: false,
+            saved_sql_sync_dir: None,
+        }
     }
 }
 
@@ -122,6 +131,7 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         id TEXT PRIMARY KEY,
         connection_id TEXT NOT NULL,
         name TEXT NOT NULL DEFAULT '',
+        order_index INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL DEFAULT ''
     )",
@@ -133,6 +143,7 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         database_name TEXT NOT NULL DEFAULT '',
         schema_name TEXT,
         sql_text TEXT NOT NULL DEFAULT '',
+        order_index INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL DEFAULT ''
     )",
@@ -153,6 +164,7 @@ impl Storage {
                 conn.execute(statement, []).map_err(|e| e.to_string())?;
             }
             ensure_history_columns_sync(conn)?;
+            ensure_saved_sql_columns_sync(conn)?;
             Ok(())
         })
     }
@@ -190,6 +202,34 @@ fn ensure_history_columns_sync(conn: &Connection) -> Result<(), String> {
             continue;
         }
         conn.execute(&format!("ALTER TABLE history ADD COLUMN {name} {definition}"), []).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn ensure_saved_sql_columns_sync(conn: &Connection) -> Result<(), String> {
+    const FOLDER_COLUMNS: &[(&str, &str)] = &[("order_index", "INTEGER NOT NULL DEFAULT 0")];
+    const FILE_COLUMNS: &[(&str, &str)] = &[("order_index", "INTEGER NOT NULL DEFAULT 0")];
+
+    ensure_table_columns(conn, "saved_sql_folders", FOLDER_COLUMNS)?;
+    ensure_table_columns(conn, "saved_sql_files", FILE_COLUMNS)?;
+    Ok(())
+}
+
+fn ensure_table_columns(conn: &Connection, table_name: &str, columns: &[(&str, &str)]) -> Result<(), String> {
+    let mut stmt =
+        conn.prepare(&format!("SELECT name FROM pragma_table_info('{table_name}')")).map_err(|e| e.to_string())?;
+    let existing = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    for (name, definition) in columns {
+        if existing.contains(*name) {
+            continue;
+        }
+        conn.execute(&format!("ALTER TABLE {table_name} ADD COLUMN {name} {definition}"), [])
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -298,44 +338,61 @@ impl Storage {
         .await
     }
 
-    pub async fn load_history_entries(&self, limit: usize, offset: usize) -> Result<Vec<HistoryEntry>, String> {
+    pub async fn load_history_entries(
+        &self,
+        limit: usize,
+        offset: usize,
+        activity_kind: Option<String>,
+    ) -> Result<Vec<HistoryEntry>, String> {
         self.with_conn(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, connection_name, database, sql_text, executed_at, execution_time_ms, success, \
-                     error, activity_kind, connection_id, operation, target, affected_rows, rollback_sql, details_json \
-                     FROM history ORDER BY executed_at DESC LIMIT ?1 OFFSET ?2",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(params![limit as i64, offset as i64], |row| {
-                    Ok(HistoryEntry {
-                        id: row.get(0)?,
-                        connection_name: row.get(1)?,
-                        database: row.get(2)?,
-                        sql: row.get(3)?,
-                        executed_at: row.get(4)?,
-                        execution_time_ms: row.get::<_, i64>(5)? as u128,
-                        success: row.get(6)?,
-                        error: row.get(7)?,
-                        activity_kind: {
-                            let value: String = row.get(8)?;
-                            if value.is_empty() {
-                                "query".to_string()
-                            } else {
-                                value
-                            }
-                        },
-                        connection_id: row.get(9)?,
-                        operation: row.get(10)?,
-                        target: row.get(11)?,
-                        affected_rows: row.get(12)?,
-                        rollback_sql: row.get(13)?,
-                        details_json: row.get(14)?,
-                    })
+            let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<HistoryEntry> {
+                Ok(HistoryEntry {
+                    id: row.get(0)?,
+                    connection_name: row.get(1)?,
+                    database: row.get(2)?,
+                    sql: row.get(3)?,
+                    executed_at: row.get(4)?,
+                    execution_time_ms: row.get::<_, i64>(5)? as u128,
+                    success: row.get(6)?,
+                    error: row.get(7)?,
+                    activity_kind: {
+                        let value: String = row.get(8)?;
+                        if value.is_empty() { "query".to_string() } else { value }
+                    },
+                    connection_id: row.get(9)?,
+                    operation: row.get(10)?,
+                    target: row.get(11)?,
+                    affected_rows: row.get(12)?,
+                    rollback_sql: row.get(13)?,
+                    details_json: row.get(14)?,
                 })
-                .map_err(|e| e.to_string())?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+            };
+
+            if let Some(kind) = activity_kind {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, connection_name, database, sql_text, executed_at, execution_time_ms, success, \
+                         error, activity_kind, connection_id, operation, target, affected_rows, rollback_sql, details_json \
+                         FROM history WHERE activity_kind = ?1 ORDER BY executed_at DESC LIMIT ?2 OFFSET ?3",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![kind, limit as i64, offset as i64], map_row)
+                    .map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+            } else {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, connection_name, database, sql_text, executed_at, execution_time_ms, success, \
+                         error, activity_kind, connection_id, operation, target, affected_rows, rollback_sql, details_json \
+                         FROM history ORDER BY executed_at DESC LIMIT ?1 OFFSET ?2",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![limit as i64, offset as i64], map_row)
+                    .map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+            }
         })
         .await
     }
@@ -430,6 +487,18 @@ impl Storage {
             "icon_theme".to_string(),
             serde_json::to_value(desktop_settings.icon_theme).map_err(|e| e.to_string())?,
         );
+        settings.insert(
+            "debug_logging_enabled".to_string(),
+            serde_json::Value::Bool(desktop_settings.debug_logging_enabled),
+        );
+        match desktop_settings.saved_sql_sync_dir.as_ref().filter(|path| !path.trim().is_empty()) {
+            Some(path) => {
+                settings.insert("saved_sql_sync_dir".to_string(), serde_json::Value::String(path.clone()));
+            }
+            None => {
+                settings.remove("saved_sql_sync_dir");
+            }
+        }
         self.save_app_settings_json(&settings).await
     }
 
@@ -442,6 +511,16 @@ impl Storage {
                 .or_else(|| settings.get("run_in_background").and_then(|value| value.as_bool()))
                 .unwrap_or_else(|| DesktopSettings::default().show_tray_icon),
             icon_theme: DesktopIconTheme::from_settings_value(settings.get("icon_theme")),
+            debug_logging_enabled: settings
+                .get("debug_logging_enabled")
+                .and_then(|value| value.as_bool())
+                .unwrap_or_else(|| DesktopSettings::default().debug_logging_enabled),
+            saved_sql_sync_dir: settings
+                .get("saved_sql_sync_dir")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
         })
     }
 
@@ -775,9 +854,16 @@ impl Storage {
 
             for folder in &library.folders {
                 tx.execute(
-                    "INSERT INTO saved_sql_folders (id, connection_id, name, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?)",
-                    params![folder.id, folder.connection_id, folder.name, folder.created_at, folder.updated_at],
+                    "INSERT INTO saved_sql_folders (id, connection_id, name, order_index, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                    params![
+                        folder.id,
+                        folder.connection_id,
+                        folder.name,
+                        folder.order_index,
+                        folder.created_at,
+                        folder.updated_at
+                    ],
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -785,8 +871,8 @@ impl Storage {
             for file in &library.files {
                 tx.execute(
                     "INSERT INTO saved_sql_files \
-                     (id, connection_id, folder_id, name, database_name, schema_name, sql_text, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (id, connection_id, folder_id, name, database_name, schema_name, sql_text, order_index, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     params![
                         file.id,
                         file.connection_id,
@@ -795,6 +881,7 @@ impl Storage {
                         file.database,
                         file.schema,
                         file.sql,
+                        file.order_index,
                         file.created_at,
                         file.updated_at
                     ],
@@ -811,8 +898,8 @@ impl Storage {
         self.with_conn(|conn| {
             let mut folder_stmt = conn
                 .prepare(
-                    "SELECT id, connection_id, name, created_at, updated_at \
-                     FROM saved_sql_folders ORDER BY connection_id, name COLLATE NOCASE",
+                    "SELECT id, connection_id, name, order_index, created_at, updated_at \
+                     FROM saved_sql_folders ORDER BY order_index, connection_id, name COLLATE NOCASE",
                 )
                 .map_err(|e| e.to_string())?;
             let folders = folder_stmt
@@ -821,8 +908,9 @@ impl Storage {
                         id: row.get(0)?,
                         connection_id: row.get(1)?,
                         name: row.get(2)?,
-                        created_at: row.get(3)?,
-                        updated_at: row.get(4)?,
+                        order_index: row.get(3)?,
+                        created_at: row.get(4)?,
+                        updated_at: row.get(5)?,
                     })
                 })
                 .map_err(|e| e.to_string())?
@@ -831,8 +919,8 @@ impl Storage {
 
             let mut file_stmt = conn
                 .prepare(
-                    "SELECT id, connection_id, folder_id, name, database_name, schema_name, sql_text, created_at, updated_at \
-                     FROM saved_sql_files ORDER BY connection_id, folder_id, name COLLATE NOCASE",
+                    "SELECT id, connection_id, folder_id, name, database_name, schema_name, sql_text, order_index, created_at, updated_at \
+                     FROM saved_sql_files ORDER BY COALESCE(folder_id, ''), order_index, connection_id, name COLLATE NOCASE",
                 )
                 .map_err(|e| e.to_string())?;
             let files = file_stmt
@@ -845,8 +933,9 @@ impl Storage {
                         database: row.get(4)?,
                         schema: row.get(5)?,
                         sql: row.get(6)?,
-                        created_at: row.get(7)?,
-                        updated_at: row.get(8)?,
+                        order_index: row.get(7)?,
+                        created_at: row.get(8)?,
+                        updated_at: row.get(9)?,
                     })
                 })
                 .map_err(|e| e.to_string())?
@@ -862,13 +951,21 @@ impl Storage {
         let folder = folder.clone();
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO saved_sql_folders (id, connection_id, name, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?) \
+                "INSERT INTO saved_sql_folders (id, connection_id, name, order_index, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(id) DO UPDATE SET \
                  connection_id = excluded.connection_id, \
                  name = excluded.name, \
+                 order_index = excluded.order_index, \
                  updated_at = excluded.updated_at",
-                params![folder.id, folder.connection_id, folder.name, folder.created_at, folder.updated_at],
+                params![
+                    folder.id,
+                    folder.connection_id,
+                    folder.name,
+                    folder.order_index,
+                    folder.created_at,
+                    folder.updated_at
+                ],
             )
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -892,8 +989,8 @@ impl Storage {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO saved_sql_files \
-                 (id, connection_id, folder_id, name, database_name, schema_name, sql_text, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 (id, connection_id, folder_id, name, database_name, schema_name, sql_text, order_index, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(id) DO UPDATE SET \
                  connection_id = excluded.connection_id, \
                  folder_id = excluded.folder_id, \
@@ -901,6 +998,7 @@ impl Storage {
                  database_name = excluded.database_name, \
                  schema_name = excluded.schema_name, \
                  sql_text = excluded.sql_text, \
+                 order_index = excluded.order_index, \
                  updated_at = excluded.updated_at",
                 params![
                     file.id,
@@ -910,6 +1008,7 @@ impl Storage {
                     file.database,
                     file.schema,
                     file.sql,
+                    file.order_index,
                     file.created_at,
                     file.updated_at
                 ],
@@ -1334,14 +1433,24 @@ mod tests {
 
         storage.save_password_hash("hash-1").await.unwrap();
         storage
-            .save_desktop_settings(&DesktopSettings { show_tray_icon: false, icon_theme: DesktopIconTheme::Black })
+            .save_desktop_settings(&DesktopSettings {
+                show_tray_icon: false,
+                icon_theme: DesktopIconTheme::Black,
+                debug_logging_enabled: true,
+                saved_sql_sync_dir: None,
+            })
             .await
             .unwrap();
 
         assert_eq!(storage.load_password_hash().await.unwrap(), Some("hash-1".to_string()));
         assert_eq!(
             storage.load_desktop_settings().await.unwrap(),
-            DesktopSettings { show_tray_icon: false, icon_theme: DesktopIconTheme::Black }
+            DesktopSettings {
+                show_tray_icon: false,
+                icon_theme: DesktopIconTheme::Black,
+                debug_logging_enabled: true,
+                saved_sql_sync_dir: None
+            }
         );
     }
 
@@ -1365,6 +1474,7 @@ mod tests {
         assert_eq!(settings.get("run_in_background"), None);
         assert_eq!(settings.get("show_tray_icon").and_then(|value| value.as_bool()), Some(true));
         assert_eq!(settings.get("icon_theme").and_then(|value| value.as_str()), Some("black"));
+        assert_eq!(settings.get("debug_logging_enabled").and_then(|value| value.as_bool()), Some(false));
     }
 
     #[tokio::test]
@@ -1373,7 +1483,11 @@ mod tests {
         let storage = Storage::open(&path).await.unwrap();
 
         storage
-            .save_desktop_settings(&DesktopSettings { show_tray_icon: false, icon_theme: DesktopIconTheme::Black })
+            .save_desktop_settings(&DesktopSettings {
+                show_tray_icon: false,
+                icon_theme: DesktopIconTheme::Black,
+                ..DesktopSettings::default()
+            })
             .await
             .unwrap();
         storage.save_password_hash("hash-2").await.unwrap();
@@ -1381,7 +1495,11 @@ mod tests {
         assert_eq!(storage.load_password_hash().await.unwrap(), Some("hash-2".to_string()));
         assert_eq!(
             storage.load_desktop_settings().await.unwrap(),
-            DesktopSettings { show_tray_icon: false, icon_theme: DesktopIconTheme::Black }
+            DesktopSettings {
+                show_tray_icon: false,
+                icon_theme: DesktopIconTheme::Black,
+                ..DesktopSettings::default()
+            }
         );
     }
 

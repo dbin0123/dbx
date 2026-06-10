@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   SCHEMA_AWARE_TYPES,
   TREE_SCHEMA_TYPES,
   databaseObjectTreeNodeSchema,
   databaseObjectTreeQuerySchema,
   getDatabaseCapability,
+  sidebarObjectKindsForDatabase,
   supportsDatabaseCreation,
   supportsDatabaseSearch,
   supportsDriverManagement,
@@ -60,17 +61,7 @@ test("treats Access as a local single-database agent driver", () => {
 });
 
 test("exposes the extended JDBC agent ecosystem through driver management", () => {
-  for (const dbType of [
-    "databricks",
-    "saphana",
-    "teradata",
-    "vertica",
-    "firebird",
-    "exasol",
-    "opengauss",
-    "oceanbase-oracle",
-    "gbase",
-  ] as const) {
+  for (const dbType of ["databricks", "saphana", "teradata", "vertica", "firebird", "exasol", "opengauss", "oceanbase-oracle", "gbase"] as const) {
     assert.equal(supportsDriverManagement(dbType), true, `${dbType} should be agent-managed`);
     assert.equal(supportsDatabaseSearch(dbType), true, `${dbType} should support database search`);
   }
@@ -252,11 +243,6 @@ test("describes feature support through capability helpers", () => {
   assert.equal(supportsTableTruncate("rqlite"), false);
 });
 
-test("exposes Hive and MongoDB in data transfer", () => {
-  assert.equal(supportsTransfer("hive"), true);
-  assert.equal(supportsTransfer("mongodb"), true);
-});
-
 test("object browser entry follows database tree shape", () => {
   assert.equal(supportsObjectBrowserTreeNode("postgres", "database"), false);
   assert.equal(supportsObjectBrowserTreeNode("postgres", "schema"), true);
@@ -265,4 +251,10 @@ test("object browser entry follows database tree shape", () => {
   assert.equal(supportsObjectBrowserTreeNode("mysql", "database"), true);
   assert.equal(supportsObjectBrowserTreeNode("jdbc", "database"), true);
   assert.equal(supportsObjectBrowserTreeNode("mongodb", "database"), false);
+});
+
+test("sidebar object capability registry describes object groups by database type", () => {
+  assert.deepEqual(sidebarObjectKindsForDatabase("databend"), ["TABLE", "VIEW"]);
+  assert.deepEqual(sidebarObjectKindsForDatabase("postgres"), ["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE"]);
+  assert.deepEqual(sidebarObjectKindsForDatabase("oracle"), ["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "PACKAGE", "PACKAGE_BODY"]);
 });

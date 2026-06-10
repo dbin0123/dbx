@@ -29,6 +29,7 @@ export interface TabResultSnapshot {
 
 interface ColumnarQueryResult {
   columns: string[];
+  column_types?: string[];
   columnValues: CellValue[][];
   rowCount: number;
   affected_rows: number;
@@ -111,6 +112,7 @@ function stripSessionIds(result: QueryResult | undefined): QueryResult | undefin
   if (!result) return undefined;
   return {
     columns: [...result.columns],
+    column_types: result.column_types ? [...result.column_types] : undefined,
     rows: result.rows.map((row) => [...row]),
     affected_rows: result.affected_rows,
     execution_time_ms: result.execution_time_ms,
@@ -129,6 +131,7 @@ function toColumnarResult(result: QueryResult | undefined): ColumnarQueryResult 
   const columnValues = result.columns.map((_, colIndex) => result.rows.map((row) => row[colIndex] ?? null));
   return removeUndefinedFields({
     columns: [...result.columns],
+    column_types: result.column_types ? [...result.column_types] : undefined,
     columnValues,
     rowCount: result.rows.length,
     affected_rows: result.affected_rows,
@@ -140,11 +143,10 @@ function toColumnarResult(result: QueryResult | undefined): ColumnarQueryResult 
 
 function fromColumnarResult(result: ColumnarQueryResult | undefined): QueryResult | undefined {
   if (!result) return undefined;
-  const rows = Array.from({ length: result.rowCount }, (_, rowIndex) =>
-    result.columnValues.map((values) => values[rowIndex] ?? null),
-  );
+  const rows = Array.from({ length: result.rowCount }, (_, rowIndex) => result.columnValues.map((values) => values[rowIndex] ?? null));
   return {
     columns: [...result.columns],
+    column_types: result.column_types ? [...result.column_types] : undefined,
     rows,
     affected_rows: result.affected_rows,
     execution_time_ms: result.execution_time_ms,
@@ -195,16 +197,10 @@ function base64ToBytes(value: string): Uint8Array {
 }
 
 function canUseRemoteRuntimeCache(): boolean {
-  return (
-    typeof btoa !== "undefined" && typeof atob !== "undefined" && (isTauriRuntime() || typeof fetch !== "undefined")
-  );
+  return typeof btoa !== "undefined" && typeof atob !== "undefined" && (isTauriRuntime() || typeof fetch !== "undefined");
 }
 
-async function writeRemoteRuntimeCache(
-  key: string,
-  bytes: Uint8Array,
-  stats: { rowCount: number; columnCount: number },
-): Promise<boolean> {
+async function writeRemoteRuntimeCache(key: string, bytes: Uint8Array, stats: { rowCount: number; columnCount: number }): Promise<boolean> {
   if (!canUseRemoteRuntimeCache()) return false;
   try {
     if (isTauriRuntime()) {
@@ -266,12 +262,7 @@ async function deleteRemoteRuntimeCache(key: string): Promise<void> {
   }
 }
 
-function scheduleRemoteRuntimeCacheWrite(
-  key: string,
-  bytes: Uint8Array,
-  stats: { rowCount: number; columnCount: number },
-  version: number,
-) {
+function scheduleRemoteRuntimeCacheWrite(key: string, bytes: Uint8Array, stats: { rowCount: number; columnCount: number }, version: number) {
   window.setTimeout(async () => {
     if (!isCurrentCacheKeyVersion(key, version)) return;
     await writeRemoteRuntimeCache(key, bytes, stats);

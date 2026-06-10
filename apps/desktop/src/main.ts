@@ -3,6 +3,7 @@ import { createPinia } from "pinia";
 import VueVirtualScroller from "vue-virtual-scroller";
 import "vue-virtual-scroller/dist/vue-virtual-scroller.css";
 import "./styles/globals.css";
+import { installDebugLogCapture } from "@/lib/debugLog";
 
 function startupErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -18,26 +19,9 @@ function renderStartupError(error: unknown) {
   if (!root) return;
   root.innerHTML = "";
   const panel = document.createElement("div");
-  panel.style.cssText = [
-    "display:flex",
-    "min-height:100vh",
-    "align-items:center",
-    "justify-content:center",
-    "background:#ffffff",
-    "color:#111827",
-    "padding:24px",
-    "font-family:ui-sans-serif,system-ui,sans-serif",
-  ].join(";");
+  panel.style.cssText = ["display:flex", "min-height:100vh", "align-items:center", "justify-content:center", "background:#ffffff", "color:#111827", "padding:24px", "font-family:ui-sans-serif,system-ui,sans-serif"].join(";");
   const card = document.createElement("div");
-  card.style.cssText = [
-    "max-width:760px",
-    "width:100%",
-    "border:1px solid #e5e7eb",
-    "border-radius:12px",
-    "padding:20px",
-    "box-shadow:0 10px 30px rgba(0,0,0,0.08)",
-    "background:#fff",
-  ].join(";");
+  card.style.cssText = ["max-width:760px", "width:100%", "border:1px solid #e5e7eb", "border-radius:12px", "padding:20px", "box-shadow:0 10px 30px rgba(0,0,0,0.08)", "background:#fff"].join(";");
   const title = document.createElement("h1");
   title.textContent = "DBX startup failed";
   title.style.cssText = "margin:0 0 12px;font-size:18px;font-weight:700;";
@@ -46,17 +30,7 @@ function renderStartupError(error: unknown) {
   text.style.cssText = "margin:0 0 12px;font-size:13px;line-height:1.5;color:#4b5563;";
   const pre = document.createElement("pre");
   pre.textContent = message;
-  pre.style.cssText = [
-    "margin:0",
-    "white-space:pre-wrap",
-    "word-break:break-word",
-    "font-size:12px",
-    "line-height:1.5",
-    "background:#f9fafb",
-    "border-radius:8px",
-    "padding:12px",
-    "overflow:auto",
-  ].join(";");
+  pre.style.cssText = ["margin:0", "white-space:pre-wrap", "word-break:break-word", "font-size:12px", "line-height:1.5", "background:#f9fafb", "border-radius:8px", "padding:12px", "overflow:auto"].join(";");
   card.append(title, text, pre);
   panel.append(card);
   root.append(panel);
@@ -73,10 +47,7 @@ function installStartupErrorHandlers() {
 
 async function bootstrap() {
   console.log("[STARTUP] frontend bootstrap begin");
-  const [{ default: i18n, loadSavedLocale }, { default: App }] = await Promise.all([
-    import("./i18n"),
-    import("./App.vue"),
-  ]);
+  const [{ default: i18n, loadSavedLocale }, { default: App }] = await Promise.all([import("./i18n"), import("./App.vue")]);
   console.log("[STARTUP] frontend modules loaded");
   await loadSavedLocale();
   console.log("[STARTUP] locale ready");
@@ -89,5 +60,6 @@ async function bootstrap() {
   console.log("[STARTUP] vue mounted");
 }
 
+installDebugLogCapture();
 installStartupErrorHandlers();
 void bootstrap().catch(renderStartupError);

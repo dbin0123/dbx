@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import type { ConnectionConfig } from "@dbx-app/node-core";
 import { connectionSummary, csvTable, errorPayload, formatCell, formatErrorMessage, mdTable } from "../src/cli-format.js";
 
@@ -39,7 +39,7 @@ test("formats markdown tables", () => {
 
 test("formats database cell values with shared formatter", () => {
   assert.equal(formatCell(null), "NULL");
-  assert.equal(formatCell({ ok: true }), "{\"ok\":true}");
+  assert.equal(formatCell({ ok: true }), '{"ok":true}');
 });
 
 test("builds stable error payloads", () => {

@@ -1,15 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import {
-  executeQuery,
-  inferMongoColumns,
-  mongoAggregateWriteStage,
-  mongoDocumentsToQueryResult,
-  parseMongoAggregateCommand,
-  parseMongoCountDocumentsCommand,
-  parseMongoFindCommand,
-  parseMongoWriteCommand,
-} from "../src/database.js";
+import { test } from "vitest";
+import { executeQuery, inferMongoColumns, mongoAggregateWriteStage, mongoDocumentsToQueryResult, parseMongoAggregateCommand, parseMongoCountDocumentsCommand, parseMongoFindCommand, parseMongoGetIndexesCommand, parseMongoWriteCommand } from "../src/database.js";
 
 test("parseMongoFindCommand accepts shell-style find commands", () => {
   assert.deepEqual(parseMongoFindCommand('db.getCollection("operation_logs").find({"level":"info"}).sort({"ts":-1}).skip(5).limit(10)'), {
@@ -53,6 +44,16 @@ test("parseMongoAggregateCommand accepts aggregate pipelines", () => {
   });
 });
 
+test("parseMongoGetIndexesCommand accepts shell-style index commands", () => {
+  assert.deepEqual(parseMongoGetIndexesCommand("db.web_log.getIndexes();"), {
+    collection: "web_log",
+  });
+  assert.deepEqual(parseMongoGetIndexesCommand('db.getCollection("audit.logs").getIndexes()'), {
+    collection: "audit.logs",
+  });
+  assert.equal(parseMongoGetIndexesCommand("db.web_log.getIndexes({})"), null);
+});
+
 test("mongoAggregateWriteStage detects write stages", () => {
   assert.equal(mongoAggregateWriteStage('[{"$match":{"active":true}}]'), null);
   assert.equal(mongoAggregateWriteStage('[{"$match":{}},{"$out":"projects_dump"}]'), "$out");
@@ -77,10 +78,7 @@ test("mongodb executeQuery blocks aggregate write stages until dangerous SQL is 
     ssl: false,
   } as const;
 
-  await assert.rejects(
-    executeQuery(config, 'db.projects.aggregate([{"$merge":{"into":"projects_dump"}}])'),
-    /DBX_MCP_ALLOW_DANGEROUS_SQL=1/,
-  );
+  await assert.rejects(executeQuery(config, 'db.projects.aggregate([{"$merge":{"into":"projects_dump"}}])'), /DBX_MCP_ALLOW_DANGEROUS_SQL=1/);
 
   if (oldAllowWrites === undefined) delete process.env.DBX_MCP_ALLOW_WRITES;
   else process.env.DBX_MCP_ALLOW_WRITES = oldAllowWrites;
@@ -135,33 +133,48 @@ test("mongodb executeQuery blocks writes when writes are explicitly disabled", a
 });
 
 test("mongoDocumentsToQueryResult turns documents into rows", () => {
-  assert.deepEqual(mongoDocumentsToQueryResult([{ _id: "1", nested: { ok: true } }, { _id: "2", name: "demo" }], 2), {
-    columns: ["_id", "nested", "name"],
-    rows: [
-      { _id: "1", nested: '{"ok":true}', name: undefined },
-      { _id: "2", nested: undefined, name: "demo" },
-    ],
-    row_count: 2,
-  });
+  assert.deepEqual(
+    mongoDocumentsToQueryResult(
+      [
+        { _id: "1", nested: { ok: true } },
+        { _id: "2", name: "demo" },
+      ],
+      2,
+    ),
+    {
+      columns: ["_id", "nested", "name"],
+      rows: [
+        { _id: "1", nested: '{"ok":true}', name: undefined },
+        { _id: "2", nested: undefined, name: "demo" },
+      ],
+      row_count: 2,
+    },
+  );
 });
 
 test("inferMongoColumns marks _id as primary and reports observed types", () => {
-  assert.deepEqual(inferMongoColumns([{ _id: "1", active: true }, { _id: "2", active: null }]), [
-    {
-      name: "_id",
-      data_type: "string",
-      is_nullable: false,
-      column_default: null,
-      is_primary_key: true,
-      comment: null,
-    },
-    {
-      name: "active",
-      data_type: "boolean | null",
-      is_nullable: true,
-      column_default: null,
-      is_primary_key: false,
-      comment: null,
-    },
-  ]);
+  assert.deepEqual(
+    inferMongoColumns([
+      { _id: "1", active: true },
+      { _id: "2", active: null },
+    ]),
+    [
+      {
+        name: "_id",
+        data_type: "string",
+        is_nullable: false,
+        column_default: null,
+        is_primary_key: true,
+        comment: null,
+      },
+      {
+        name: "active",
+        data_type: "boolean | null",
+        is_nullable: true,
+        column_default: null,
+        is_primary_key: false,
+        comment: null,
+      },
+    ],
+  );
 });

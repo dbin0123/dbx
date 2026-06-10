@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
+import { test } from "vitest";
 
 const packageDir = fileURLToPath(new URL("..", import.meta.url));
 const cliSource = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
@@ -30,8 +30,8 @@ test("prints capabilities when invoked through an npm-style symlink", async () =
     assert.equal(result.status, 0);
     assert.equal(result.stderr, "");
     const payload = JSON.parse(result.stdout) as { directQueryTypes: string[]; bridgeRequiredTypes: string[] };
-  assert.ok(payload.directQueryTypes.includes("postgres"));
-  assert.ok(payload.directQueryTypes.includes("rqlite"));
+    assert.ok(payload.directQueryTypes.includes("postgres"));
+    assert.ok(payload.directQueryTypes.includes("rqlite"));
     assert.ok(payload.bridgeRequiredTypes.includes("oracle"));
   } finally {
     await rm(bin.dir, { recursive: true, force: true });

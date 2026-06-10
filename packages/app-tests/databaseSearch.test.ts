@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import type { ColumnInfo } from "../../apps/desktop/src/types/database.ts";
 import { findMatchedSearchColumns, isNumericSearchColumn, isTextSearchColumn } from "../../apps/desktop/src/lib/databaseSearch.ts";
@@ -22,12 +22,7 @@ test("classifies searchable database search columns", () => {
 });
 
 test("finds matched columns from returned rows", () => {
-  const matches = findMatchedSearchColumns(
-    ["id", "email", "note"],
-    [42, "Alice@Example.com", "inactive"],
-    [col("id", "integer", true), col("email", "varchar"), col("note", "text")],
-    "alice",
-  );
+  const matches = findMatchedSearchColumns(["id", "email", "note"], [42, "Alice@Example.com", "inactive"], [col("id", "integer", true), col("email", "varchar"), col("note", "text")], "alice");
 
   assert.deepEqual(matches, ["email"]);
 });

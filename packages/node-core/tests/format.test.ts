@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { formatCell, mdTable } from "../src/format.js";
 
 test("formats markdown tables", () => {
@@ -9,6 +9,6 @@ test("formats markdown tables", () => {
 test("formats database cell values", () => {
   assert.equal(formatCell(null), "NULL");
   assert.equal(formatCell(undefined), "NULL");
-  assert.equal(formatCell({ ok: true }), "{\"ok\":true}");
+  assert.equal(formatCell({ ok: true }), '{"ok":true}');
   assert.equal(formatCell("hello"), "hello");
 });

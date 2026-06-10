@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { prunePinnedTreeNodeIdsForConnection } from "../../apps/desktop/src/lib/pinnedTreeNodeIds.ts";
 
@@ -9,4 +9,3 @@ test("prunePinnedTreeNodeIdsForConnection removes pinned ids for a deleted conne
 
   assert.deepEqual([...next], ["conn-10:db:main", "other"]);
 });
-

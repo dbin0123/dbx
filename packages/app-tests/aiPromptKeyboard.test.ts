@@ -1,9 +1,6 @@
 import { strict as assert } from "node:assert";
-import test from "node:test";
-import {
-  isAiPromptImeCompositionEvent,
-  shouldSubmitAiPromptOnKeydown,
-} from "../../apps/desktop/src/lib/aiPromptKeyboard.ts";
+import { test } from "vitest";
+import { isAiPromptImeCompositionEvent, shouldSubmitAiPromptOnKeydown } from "../../apps/desktop/src/lib/aiPromptKeyboard.ts";
 
 test("submits AI prompt on plain Enter", () => {
   assert.equal(shouldSubmitAiPromptOnKeydown({ key: "Enter" }), true);

@@ -1,14 +1,12 @@
 {
   "name": "@dbx-app/node-core",
-  "version": "0.4.6",
+  "version": "0.4.8",
   "description": "Shared Node.js database and DBX connection utilities for DBX CLI and MCP server",
-  "type": "module",
-  "engines": {
-    "node": ">=22.13.0"
-  },
+  "license": "Apache-2.0",
   "files": [
     "dist"
   ],
+  "type": "module",
   "exports": {
     ".": "./dist/index.js",
     "./backend": "./dist/backend.js",
@@ -23,11 +21,10 @@
     "./sql-safety": "./dist/sql-safety.js"
   },
   "scripts": {
-    "test": "tsx --test tests/*.test.ts",
+    "test": "vitest run --config vitest.config.ts",
     "build": "tsc",
     "prepublishOnly": "tsc"
   },
-  "license": "Apache-2.0",
   "dependencies": {
     "better-sqlite3": "^12.9.0",
     "keytar": "^7.9.0",
@@ -40,5 +37,8 @@
     "@types/pg": "^8.15.4",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=22.13.0"
   }
 }

@@ -8,9 +8,7 @@ function sortByLabel(nodes: readonly TreeNode[]): TreeNode[] {
 
 function sortRecursive(node: TreeNode, databaseType?: DatabaseType): TreeNode {
   const children = node.children ? sortSidebarTreeChildrenForParent(node, node.children, databaseType) : node.children;
-  const hiddenChildren = node.hiddenChildren
-    ? sortSidebarTreeChildrenForParent(node, node.hiddenChildren, databaseType)
-    : node.hiddenChildren;
+  const hiddenChildren = node.hiddenChildren ? sortSidebarTreeChildrenForParent(node, node.hiddenChildren, databaseType) : node.hiddenChildren;
   if (children === node.children && hiddenChildren === node.hiddenChildren) return node;
   return {
     ...node,
@@ -19,11 +17,7 @@ function sortRecursive(node: TreeNode, databaseType?: DatabaseType): TreeNode {
   };
 }
 
-export function sortSidebarTreeChildrenForParent(
-  parent: Pick<TreeNode, "type">,
-  children: readonly TreeNode[],
-  databaseType?: DatabaseType,
-): TreeNode[] {
+export function sortSidebarTreeChildrenForParent(parent: Pick<TreeNode, "type">, children: readonly TreeNode[], databaseType?: DatabaseType): TreeNode[] {
   const normalized = children.map((child) => sortRecursive(child, databaseType));
 
   if (parent.type === "mongo-db") {
@@ -31,24 +25,31 @@ export function sortSidebarTreeChildrenForParent(
   }
 
   if (parent.type === "connection") {
+    const savedSqlNodes = normalized.filter((child) => child.type === "saved-sql-root");
+    const userAdminNodes = normalized.filter((child) => child.type === "user-admin");
+    const regularChildren = normalized.filter((child) => child.type !== "user-admin" && child.type !== "saved-sql-root");
+    const withConnectionUtilityOrder = (children: TreeNode[]) => [...savedSqlNodes, ...children, ...userAdminNodes];
+
     if (databaseType === "mongodb" || databaseType === "elasticsearch") {
-      return sortByLabel(normalized);
+      return withConnectionUtilityOrder(sortByLabel(regularChildren));
     }
 
     if (databaseType === "duckdb") {
-      const schemas = sortByLabel(normalized.filter((child) => child.type === "schema"));
-      const databases = sortByLabel(normalized.filter((child) => child.type === "database"));
-      const rest = normalized.filter((child) => child.type !== "schema" && child.type !== "database");
-      return [...schemas, ...databases, ...rest];
+      const schemas = sortByLabel(regularChildren.filter((child) => child.type === "schema"));
+      const databases = sortByLabel(regularChildren.filter((child) => child.type === "database"));
+      const rest = regularChildren.filter((child) => child.type !== "schema" && child.type !== "database");
+      return withConnectionUtilityOrder([...schemas, ...databases, ...rest]);
     }
 
-    if (normalized.every((child) => child.type === "database")) {
-      return sortByLabel(normalized);
+    if (regularChildren.every((child) => child.type === "database")) {
+      return withConnectionUtilityOrder(sortByLabel(regularChildren));
     }
 
-    if (normalized.every((child) => child.type === "schema")) {
-      return sortByLabel(normalized);
+    if (regularChildren.every((child) => child.type === "schema")) {
+      return withConnectionUtilityOrder(sortByLabel(regularChildren));
     }
+
+    return withConnectionUtilityOrder(regularChildren);
   }
 
   if (parent.type === "database") {

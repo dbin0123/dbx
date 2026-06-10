@@ -1,11 +1,6 @@
 import { strict as assert } from "node:assert";
-import test from "node:test";
-import {
-  canTreeNodeExpand,
-  canTreeNodeShowExpander,
-  treeItemPaddingLeft,
-  usesFullWidthTreeLabel,
-} from "../../apps/desktop/src/lib/sidebarTreeItemLayout.ts";
+import { test } from "vitest";
+import { canTreeNodeExpand, canTreeNodeShowExpander, treeItemPaddingLeft, usesFullWidthTreeLabel } from "../../apps/desktop/src/lib/sidebarTreeItemLayout.ts";
 
 test("treeItemPaddingLeft converts tree depth to sidebar indentation", () => {
   assert.equal(treeItemPaddingLeft(0), "8px");
@@ -28,6 +23,7 @@ test("canTreeNodeExpand only returns true for expandable sidebar node types", ()
   assert.equal(canTreeNodeExpand("index"), false);
   assert.equal(canTreeNodeExpand("redis-db"), false);
   assert.equal(canTreeNodeExpand("mongo-collection"), false);
+  assert.equal(canTreeNodeExpand("user-admin"), false);
 });
 
 test("canTreeNodeShowExpander hides empty saved SQL containers", () => {

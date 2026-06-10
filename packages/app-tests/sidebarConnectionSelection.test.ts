@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { test } from "node:test";
+import { test } from "vitest";
 import { selectedConnectionDeleteTargets } from "../../apps/desktop/src/lib/sidebarConnectionSelection.ts";
 import type { TreeNode } from "../../apps/desktop/src/types/database.ts";
 

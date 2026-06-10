@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { createPinia, setActivePinia } from "pinia";
 import { useConnectionStore } from "../../apps/desktop/src/stores/connectionStore.ts";
@@ -83,4 +83,3 @@ test("removeConnection prunes pinned ids and persists the pruned set", async () 
     storage.restore();
   }
 });
-

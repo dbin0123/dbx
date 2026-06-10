@@ -29,20 +29,12 @@ export function usesDatabaseObjectTreeMode(dbType?: DatabaseType): boolean {
   return !!dbType && DATABASE_OBJECT_TREE_TYPES.has(dbType);
 }
 
-export function databaseObjectTreeQuerySchema(
-  dbType: DatabaseType | undefined,
-  database: string,
-  schema?: string,
-): string {
+export function databaseObjectTreeQuerySchema(dbType: DatabaseType | undefined, database: string, schema?: string): string {
   if (usesDatabaseObjectTreeMode(dbType)) return "";
   return schema || database;
 }
 
-export function databaseObjectTreeNodeSchema(
-  dbType: DatabaseType | undefined,
-  database: string,
-  schema?: string,
-): string | undefined {
+export function databaseObjectTreeNodeSchema(dbType: DatabaseType | undefined, database: string, schema?: string): string | undefined {
   if (usesDatabaseObjectTreeMode(dbType)) return undefined;
   if (schema) return schema;
   return isSchemaAware(dbType) ? database : undefined;
@@ -93,7 +85,7 @@ export function supportsDriverManagement(dbType?: DatabaseType): boolean {
 }
 
 export function supportsObjectBrowser(dbType?: DatabaseType): boolean {
-  return !!dbType && !["redis", "mongodb", "elasticsearch"].includes(dbType);
+  return !!dbType && !["redis", "mongodb", "elasticsearch", "etcd"].includes(dbType);
 }
 
 export function supportsObjectBrowserTreeNode(dbType: DatabaseType | undefined, nodeType: TreeNodeType): boolean {
@@ -104,7 +96,7 @@ export function supportsObjectBrowserTreeNode(dbType: DatabaseType | undefined, 
 }
 
 export function supportsTableTruncate(dbType?: DatabaseType): boolean {
-  return !!dbType && dbType !== "sqlite" && dbType !== "rqlite" && dbType !== "duckdb";
+  return !!dbType && dbType !== "sqlite" && dbType !== "rqlite" && dbType !== "turso" && dbType !== "duckdb" && dbType !== "influxdb";
 }
 
 export function usesPostgresLikeStructureCopy(dbType?: DatabaseType): boolean {
