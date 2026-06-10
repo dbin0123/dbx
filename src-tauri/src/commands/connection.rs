@@ -3,7 +3,7 @@ use tauri::State;
 
 pub use dbx_core::agent_connection::{
     agent_connect_params, mongo_legacy_error_with_auth_hint, oracle_alternate_connect_config,
-    oracle_auth_fallback_profiles, should_retry_oracle_with_10g_driver,
+    oracle_auth_fallback_profiles, oracle_error_with_driver_hint, should_retry_oracle_with_10g_driver,
 };
 pub use dbx_core::connection::{
     connect_bare_metadata_pool, connect_mysql_metadata_pool, connection_url_for_endpoint, metadata_connection_config,
@@ -85,7 +85,7 @@ async fn test_agent_connection(
                 ));
             }
         } else {
-            return Err(err);
+            return Err(oracle_error_with_driver_hint(config, &err));
         }
     }
 
@@ -142,7 +142,7 @@ async fn connect_agent_pool(
                 format!("{err}\n\nFallback with legacy Oracle drivers failed: {}", fallback_errors.join("\n"))
             })?;
         } else {
-            return Err(err);
+            return Err(oracle_error_with_driver_hint(config, &err));
         }
     }
 

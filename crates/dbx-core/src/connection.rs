@@ -8,7 +8,8 @@ use mysql_async::Row as MysqlRow;
 
 use crate::agent_connection::{
     agent_connect_params, h2_file_path_from_jdbc_url, is_h2_file_connection, mongo_legacy_error_with_auth_hint,
-    oracle_alternate_connect_config, oracle_auth_fallback_profiles, should_retry_oracle_with_10g_driver,
+    oracle_alternate_connect_config, oracle_auth_fallback_profiles, oracle_error_with_driver_hint,
+    should_retry_oracle_with_10g_driver,
 };
 use crate::agent_manager::{JavaRuntimeMode, DEFAULT_JRE_KEY};
 use crate::database_capabilities;
@@ -577,7 +578,7 @@ impl AppState {
                             )
                         })?;
                     } else {
-                        return Err(err);
+                        return Err(oracle_error_with_driver_hint(&db_config, &err));
                     }
                 }
                 PoolKind::Agent(Arc::new(tokio::sync::Mutex::new(client)))
