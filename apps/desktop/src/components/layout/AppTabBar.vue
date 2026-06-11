@@ -267,7 +267,7 @@ function activateTab(tabId: string) {
 
 <template>
   <div v-if="queryStore.tabs.length > 0 || showDriverStore" class="relative flex border-b shrink-0" :class="settingsStore.editorSettings.appLayout === 'classic' ? 'h-9 items-stretch bg-muted' : 'h-10 items-center bg-background px-2'">
-    <div class="relative h-full min-w-0 flex-1">
+    <div class="app-tab-strip relative h-full min-w-0 flex-1">
       <div v-if="showTabOverflowControls" class="app-tab-scrollbar" :class="{ 'app-tab-scrollbar--dragging': isScrollbarDragging }" @pointerdown="startScrollbarDrag">
         <div class="app-tab-scrollbar__thumb" :style="tabScrollbarThumbStyle" />
       </div>
@@ -401,7 +401,17 @@ function activateTab(tabId: string) {
   z-index: 20;
   height: 6px;
   cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
   touch-action: none;
+  transition: opacity 140ms ease;
+}
+
+.app-tab-strip:hover .app-tab-scrollbar,
+.app-tab-strip:focus-within .app-tab-scrollbar,
+.app-tab-scrollbar--dragging {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .app-tab-scrollbar::before {

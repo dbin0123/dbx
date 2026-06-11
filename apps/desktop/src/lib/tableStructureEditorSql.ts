@@ -30,6 +30,7 @@ export interface EditableStructureIndex {
   id: string;
   name: string;
   columns: string[];
+  nameEdited?: boolean;
   isUnique: boolean;
   isPrimary: boolean;
   filter: string;

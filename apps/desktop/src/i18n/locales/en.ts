@@ -317,6 +317,8 @@
     jdbcDriverClassPlaceholder: "Most drivers auto-register; use com.vendor.jdbc.Driver if needed",
     jdbcDriverPaths: "Driver JARs",
     jdbcDriverSelectPlaceholder: "Choose imported driver",
+    jdbcManualClasspath: "Manual classpath",
+    jdbcManualClasspathCount: "{count} paths",
     jdbcDriverPathsPlaceholder: "/path/to/driver.jar\n/path/to/another-driver.jar",
     jdbcDriverBrowse: "Choose JDBC driver JAR",
     jdbcDocs: "View JDBC docs",

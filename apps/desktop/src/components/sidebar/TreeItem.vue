@@ -2358,6 +2358,11 @@ function newConnectionInGroup() {
   connectionStore.startCreatingConnectionInGroup(props.node.id);
 }
 
+function newSubgroup() {
+  const groupId = connectionStore.createConnectionGroup(t("connectionGroup.newGroupDefault"), props.node.id);
+  connectionStore.selectedTreeNodeId = groupId;
+}
+
 function confirmDeleteGroup() {
   connectionStore.deleteConnectionGroup(props.node.id);
   showDeleteGroupConfirm.value = false;
@@ -2393,12 +2398,18 @@ const availableGroups = computed(() => connectionStore.sidebarLayout.groups);
 
 const currentGroupId = computed(() => {
   if (props.node.type !== "connection" || !props.node.connectionId) return null;
-  for (const entry of connectionStore.sidebarLayout.order) {
-    if (entry.type === "group" && entry.connectionIds.includes(props.node.connectionId)) {
-      return entry.id;
+  const find = (entries: typeof connectionStore.sidebarLayout.order): string | null => {
+    for (const entry of entries) {
+      if (entry.type !== "group") continue;
+      if ((entry.children ?? entry.connectionIds?.map((id) => ({ type: "connection" as const, id })) ?? []).some((child) => child.type === "connection" && child.id === props.node.connectionId)) {
+        return entry.id;
+      }
+      const found = find(entry.children ?? []);
+      if (found) return found;
     }
-  }
-  return null;
+    return null;
+  };
+  return find(connectionStore.sidebarLayout.order);
 });
 
 // --- Drag and Drop ---
@@ -2697,7 +2708,10 @@ function treeItemMenuItems(): ContextMenuItem[] {
 
   // 3. Connection Group
   if (node.type === "connection-group") {
+    items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
+    items.push({ label: "", separator: true });
     items.push({ label: t("toolbar.newConnection"), action: newConnectionInGroup, icon: Plus });
+    items.push({ label: t("connectionGroup.newGroup"), action: newSubgroup, icon: FolderPlus });
     items.push({ label: "", separator: true });
     items.push({
       label: t("connectionGroup.renameGroup"),
@@ -2718,6 +2732,8 @@ function treeItemMenuItems(): ContextMenuItem[] {
 
   // 4. Database / Schema
   if (node.type === "database" || node.type === "schema") {
+    items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
+    items.push({ label: "", separator: true });
     if (canOpenObjectBrowser.value) {
       items.push({ label: t("contextMenu.openObjectBrowser"), action: openObjectBrowser, icon: TableProperties });
     }

@@ -358,6 +358,7 @@ export function createIndexDrafts(indexes: IndexInfo[]): EditableStructureIndex[
     id: `existing:${index.name}`,
     name: index.name,
     columns: [...index.columns],
+    nameEdited: true,
     isUnique: index.is_unique,
     isPrimary: index.is_primary,
     filter: index.filter ?? "",
@@ -371,6 +372,48 @@ export function createIndexDrafts(indexes: IndexInfo[]): EditableStructureIndex[
 
 export function toColumnNames(columns: string[]): string {
   return columns.join(", ");
+}
+
+const AUTO_INDEX_NAME_MAX_LENGTH = 63;
+
+function normalizeIndexNamePart(value: string): string {
+  const trimmed = value.trim();
+  const unquoted = (trimmed.startsWith("[") && trimmed.endsWith("]")) || (trimmed.startsWith("`") && trimmed.endsWith("`")) || (trimmed.startsWith('"') && trimmed.endsWith('"')) ? trimmed.slice(1, -1) : trimmed;
+  return unquoted
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+}
+
+function truncateIndexName(value: string, maxLength = AUTO_INDEX_NAME_MAX_LENGTH): string {
+  if (value.length <= maxLength) return value;
+  const suffix = "_IDX";
+  if (!value.endsWith(suffix)) return value.slice(0, maxLength).replace(/_+$/g, "");
+  return `${value.slice(0, maxLength - suffix.length).replace(/_+$/g, "")}${suffix}`;
+}
+
+export function generateIndexName(tableName: string, columns: string[], maxLength = AUTO_INDEX_NAME_MAX_LENGTH): string {
+  const parts = [tableName, ...columns].map(normalizeIndexNamePart).filter(Boolean);
+  if (parts.length === 0) return "";
+  return truncateIndexName(`${parts.join("_")}_IDX`, maxLength);
+}
+
+export function generateUniqueIndexName(tableName: string, columns: string[], existingNames: Iterable<string>, maxLength = AUTO_INDEX_NAME_MAX_LENGTH): string {
+  const base = generateIndexName(tableName, columns, maxLength);
+  if (!base) return "";
+
+  const taken = new Set([...existingNames].map((name) => name.trim().toLowerCase()).filter(Boolean));
+  if (!taken.has(base.toLowerCase())) return base;
+
+  for (let counter = 2; counter < 10_000; counter++) {
+    const suffix = `_${counter}`;
+    const stem = base.length + suffix.length <= maxLength ? base : base.slice(0, maxLength - suffix.length).replace(/_+$/g, "");
+    const candidate = `${stem}${suffix}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  return base;
 }
 
 export function splitDataType(raw: string): { baseType: string; params: string } {

@@ -25,7 +25,7 @@ import { type EditableStructureColumn, type EditableStructureIndex } from "@/lib
 import { getTableMetadataCapabilities } from "@/lib/tableMetadataCapabilities";
 import { getTableStructureCapabilities } from "@/lib/tableStructureCapabilities";
 import { connectionObjectTreeQuerySchema, effectiveDatabaseTypeForConnection } from "@/lib/jdbcDialect";
-import { buildStructureTargetLabel, combineDataTypeForDatabase, createColumnDrafts, createIndexDrafts, getDataTypeOptions, getDefaultLengthForType, splitDataType, toColumnNames } from "@/lib/tableStructureEditorState";
+import { buildStructureTargetLabel, combineDataTypeForDatabase, createColumnDrafts, createIndexDrafts, generateIndexName, generateUniqueIndexName, getDataTypeOptions, getDefaultLengthForType, splitDataType, toColumnNames } from "@/lib/tableStructureEditorState";
 import type { ForeignKeyInfo, TriggerInfo } from "@/types/database";
 import * as api from "@/lib/api";
 
@@ -482,6 +482,7 @@ function addIndex() {
     id: `new:${uuid()}`,
     name: "",
     columns: [],
+    nameEdited: false,
     isUnique: false,
     isPrimary: false,
     filter: "",
@@ -500,6 +501,32 @@ function addIndex() {
   });
 }
 
+function structureIndexTableName(): string {
+  return (isCreateMode.value ? newTableName.value : props.tableName).trim();
+}
+
+function existingIndexNamesForDraft(index: EditableStructureIndex): string[] {
+  return indexes.value.filter((item) => item.id !== index.id && !item.markedForDrop).map((item) => item.name);
+}
+
+function generatedIndexNameForDraft(index: EditableStructureIndex, columnsForName = index.columns): string {
+  return generateUniqueIndexName(structureIndexTableName(), columnsForName, existingIndexNamesForDraft(index));
+}
+
+function refreshAutoIndexName(index: EditableStructureIndex, previousColumns = index.columns) {
+  if (index.original || index.nameEdited) return;
+  const previousName = generateIndexName(structureIndexTableName(), previousColumns);
+  const previousUniqueName = generateUniqueIndexName(structureIndexTableName(), previousColumns, existingIndexNamesForDraft(index));
+  const currentName = index.name.trim();
+  if (currentName && currentName !== previousName && currentName !== previousUniqueName) return;
+  index.name = generatedIndexNameForDraft(index);
+}
+
+function onIndexNameInput(index: EditableStructureIndex, value: string | number) {
+  index.name = String(value ?? "");
+  index.nameEdited = true;
+}
+
 const availableColumnNames = computed(() =>
   columns.value
     .filter((c) => !c.markedForDrop)
@@ -515,9 +542,11 @@ const filteredColumnNames = computed(() => {
 });
 
 function toggleIndexColumn(index: EditableStructureIndex, col: string) {
+  const previousColumns = [...index.columns];
   const i = index.columns.indexOf(col);
   if (i >= 0) index.columns.splice(i, 1);
   else index.columns.push(col);
+  refreshAutoIndexName(index, previousColumns);
 }
 
 function toggleIncludedColumn(index: EditableStructureIndex, col: string) {
@@ -698,6 +727,12 @@ watch(
   },
   { deep: true, immediate: true },
 );
+
+watch([() => props.tableName, newTableName], () => {
+  for (const index of indexes.value) {
+    refreshAutoIndexName(index);
+  }
+});
 
 watch(refreshVersion, (version, previous) => {
   if (version === previous || !version || isCreateMode.value) return;
@@ -1019,7 +1054,7 @@ watch(activeTab, (tab) => {
               <tbody>
                 <tr v-for="index in indexes" :key="index.id" :class="index.markedForDrop ? 'bg-destructive/5 opacity-60' : ''" :data-new-index-row="!index.original ? 'true' : undefined">
                   <td :class="structureCellClass">
-                    <Input v-model="index.name" :class="structureControlClass" :disabled="!canEditIndexDraft(index)" data-index-name-input />
+                    <Input :model-value="index.name" :class="structureControlClass" :disabled="!canEditIndexDraft(index)" data-index-name-input @update:model-value="(value: string | number) => onIndexNameInput(index, value)" />
                   </td>
                   <td :class="[structureCellClass, 'overflow-hidden']">
                     <DropdownMenu v-if="canEditIndexDraft(index)">

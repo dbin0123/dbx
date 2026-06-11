@@ -7757,7 +7757,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
 .data-grid-horizontal-scrollbar {
   position: absolute;
   inset-inline: calc(var(--row-num-w) + 8px) 10px;
-  bottom: 8px;
+  bottom: 2px;
   z-index: 30;
   height: 10px;
   cursor: pointer;
@@ -7771,7 +7771,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
   top: 4px;
   height: 2px;
   border-radius: 999px;
-  background: color-mix(in oklch, var(--foreground) 12%, transparent);
+  background: color-mix(in oklch, var(--foreground) 7%, transparent);
 }
 
 .data-grid-horizontal-scrollbar__thumb {
@@ -7780,7 +7780,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
   height: 4px;
   min-width: 24px;
   border-radius: 999px;
-  background: color-mix(in oklch, var(--foreground) 42%, transparent);
+  background: color-mix(in oklch, var(--foreground) 24%, transparent);
   transition:
     height 120ms ease,
     background-color 120ms ease,
@@ -7791,7 +7791,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
 .data-grid-horizontal-scrollbar--dragging .data-grid-horizontal-scrollbar__thumb {
   top: 2px;
   height: 6px;
-  background: color-mix(in oklch, var(--foreground) 62%, transparent);
+  background: color-mix(in oklch, var(--foreground) 42%, transparent);
 }
 
 .canvas-grid-surface {

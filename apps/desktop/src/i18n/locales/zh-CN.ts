@@ -318,6 +318,8 @@
     jdbcDriverClassPlaceholder: "多数驱动可自动识别；需要时填写 com.vendor.jdbc.Driver",
     jdbcDriverPaths: "驱动 JAR",
     jdbcDriverSelectPlaceholder: "选择已导入驱动",
+    jdbcManualClasspath: "手动 classpath",
+    jdbcManualClasspathCount: "{count} 个路径",
     jdbcDriverPathsPlaceholder: "/path/to/driver.jar\n/path/to/another-driver.jar",
     jdbcDriverBrowse: "选择 JDBC 驱动 JAR",
     jdbcDocs: "查看 JDBC 文档",
