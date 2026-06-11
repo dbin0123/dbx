@@ -22,7 +22,7 @@ import {
   parseMongoWriteCommand,
   type MongoAggregateSafetyOptions,
 } from "@/lib/mongoShellCommand";
-import { AGENT_DRIVER_TYPES } from "@/lib/databaseCapabilities";
+import { supportsDatabaseFeature } from "@/lib/databaseCapabilities";
 import { editablePrimaryKeys } from "@/lib/tableEditing";
 import { TABLE_DATA_EXPORT_PAGE_SIZE } from "@/lib/tableDataExport";
 import { tableMetaForDataTab } from "@/lib/tableDataTabMeta";
@@ -395,6 +395,69 @@ export const useQueryStore = defineStore("query", () => {
     const next = closeAllTabsState(tabs.value, activeTabId.value);
     tabs.value = next.tabs;
     activeTabId.value = next.activeTabId;
+  }
+
+  function duplicateTab(id: string) {
+    const idx = tabs.value.findIndex((t) => t.id === id);
+    if (idx < 0) return;
+    const original = tabs.value[idx];
+    const newId = uuid();
+    const newTab: QueryTab = {
+      id: newId,
+      title: original.title,
+      customTitle: original.customTitle,
+      connectionId: original.connectionId,
+      database: original.database,
+      schema: original.schema,
+      sql: original.sql,
+      savedSqlId: original.savedSqlId,
+      lastExecutedSql: undefined,
+      resultBaseSql: original.resultBaseSql,
+      resultSortedSql: undefined,
+      resultSortColumn: undefined,
+      resultSortColumnIndex: undefined,
+      resultSortDirection: undefined,
+      orderByInput: undefined,
+      resultPageSql: undefined,
+      resultPageLimit: undefined,
+      resultPageOffset: undefined,
+      resultCountSql: undefined,
+      resultTotalRowCount: undefined,
+      resultTotalRowCountLoading: undefined,
+      resultSessionId: undefined,
+      resultAccessedAt: undefined,
+      resultCacheKey: undefined,
+      resultCacheState: undefined,
+      pinned: false,
+      result: undefined,
+      results: undefined,
+      activeResultIndex: undefined,
+      explainPlan: undefined,
+      explainError: undefined,
+      explainSql: undefined,
+      lastExplainedSql: undefined,
+      isExecuting: false,
+      isCancelling: false,
+      queryExecutionStartedAt: undefined,
+      editorViewport: undefined,
+      editorSelection: undefined,
+      executionId: undefined,
+      isExplaining: false,
+      explainExecutionId: undefined,
+      mode: original.mode,
+      structureTableName: original.structureTableName,
+      objectBrowser: original.objectBrowser ? { ...original.objectBrowser } : undefined,
+      objectSource: original.objectSource ? { ...original.objectSource } : undefined,
+      tableMeta: original.tableMeta ? { ...original.tableMeta, columns: [...original.tableMeta.columns], primaryKeys: [...original.tableMeta.primaryKeys] } : undefined,
+      queryAnalysis: original.queryAnalysis ? { ...original.queryAnalysis, columns: original.queryAnalysis.columns.map((c) => ({ ...c })) } : undefined,
+      querySourceColumns: original.querySourceColumns ? [...original.querySourceColumns] : undefined,
+      queryEditabilityReason: original.queryEditabilityReason,
+      resultEvicted: undefined,
+      whereInput: original.whereInput,
+      previewSql: original.previewSql,
+    };
+    tabs.value.splice(idx + 1, 0, newTab);
+    activeTabId.value = newId;
   }
 
   function closeTabsWhere(predicate: (tab: QueryTab) => boolean) {
@@ -876,7 +939,7 @@ export const useQueryStore = defineStore("query", () => {
       await connStore.ensureConnected(tab.connectionId);
       const conn = connStore.getConfig(tab.connectionId);
       const effectiveDbType = effectiveDatabaseTypeForConnection(conn);
-      const useAgentCursor = !!conn?.db_type && AGENT_DRIVER_TYPES.has(conn.db_type);
+      const useAgentCursor = supportsDatabaseFeature(conn?.db_type, "driverManagement");
       const queryTimeoutSecs = queryTimeoutSecsForConnection(conn);
       const settingsStore = useSettingsStore();
       await previousResultSessionClose;
@@ -1473,7 +1536,7 @@ export const useQueryStore = defineStore("query", () => {
     const conn = connStore.getConfig(tab.connectionId);
     const effectiveDbType = effectiveDatabaseTypeForConnection(conn);
     const queryTimeoutSecs = queryTimeoutSecsForConnection(conn);
-    const useAgentCursor = !!conn?.db_type && AGENT_DRIVER_TYPES.has(conn.db_type);
+    const useAgentCursor = supportsDatabaseFeature(conn?.db_type, "driverManagement");
     const queryBaseSql = tab.resultBaseSql ?? sql;
     const pageLimit = Math.max(tab.resultPageLimit ?? 0, TABLE_DATA_EXPORT_PAGE_SIZE);
     const rows: QueryResult["rows"] = [];
@@ -1535,6 +1598,7 @@ export const useQueryStore = defineStore("query", () => {
     closeTab,
     closeOtherTabs,
     closeAllTabs,
+    duplicateTab,
     closeConnectionTabs,
     closeDatabaseTabs,
     releaseConnectionTabs,

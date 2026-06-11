@@ -30,6 +30,11 @@ type GridScrollerRef =
       scrollToPosition?: (position: number) => void;
     };
 
+export interface CustomSaveHandler {
+  save: (changes: { dirtyRows: Map<number, Map<number, CellValue>>; newRows: CellValue[][]; deletedRows: Set<number>; columns: string[]; rows: CellValue[][] }) => Promise<void>;
+  preview?: (changes: { dirtyRows: Map<number, Map<number, CellValue>>; newRows: CellValue[][]; deletedRows: Set<number>; columns: string[]; rows: CellValue[][] }) => Promise<string[]>;
+}
+
 export interface UseDataGridEditorOptions {
   result: ComputedRef<{ columns: string[]; rows: CellValue[][] }>;
   editable: ComputedRef<boolean | undefined>;
@@ -48,7 +53,7 @@ export interface UseDataGridEditorOptions {
   sourceColumns?: ComputedRef<Array<string | undefined> | undefined>;
   canEditExistingRows?: ComputedRef<boolean>;
   onExecuteSql: ComputedRef<((sql: string) => Promise<void>) | undefined>;
-  customSave?: ComputedRef<((changes: { dirtyRows: Map<number, Map<number, CellValue>>; newRows: CellValue[][]; deletedRows: Set<number>; columns: string[]; rows: CellValue[][] }) => Promise<void>) | undefined>;
+  customSaveHandler?: ComputedRef<CustomSaveHandler | undefined>;
   sql: ComputedRef<string | undefined>;
   searchText: Ref<string>;
   whereFilterInput: Ref<string>;
@@ -119,7 +124,7 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     sourceColumns = computed(() => undefined),
     canEditExistingRows = computed(() => true),
     onExecuteSql,
-    customSave,
+    customSaveHandler,
     sql,
     searchText,
     orderByInput,
@@ -174,7 +179,7 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
   const isSaving = ref(false);
   const saveError = ref("");
 
-  const useTransaction = computed(() => editable.value && supportsDataGridTransaction(databaseType.value) && (!!customSave?.value || (!!connectionId.value && !!database.value && !!tableMeta.value)));
+  const useTransaction = computed(() => editable.value && supportsDataGridTransaction(databaseType.value) && (!!customSaveHandler?.value || (!!connectionId.value && !!database.value && !!tableMeta.value)));
 
   if (hasPendingChanges.value && useTransaction.value) {
     transactionActive.value = true;
@@ -695,9 +700,9 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     isSaving.value = true;
     const shouldReloadAfterSave = newRows.value.length > 0 || deletedRows.value.size > 0;
 
-    if (customSave?.value) {
+    if (customSaveHandler?.value) {
       try {
-        await customSave.value({
+        await customSaveHandler.value.save({
           dirtyRows: dirtyRows.value,
           newRows: newRows.value,
           deletedRows: deletedRows.value,
@@ -896,8 +901,9 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     isPreviewLoading.value = true;
     previewStatements.value = [];
     try {
-      if (customSave?.value) {
-        // customSave doesn't expose SQL — return empty
+      if (customSaveHandler?.value) {
+        const preview = customSaveHandler.value.preview;
+        if (preview) return await preview({ dirtyRows: dirtyRows.value, newRows: newRows.value, deletedRows: deletedRows.value, columns: result.value.columns, rows: result.value.rows });
         return [];
       }
       const stmtOptions = saveStatementOptions();

@@ -2,7 +2,7 @@
 import { computed, ref, watch, nextTick } from "vue";
 import type { CSSProperties } from "vue";
 import { useI18n } from "vue-i18n";
-import { X, Pin, ChevronDown, Table2, Code2, TableProperties, PencilRuler, KeyRound, Pencil, Package, Check, Lock } from "@lucide/vue";
+import { X, Pin, ChevronDown, Table2, Code2, TableProperties, PencilRuler, KeyRound, Pencil, Package, Check, Lock, Copy } from "@lucide/vue";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import LightDropdown from "@/components/ui/LightDropdown.vue";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -81,6 +81,12 @@ function getTabMenuItems(tab: QueryTab): ContextMenuItem[] {
       label: t("contextMenu.renameTab"),
       action: () => startRenameTab(tab),
       icon: Pencil,
+      visible: canRenameTab(tab),
+    },
+    {
+      label: t("contextMenu.duplicateTab"),
+      action: () => queryStore.duplicateTab(tab.id),
+      icon: Copy,
       visible: canRenameTab(tab),
     },
     { label: "", separator: true },
@@ -179,7 +185,7 @@ function tabColorStyle(tab: QueryTab) {
 }
 
 function tabIconClass(tab: QueryTab) {
-  if (tab.mode === "data" || tab.mode === "objects" || tab.mode === "structure") return "text-emerald-600 dark:text-emerald-400";
+  if (tab.mode === "data" || tab.mode === "mongo" || tab.mode === "redis" || tab.mode === "objects" || tab.mode === "structure") return "text-emerald-600 dark:text-emerald-400";
   return "text-blue-600 dark:text-blue-400";
 }
 
@@ -196,7 +202,7 @@ const openTabMenuItems = computed(() =>
 );
 
 function tabMenuIcon(tab: QueryTab) {
-  if (tab.mode === "data") return Table2;
+  if (tab.mode === "data" || tab.mode === "mongo" || tab.mode === "redis") return Table2;
   if (tab.mode === "etcd") return KeyRound;
   if (tab.mode === "objects") return TableProperties;
   if (tab.mode === "structure") return PencilRuler;
@@ -288,7 +294,7 @@ function activateTab(tabId: string) {
                   @mouseleave="tabDrag.clearTarget(tab.id)"
                 >
                   <span class="shrink-0" :class="tabIconClass(tab)">
-                    <Table2 v-if="tab.mode === 'data'" class="h-3.5 w-3.5" />
+                    <Table2 v-if="tab.mode === 'data' || tab.mode === 'mongo' || tab.mode === 'redis'" class="h-3.5 w-3.5" />
                     <KeyRound v-else-if="tab.mode === 'etcd'" class="h-3.5 w-3.5" />
                     <TableProperties v-else-if="tab.mode === 'objects'" class="h-3.5 w-3.5" />
                     <PencilRuler v-else-if="tab.mode === 'structure'" class="h-3.5 w-3.5" />

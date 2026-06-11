@@ -65,7 +65,7 @@ export function buildRedisKeyTree(keys: RedisKeyInfo[], db: number, separator = 
 }
 
 function insertKeyIntoTree(root: RedisKeyTreeNode[], groupMap: Map<string, RedisKeyTreeGroupNode>, key: RedisKeyInfo, db: number, separator: string): void {
-  const pathSegments = key.key_display.split(separator);
+  const pathSegments = separator ? key.key_display.split(separator) : [key.key_display];
   if (pathSegments.length === 1) {
     root.push({
       kind: "leaf",

@@ -45,6 +45,7 @@ import { decodeSchemaTreeCache, encodeSchemaTreeCache } from "@/lib/schemaTreeCa
 import { sortSidebarTreeChildrenForParent } from "@/lib/sidebarNodeOrdering";
 import { prunePinnedTreeNodeIdsForConnection } from "@/lib/pinnedTreeNodeIds";
 import { supportsDatabaseUserAdmin } from "@/lib/databaseUserAdmin";
+import { getTableMetadataCapabilities } from "@/lib/tableMetadataCapabilities";
 import { useSettingsStore } from "@/stores/settingsStore";
 
 const PINNED_TREE_NODES_STORAGE_KEY = "dbx-pinned-tree-nodes";
@@ -521,16 +522,16 @@ export const useConnectionStore = defineStore("connection", () => {
     for (const key of Object.keys(elasticsearchCompletionIndicesCache.value)) {
       if (key === exactCacheKey || key.startsWith(cachePrefix)) delete elasticsearchCompletionIndicesCache.value[key];
     }
-    for (const key of [...completionTableIndex.keys()]) {
+    for (const key of completionTableIndex.keys()) {
       if (key.startsWith(cachePrefix)) completionTableIndex.delete(key);
     }
-    for (const key of [...completionObjectIndex.keys()]) {
+    for (const key of completionObjectIndex.keys()) {
       if (key.startsWith(cachePrefix)) completionObjectIndex.delete(key);
     }
-    for (const key of [...completionColumnIndex.keys()]) {
+    for (const key of completionColumnIndex.keys()) {
       if (key.startsWith(cachePrefix)) completionColumnIndex.delete(key);
     }
-    for (const key of [...completionInFlight.keys()]) {
+    for (const key of completionInFlight.keys()) {
       if (key.startsWith(cachePrefix)) completionInFlight.delete(key);
     }
   }
@@ -644,6 +645,8 @@ export const useConnectionStore = defineStore("connection", () => {
       await loadEtcdRoot(connectionId);
     } else if (config.db_type === "mongodb") {
       await loadMongoDatabases(connectionId);
+    } else if (config.db_type === "elasticsearch") {
+      await loadElasticsearchIndices(connectionId);
     } else {
       await loadDatabases(connectionId, { force: true });
     }
@@ -974,6 +977,38 @@ export const useConnectionStore = defineStore("connection", () => {
     }
   }
 
+  async function loadElasticsearchIndices(connectionId: string) {
+    const node = findNode(treeNodes.value, connectionId);
+    if (!node) return;
+
+    node.isLoading = true;
+    try {
+      await ensureConnected(connectionId);
+      const indices = await api.elasticsearchListIndices(connectionId);
+      setChildren(
+        node,
+        withSavedSqlRoot(
+          connectionId,
+          sortSidebarNames(indices).map((index) => ({
+            id: `${connectionId}:__es_index:${index}`,
+            label: index,
+            type: "elasticsearch-index" as const,
+            connectionId,
+            database: "default",
+            isExpanded: false,
+          })),
+          node,
+        ),
+      );
+      node.isExpanded = true;
+    } catch (e) {
+      recordMetadataLoadError(connectionId, e);
+      throw e;
+    } finally {
+      node.isLoading = false;
+    }
+  }
+
   async function loadMongoCollections(connectionId: string, database: string) {
     const nodeId = `${connectionId}:${database}`;
     const node = findNode(treeNodes.value, nodeId);
@@ -1203,9 +1238,10 @@ export const useConnectionStore = defineStore("connection", () => {
     ];
 
     const config = getConfig(connectionId);
-    if (node.type === "table" && config?.db_type !== "influxdb") {
-      children.push(
-        {
+    const metadataCapabilities = getTableMetadataCapabilities(effectiveDatabaseTypeForConnection(config));
+    if (node.type === "table") {
+      if (metadataCapabilities.indexes) {
+        children.push({
           id: `${parentId}:__indexes`,
           label: "tree.indexes",
           type: "group-indexes",
@@ -1215,8 +1251,10 @@ export const useConnectionStore = defineStore("connection", () => {
           tableName: table,
           isExpanded: false,
           children: [],
-        },
-        {
+        });
+      }
+      if (metadataCapabilities.foreignKeys) {
+        children.push({
           id: `${parentId}:__fkeys`,
           label: "tree.foreignKeys",
           type: "group-fkeys",
@@ -1226,8 +1264,10 @@ export const useConnectionStore = defineStore("connection", () => {
           tableName: table,
           isExpanded: false,
           children: [],
-        },
-        {
+        });
+      }
+      if (metadataCapabilities.triggers) {
+        children.push({
           id: `${parentId}:__triggers`,
           label: "tree.triggers",
           type: "group-triggers",
@@ -1237,8 +1277,8 @@ export const useConnectionStore = defineStore("connection", () => {
           tableName: table,
           isExpanded: false,
           children: [],
-        },
-      );
+        });
+      }
     }
 
     setChildren(node, children);
@@ -1283,6 +1323,12 @@ export const useConnectionStore = defineStore("connection", () => {
 
     node.isLoading = true;
     try {
+      const metadataCapabilities = getTableMetadataCapabilities(effectiveDatabaseTypeForConnection(getConfig(connectionId)));
+      if (!metadataCapabilities.indexes) {
+        setChildren(node, []);
+        node.isExpanded = true;
+        return;
+      }
       const querySchema = metadataQuerySchema(connectionId, database, schema);
       const indexes = await api.listIndexes(connectionId, database, querySchema, table);
       setChildren(
@@ -1314,6 +1360,12 @@ export const useConnectionStore = defineStore("connection", () => {
 
     node.isLoading = true;
     try {
+      const metadataCapabilities = getTableMetadataCapabilities(effectiveDatabaseTypeForConnection(getConfig(connectionId)));
+      if (!metadataCapabilities.foreignKeys) {
+        setChildren(node, []);
+        node.isExpanded = true;
+        return;
+      }
       const querySchema = metadataQuerySchema(connectionId, database, schema);
       const fkeys = await api.listForeignKeys(connectionId, database, querySchema, table);
       setChildren(
@@ -1345,6 +1397,12 @@ export const useConnectionStore = defineStore("connection", () => {
 
     node.isLoading = true;
     try {
+      const metadataCapabilities = getTableMetadataCapabilities(effectiveDatabaseTypeForConnection(getConfig(connectionId)));
+      if (!metadataCapabilities.triggers) {
+        setChildren(node, []);
+        node.isExpanded = true;
+        return;
+      }
       const querySchema = metadataQuerySchema(connectionId, database, schema);
       const triggers = await api.listTriggers(connectionId, database, querySchema, table);
       setChildren(
@@ -1384,8 +1442,10 @@ export const useConnectionStore = defineStore("connection", () => {
         await loadRedisDatabases(node.connectionId);
       } else if (config?.db_type === "etcd") {
         await loadEtcdRoot(node.connectionId);
-      } else if (config?.db_type === "mongodb" || config?.db_type === "elasticsearch") {
+      } else if (config?.db_type === "mongodb") {
         await loadMongoDatabases(node.connectionId);
+      } else if (config?.db_type === "elasticsearch") {
+        await loadElasticsearchIndices(node.connectionId);
       } else {
         await loadDatabases(node.connectionId, options);
       }
@@ -1676,7 +1736,7 @@ export const useConnectionStore = defineStore("connection", () => {
       return elasticsearchCompletionIndicesCache.value[cacheKey];
     }
     await ensureConnected(connectionId);
-    const indices = await api.mongoListCollections(connectionId, database);
+    const indices = await api.elasticsearchListIndices(connectionId);
     elasticsearchCompletionIndicesCache.value[cacheKey] = indices;
     evictOldestCacheEntries(elasticsearchCompletionIndicesCache.value, COMPLETION_CACHE_MAX);
     return elasticsearchCompletionIndicesCache.value[cacheKey];
@@ -2411,6 +2471,7 @@ export const useConnectionStore = defineStore("connection", () => {
     loadEtcdRoot,
     updateRedisDbKeyStats,
     loadMongoDatabases,
+    loadElasticsearchIndices,
     loadMongoCollections,
     loadSchemas,
     loadSqlServerDatabaseObjects,

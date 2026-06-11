@@ -104,7 +104,10 @@ const effectivePattern = computed(() => (searchMode.value === "key" ? redisKeySe
 const isSearchMode = computed(() => (searchMode.value === "key" ? effectivePattern.value !== "*" : valueQuery.value !== ""));
 const searchPlaceholder = computed(() => (searchMode.value === "key" ? (fuzzyKeySearch.value ? t("redis.fuzzyPattern") : t("redis.pattern")) : t("redis.valueSearchPlaceholder")));
 const loadingEmptyText = computed(() => (searchMode.value === "value" && valueQuery.value ? t("redis.searchingValues") : t("redis.loadingKeys")));
-const redisKeySeparator = computed(() => connectionStore.getConfig(props.connectionId)?.redis_key_separator || ":");
+const redisKeySeparator = computed(() => connectionStore.getConfig(props.connectionId)?.redis_key_separator ?? ":");
+watch(redisKeySeparator, () => {
+  if (flatKeys.value.length > 0) rebuildTree(false);
+});
 const lastTotalKeys = ref(0);
 const fetchAllProgressText = computed(() => {
   if (!isFetchingAll.value) return "";

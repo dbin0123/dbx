@@ -257,6 +257,7 @@ export const etcdDelete = forward("etcdDelete");
 // MongoDB
 export const mongoListDatabases = forward("mongoListDatabases");
 export const mongoListCollections = forward("mongoListCollections");
+export const documentFindDocuments = forward("documentFindDocuments");
 export const mongoFindDocuments = forward("mongoFindDocuments");
 export const mongoAggregateDocuments = forward("mongoAggregateDocuments");
 export const mongoInsertDocument = forward("mongoInsertDocument");
@@ -265,6 +266,9 @@ export const mongoUpdateDocument = forward("mongoUpdateDocument");
 export const mongoUpdateDocuments = forward("mongoUpdateDocuments");
 export const mongoDeleteDocument = forward("mongoDeleteDocument");
 export const mongoDeleteDocuments = forward("mongoDeleteDocuments");
+
+// Elasticsearch
+export const elasticsearchListIndices = forward("elasticsearchListIndices");
 
 // History
 export const saveHistory = forward("saveHistory");

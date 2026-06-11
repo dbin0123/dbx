@@ -114,6 +114,7 @@ export interface SshTunnelConfig {
   key_passphrase?: string;
   connect_timeout_secs?: number;
   expose_lan?: boolean;
+  use_ssh_agent?: boolean;
 }
 
 export interface ProxyTunnelConfig {
@@ -324,7 +325,8 @@ export type TreeNodeType =
   | "redis-db"
   | "etcd-root"
   | "mongo-db"
-  | "mongo-collection";
+  | "mongo-collection"
+  | "elasticsearch-index";
 
 export interface ConnectionGroup {
   id: string;
@@ -465,6 +467,8 @@ export interface SavedSqlFile {
   schema?: string;
   sql: string;
   orderIndex?: number;
+  openCount?: number;
+  openedAt?: string;
   createdAt: string;
   updatedAt: string;
 }

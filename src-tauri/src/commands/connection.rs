@@ -318,6 +318,7 @@ pub async fn test_connection(state: State<'_, Arc<AppState>>, config: Connection
                 drop(con);
                 Ok("Connection successful".to_string())
             }
+            #[cfg(feature = "duckdb-bundled")]
             DatabaseType::DuckDb => {
                 if state.duckdb_existing_pool_is_usable_for_config(&config).await? {
                     Ok("Connection successful".to_string())
@@ -327,6 +328,8 @@ pub async fn test_connection(state: State<'_, Arc<AppState>>, config: Connection
                     Ok("Connection successful".to_string())
                 }
             }
+            #[cfg(not(feature = "duckdb-bundled"))]
+            DatabaseType::DuckDb => Err("DuckDB support not compiled (enable duckdb-bundled feature)".to_string()),
             DatabaseType::MongoDb => {
                 let native_err = match db::mongo_driver::connect(&url, connect_timeout, idle_timeout).await {
                     Ok(client) => {
@@ -522,6 +525,7 @@ pub async fn connect_db(state: State<'_, Arc<AppState>>, config: ConnectionConfi
             };
             con
         }
+        #[cfg(feature = "duckdb-bundled")]
         DatabaseType::DuckDb => {
             let con = db::duckdb_driver::connect_path(&expand_tilde(&db_config.host))?;
             {
@@ -532,6 +536,8 @@ pub async fn connect_db(state: State<'_, Arc<AppState>>, config: ConnectionConfi
             }
             PoolKind::DuckDb(con)
         }
+        #[cfg(not(feature = "duckdb-bundled"))]
+        DatabaseType::DuckDb => return Err("DuckDB support not compiled (enable duckdb-bundled feature)".to_string()),
         DatabaseType::MongoDb => {
             let native_err = match db::mongo_driver::connect(&url, connect_timeout, idle_timeout).await {
                 Ok(client) => {

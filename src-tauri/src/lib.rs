@@ -394,6 +394,7 @@ pub fn run() {
             commands::query::build_search_result_where,
             commands::query::build_rename_object_sql,
             commands::query::build_create_database_sql,
+            #[cfg(feature = "duckdb-bundled")]
             commands::query::build_duckdb_attach_database_sql,
             commands::query::build_drop_object_sql,
             commands::query::build_drop_table_sql,
@@ -475,6 +476,7 @@ pub fn run() {
             commands::saved_sql::sync_saved_sql_directory,
             commands::mongo_cmd::mongo_list_databases,
             commands::mongo_cmd::mongo_list_collections,
+            commands::mongo_cmd::document_find_documents,
             commands::mongo_cmd::mongo_find_documents,
             commands::mongo_cmd::mongo_aggregate_documents,
             commands::mongo_cmd::mongo_insert_document,
