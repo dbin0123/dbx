@@ -40,6 +40,9 @@ export interface DesktopSettings {
   icon_theme: DesktopIconTheme;
   debug_logging_enabled: boolean;
   saved_sql_sync_dir?: string | null;
+  driver_store_dir?: string | null;
+  plugin_store_dir?: string | null;
+  agent_store_dir?: string | null;
 }
 
 export type DesktopIconTheme = "default" | "black";
@@ -49,6 +52,9 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   icon_theme: "default",
   debug_logging_enabled: false,
   saved_sql_sync_dir: null,
+  driver_store_dir: null,
+  plugin_store_dir: null,
+  agent_store_dir: null,
 };
 
 function normalizeDesktopSettings(settings: Partial<DesktopSettings> | null | undefined): DesktopSettings {
@@ -58,6 +64,9 @@ function normalizeDesktopSettings(settings: Partial<DesktopSettings> | null | un
     icon_theme: iconTheme,
     debug_logging_enabled: settings?.debug_logging_enabled ?? DEFAULT_DESKTOP_SETTINGS.debug_logging_enabled,
     saved_sql_sync_dir: settings?.saved_sql_sync_dir?.trim() || DEFAULT_DESKTOP_SETTINGS.saved_sql_sync_dir,
+    driver_store_dir: settings?.driver_store_dir?.trim() || DEFAULT_DESKTOP_SETTINGS.driver_store_dir,
+    plugin_store_dir: settings?.plugin_store_dir?.trim() || DEFAULT_DESKTOP_SETTINGS.plugin_store_dir,
+    agent_store_dir: settings?.agent_store_dir?.trim() || DEFAULT_DESKTOP_SETTINGS.agent_store_dir,
   };
 }
 

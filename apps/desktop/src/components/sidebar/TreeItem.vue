@@ -48,6 +48,7 @@ import {
   Clipboard,
   UsersRound,
   Lock,
+  HardDriveDownload,
 } from "@lucide/vue";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
@@ -62,6 +63,8 @@ import { uuid } from "@/lib/utils";
 import { resolveDefaultDatabase } from "@/lib/defaultDatabase";
 import { canTreeNodeShowExpander, treeItemPaddingLeft, usesFullWidthTreeLabel } from "@/lib/sidebarTreeItemLayout";
 import { buildTableSelectSql } from "@/lib/tableSelectSql";
+import { connectionFilePath, defaultSqliteBackupFileName, isMemorySqlitePath, sqliteBackupSourcePath } from "@/lib/connectionFile";
+import { revealPathInFileManager } from "@/lib/tauri";
 import { clearActiveTableReferencePayload, createTableReferencePayload, createTableReferenceDropEvent, setActiveTableReferencePayload, type QueryEditorTableReferencePayload } from "@/lib/queryEditorTableDrop";
 import { editablePrimaryKeys, usesSyntheticRowIdKey } from "@/lib/tableEditing";
 import { supportsDatabaseCreation, supportsDatabaseSearch, supportsFieldLineage, supportsObjectBrowserTreeNode, supportsSchemaDiagram, supportsSqlFileExecution, supportsTableImport, supportsTableTruncate, supportsTableStructureEditing, usesTreeSchemaMode } from "@/lib/databaseCapabilities";
@@ -245,6 +248,8 @@ function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
       return { icon: Package, colorClass: "text-cyan-500" };
     case "group-partitions":
       return { icon: node.isExpanded ? FolderOpen : FolderClosed, colorClass: "text-green-400" };
+    case "load-more":
+      return { icon: Plus, colorClass: "text-primary" };
     default:
       return { icon: Database, colorClass: "text-muted-foreground" };
   }
@@ -258,6 +263,7 @@ function isGroupLabel(node: TreeNode): boolean {
 }
 
 function displayLabel(node: TreeNode): string {
+  if (node.type === "load-more") return t(node.label);
   if (node.type === "object-browser") return t(node.label, { count: node.objectCount ?? 0 });
   if (node.type === "user-admin") return t(node.label);
   if (node.label === "tree.defaultDatabase") return t(node.label);
@@ -390,6 +396,10 @@ async function toggle() {
 
 function runRowClickAction() {
   const node = props.node;
+  if (node.type === "load-more") {
+    void loadMoreObjectGroupChildren();
+    return;
+  }
   if (node.type === "object-browser") {
     void openObjectBrowser();
     return;
@@ -401,6 +411,14 @@ function runRowClickAction() {
     void viewObjectSource();
   } else if (action === "toggle") {
     toggle();
+  }
+}
+
+async function loadMoreObjectGroupChildren() {
+  try {
+    await connectionStore.loadMoreObjectGroupChildren(props.node);
+  } catch (e: any) {
+    toast(t("connection.connectFailed", { message: translateBackendError(t, e?.message || String(e)) }), 5000);
   }
 }
 
@@ -2103,6 +2121,62 @@ function editConnection() {
   }
 }
 
+const revealConnectionFilePath = computed<string | null>(() => {
+  if (props.node.type !== "connection" || !props.node.connectionId) return null;
+  const config = connectionStore.getConfig(props.node.connectionId);
+  if (!config) return null;
+  return connectionFilePath(config);
+});
+
+async function revealDatabaseFile() {
+  const path = revealConnectionFilePath.value;
+  if (!path) return;
+  try {
+    await revealPathInFileManager(path);
+  } catch (e: any) {
+    const message = typeof e === "string" ? e : e?.message || String(e);
+    toast(message, 5000);
+  }
+}
+
+const sqliteBackupSource = computed<string | null>(() => {
+  if (props.node.type !== "connection" || !props.node.connectionId) return null;
+  const config = connectionStore.getConfig(props.node.connectionId);
+  if (!config) return null;
+  return sqliteBackupSourcePath(config);
+});
+
+const canBackupSqliteDatabase = computed(() => {
+  const source = sqliteBackupSource.value;
+  if (!source || !props.node.connectionId) return false;
+  return isTauriRuntime() && (!isMemorySqlitePath(source) || connectionStore.connectedIds.has(props.node.connectionId));
+});
+
+async function backupSqliteDatabase() {
+  const connId = props.node.connectionId;
+  const config = connId ? connectionStore.getConfig(connId) : undefined;
+  const sourcePath = sqliteBackupSource.value;
+  if (!connId || !config || !sourcePath) return;
+
+  try {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const destinationPath = await save({
+      defaultPath: defaultSqliteBackupFileName(config),
+      filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }],
+    });
+    if (!destinationPath) return;
+
+    toast(t("contextMenu.backupSqliteDatabaseInProgress"), 2000);
+    if (!isMemorySqlitePath(sourcePath)) {
+      await connectionStore.ensureConnected(connId);
+    }
+    await api.backupSqliteDatabase(connId, destinationPath);
+    toast(t("contextMenu.backupSqliteDatabaseSuccess"), 3000);
+  } catch (e: any) {
+    toast(t("contextMenu.backupSqliteDatabaseFailed", { message: e?.message || String(e) }), 5000);
+  }
+}
+
 async function disconnectConnection() {
   if (props.node.connectionId) {
     try {
@@ -2698,6 +2772,20 @@ function treeItemMenuItems(): ContextMenuItem[] {
       });
     }
     items.push({ label: t("contextMenu.editConnection"), action: editConnection, icon: Pencil });
+    if (revealConnectionFilePath.value) {
+      items.push({
+        label: t("contextMenu.revealDatabaseFile"),
+        action: revealDatabaseFile,
+        icon: FolderOpen,
+      });
+    }
+    if (canBackupSqliteDatabase.value) {
+      items.push({
+        label: t("contextMenu.backupSqliteDatabase"),
+        action: backupSqliteDatabase,
+        icon: HardDriveDownload,
+      });
+    }
     items.push({ label: t("contextMenu.duplicateConnection"), action: duplicateConnection, icon: CopyPlus });
     items.push({ label: "", separator: true });
     items.push({
@@ -3068,6 +3156,7 @@ function treeItemMenuItems(): ContextMenuItem[] {
           </template>
           <span v-else class="w-3.5 h-3.5 shrink-0" />
           <DatabaseIcon v-if="node.type === 'connection'" :db-type="connectionIconType(node.connectionId)" class="w-3.5 h-3.5 shrink-0" />
+          <Loader2 v-else-if="node.type === 'load-more' && node.isLoading" class="w-3.5 h-3.5 shrink-0 animate-spin text-primary" />
           <component v-else :is="getIconInfo(node)?.icon || Database" class="w-3.5 h-3.5 shrink-0" :class="nodeIconClass" />
           <input
             v-if="isRenamingGroup"
@@ -3382,12 +3471,22 @@ function treeItemMenuItems(): ContextMenuItem[] {
 .tree-item-highlight {
   background-color: rgb(253 225 167) !important;
   background-color: oklch(0.92 0.08 85) !important;
-  transition: background-color 0.8s ease-out 0.6s;
+  transition: background-color 0.28s ease-out;
 }
 
 :root.dark .tree-item-highlight {
   background-color: rgb(110 67 0) !important;
   background-color: oklch(0.42 0.12 80) !important;
-  transition: background-color 0.8s ease-out 0.6s;
+  transition: background-color 0.28s ease-out;
+}
+
+.tree-item-connection-tint.tree-item-highlight::before {
+  background-color: rgb(253 225 167) !important;
+  background-color: oklch(0.92 0.08 85) !important;
+}
+
+:root.dark .tree-item-connection-tint.tree-item-highlight::before {
+  background-color: rgb(110 67 0) !important;
+  background-color: oklch(0.42 0.12 80) !important;
 }
 </style>

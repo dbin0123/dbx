@@ -292,6 +292,10 @@ async fn list_databases_once(state: &AppState, connection_id: &str) -> Result<Ve
             drop(connections);
             return db::clickhouse_driver::list_databases(&client).await;
         }
+        if let Some(client) = extract_pool!(&connections, connection_id, InfluxDb) {
+            drop(connections);
+            return db::influxdb_driver::list_databases(&client).await;
+        }
         try_sqlserver!(connections, connection_id, list_databases);
         if let Some(client) = extract_pool!(&connections, connection_id, Agent) {
             let is_mongo =
@@ -315,7 +319,9 @@ async fn list_databases_once(state: &AppState, connection_id: &str) -> Result<Ve
 
     match pool {
         PoolKind::Mysql(p, _) if db_config.as_ref().is_some_and(is_doris_family_config) => {
-            db::mysql::list_databases_show(p).await
+            db::mysql::list_databases_show(p)
+                .await
+                .map(|databases| filter_mysql_system_databases_for_config(databases, db_config.as_ref()))
         }
         PoolKind::Mysql(p, mode) => dispatch_mysql!(p, mode, db::mysql::list_databases, db::ob_oracle::list_databases),
         PoolKind::Postgres(p) => db::postgres::list_databases(p).await,
@@ -416,9 +422,10 @@ pub async fn list_tables_core(
     schema: &str,
     filter: Option<&str>,
     limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<Vec<db::TableInfo>, String> {
     retry_metadata_connection(state, connection_id, Some(database), || {
-        list_tables_once(state, connection_id, database, schema, filter, limit)
+        list_tables_once(state, connection_id, database, schema, filter, limit, offset)
     })
     .await
 }
@@ -430,6 +437,7 @@ async fn list_tables_once(
     schema: &str,
     filter: Option<&str>,
     limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<Vec<db::TableInfo>, String> {
     let pool_key = state.get_or_create_pool(connection_id, Some(database)).await?;
     #[cfg(feature = "duckdb-bundled")]
@@ -447,7 +455,8 @@ async fn list_tables_once(
                 duckdb_query_tables(&con)
             })
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+            .map(|tables| filter_table_infos(tables, filter, limit, offset));
         }
         if let Some(PoolKind::ExternalDriver { config, session, .. }) = connections.get(&pool_key) {
             let config = config.clone();
@@ -458,34 +467,42 @@ async fn list_tables_once(
                     "listTables",
                     serde_json::json!({ "connection": config.as_ref(), "database": database, "schema": schema }),
                 )
-                .await;
+                .await
+                .map(|tables| filter_table_infos(tables, filter, limit, offset));
         }
         #[cfg(feature = "duckdb-bundled")]
         if let Some(con) = extract_pool!(&connections, &pool_key, DuckDb) {
             drop(connections);
             let con = con.lock().map_err(|e| e.to_string())?;
-            return duckdb_query_tables_in_database_with_attached(&con, database, schema, &duckdb_attached_names);
+            return duckdb_query_tables_in_database_with_attached(&con, database, schema, &duckdb_attached_names)
+                .map(|tables| filter_table_infos(tables, filter, limit, offset));
         }
         if let Some(client) = extract_pool!(&connections, &pool_key, ClickHouse) {
             drop(connections);
-            return db::clickhouse_driver::list_tables(&client, clickhouse_metadata_database(database, schema)).await;
+            return db::clickhouse_driver::list_tables(&client, clickhouse_metadata_database(database, schema))
+                .await
+                .map(|tables| filter_table_infos(tables, filter, limit, offset));
         }
-        try_sqlserver!(connections, &pool_key, list_tables, schema, filter, limit);
+        if let Some(client) = extract_pool!(&connections, &pool_key, InfluxDb) {
+            drop(connections);
+            return db::influxdb_driver::list_tables(&client, database)
+                .await
+                .map(|tables| filter_table_infos(tables, filter, limit, offset));
+        }
+        try_sqlserver!(connections, &pool_key, list_tables, schema, filter, limit, offset);
         if let Some(client) = extract_pool!(&connections, &pool_key, Agent) {
             let fallback_config = db_config.clone();
             drop(connections);
             let mut client = client.lock().await;
             match client.list_tables::<Vec<db::TableInfo>>(database, schema).await {
-                Ok(tables) if !tables.is_empty() => return Ok(filter_table_infos(tables, filter, limit)),
+                Ok(tables) if !tables.is_empty() => return Ok(filter_table_infos(tables, filter, limit, offset)),
                 Ok(tables) => {
                     if let Some(config) = fallback_config.as_ref() {
                         match native_postgres_metadata_pool(state, connection_id, database, config).await {
                             Ok(Some(pool)) => {
-                                return db::postgres::list_tables(&pool, schema)
-                                    .await
-                                    .map(|tables| filter_table_infos(tables, filter, limit));
+                                return db::postgres::list_tables_filtered(&pool, schema, filter, limit, offset).await;
                             }
-                            Ok(None) => return Ok(filter_table_infos(tables, filter, limit)),
+                            Ok(None) => return Ok(filter_table_infos(tables, filter, limit, offset)),
                             Err(error) => {
                                 log::warn!(
                                     "[schema][agent:list_tables:fallback-failed] connection_id={} database={} schema={} error={}",
@@ -497,16 +514,15 @@ async fn list_tables_once(
                             }
                         }
                     }
-                    return Ok(filter_table_infos(tables, filter, limit));
+                    return Ok(filter_table_infos(tables, filter, limit, offset));
                 }
                 Err(agent_error) => {
                     if let Some(config) = fallback_config.as_ref() {
                         if let Some(pool) =
                             native_postgres_metadata_pool(state, connection_id, database, config).await?
                         {
-                            return db::postgres::list_tables(&pool, schema)
+                            return db::postgres::list_tables_filtered(&pool, schema, filter, limit, offset)
                                 .await
-                                .map(|tables| filter_table_infos(tables, filter, limit))
                                 .map_err(|fallback_error| {
                                     format!(
                                         "{agent_error}\n\nNative PostgreSQL metadata fallback failed: {fallback_error}"
@@ -525,29 +541,29 @@ async fn list_tables_once(
 
     match pool {
         PoolKind::Mysql(p, _) if db_config.as_ref().is_some_and(is_doris_family_config) => {
-            db::mysql::list_tables_show(p, database).await.map(|tables| filter_table_infos(tables, filter, limit))
+            db::mysql::list_tables_show(p, database)
+                .await
+                .map(|tables| filter_table_infos(tables, filter, limit, offset))
         }
         PoolKind::Mysql(p, mode) => {
             dispatch_mysql!(p, mode, db::mysql::list_tables, db::ob_oracle::list_tables, schema)
-                .map(|tables| filter_table_infos(tables, filter, limit))
+                .map(|tables| filter_table_infos(tables, filter, limit, offset))
         }
-        PoolKind::Postgres(p) => {
-            db::postgres::list_tables(p, schema).await.map(|tables| filter_table_infos(tables, filter, limit))
-        }
+        PoolKind::Postgres(p) => db::postgres::list_tables_filtered(p, schema, filter, limit, offset).await,
         PoolKind::Sqlite(p) => {
-            db::sqlite::list_tables(p, schema).await.map(|tables| filter_table_infos(tables, filter, limit))
+            db::sqlite::list_tables(p, schema).await.map(|tables| filter_table_infos(tables, filter, limit, offset))
         }
-        PoolKind::Rqlite(client) => {
-            db::rqlite_driver::list_tables(client, schema).await.map(|tables| filter_table_infos(tables, filter, limit))
-        }
+        PoolKind::Rqlite(client) => db::rqlite_driver::list_tables(client, schema)
+            .await
+            .map(|tables| filter_table_infos(tables, filter, limit, offset)),
         PoolKind::MongoDb(client) => db::mongo_driver::list_collections(client, database)
             .await
             .map(|names| collection_names_to_tables(names, "COLLECTION"))
-            .map(|tables| filter_table_infos(tables, filter, limit)),
+            .map(|tables| filter_table_infos(tables, filter, limit, offset)),
         PoolKind::Elasticsearch(client) => db::elasticsearch_driver::list_indices(client)
             .await
             .map(|names| collection_names_to_tables(names, "INDEX"))
-            .map(|tables| filter_table_infos(tables, filter, limit)),
+            .map(|tables| filter_table_infos(tables, filter, limit, offset)),
         _ => Ok(vec![]),
     }
 }
@@ -565,19 +581,29 @@ fn collection_names_to_tables(names: Vec<String>, table_type: &str) -> Vec<db::T
         .collect()
 }
 
-fn filter_table_infos(tables: Vec<db::TableInfo>, filter: Option<&str>, limit: Option<usize>) -> Vec<db::TableInfo> {
+fn filter_table_infos(
+    tables: Vec<db::TableInfo>,
+    filter: Option<&str>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Vec<db::TableInfo> {
     let filter = filter.unwrap_or("").to_lowercase();
     let limit = limit.unwrap_or(usize::MAX);
+    let offset = offset.unwrap_or(0);
     tables
         .into_iter()
         .filter(|table| filter.is_empty() || table.name.to_lowercase().contains(&filter))
+        .skip(offset)
         .take(limit)
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{clickhouse_metadata_database, deduplicate_column_infos, is_agent_postgres_metadata_fallback_config};
+    use super::{
+        clickhouse_metadata_database, deduplicate_column_infos, filter_mysql_system_databases_for_config,
+        filter_table_infos, is_agent_postgres_metadata_fallback_config,
+    };
     #[cfg(feature = "duckdb-bundled")]
     use super::{duckdb_attach_database, duckdb_list_databases, duckdb_query_tables_in_database};
     use crate::models::connection::{ConnectionConfig, DatabaseType};
@@ -639,6 +665,64 @@ mod tests {
             one_time: false,
             read_only: false,
         }
+    }
+
+    fn test_table_info(name: &str) -> super::db::TableInfo {
+        super::db::TableInfo {
+            name: name.to_string(),
+            table_type: "BASE TABLE".to_string(),
+            comment: None,
+            parent_schema: None,
+            parent_name: None,
+        }
+    }
+
+    fn test_database_info(name: &str) -> super::db::DatabaseInfo {
+        super::db::DatabaseInfo { name: name.to_string() }
+    }
+
+    #[test]
+    fn manticoresearch_database_list_filters_mysql_system_databases() {
+        let databases = vec![
+            test_database_info("Manticore"),
+            test_database_info("information_schema"),
+            test_database_info("mysql"),
+            test_database_info("performance_schema"),
+            test_database_info("sys"),
+        ];
+        let config = test_connection_config(DatabaseType::ManticoreSearch);
+
+        let filtered = filter_mysql_system_databases_for_config(databases, Some(&config));
+
+        assert_eq!(filtered.into_iter().map(|database| database.name).collect::<Vec<_>>(), vec!["Manticore"]);
+    }
+
+    #[test]
+    fn doris_database_list_keeps_system_databases() {
+        let databases = vec![test_database_info("information_schema"), test_database_info("analytics")];
+        let config = test_connection_config(DatabaseType::Doris);
+
+        let filtered = filter_mysql_system_databases_for_config(databases, Some(&config));
+
+        assert_eq!(
+            filtered.into_iter().map(|database| database.name).collect::<Vec<_>>(),
+            vec!["information_schema", "analytics"]
+        );
+    }
+
+    #[test]
+    fn filter_table_infos_applies_filter_offset_and_limit() {
+        let tables = vec![
+            test_table_info("alpha"),
+            test_table_info("audit_log"),
+            test_table_info("audit_record"),
+            test_table_info("users"),
+        ];
+
+        let filtered = filter_table_infos(tables, Some("audit"), Some(1), Some(1));
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "audit_record");
     }
 
     #[cfg(feature = "duckdb-bundled")]
@@ -846,7 +930,7 @@ async fn list_objects_once(
         PoolKind::Postgres(p) => db::postgres::list_objects(p, schema).await,
         _ => {
             drop(connections);
-            Ok(list_tables_core(state, connection_id, database, schema, None, None)
+            Ok(list_tables_core(state, connection_id, database, schema, None, None, None)
                 .await?
                 .into_iter()
                 .map(|table| db::ObjectInfo {
@@ -1070,6 +1154,10 @@ pub async fn get_columns_core(
             return db::clickhouse_driver::get_columns(&client, clickhouse_metadata_database(database, schema), table)
                 .await
                 .map(deduplicate_column_infos);
+        }
+        if let Some(client) = extract_pool!(&connections, &pool_key, InfluxDb) {
+            drop(connections);
+            return db::influxdb_driver::get_columns(&client, database, table).await.map(deduplicate_column_infos);
         }
         try_sqlserver!(connections, &pool_key, get_columns, schema, table);
         if let Some(client) = extract_pool!(&connections, &pool_key, Agent) {
@@ -1416,8 +1504,28 @@ fn is_opengauss_family_config(config: &ConnectionConfig) -> bool {
 }
 
 fn is_doris_family_config(config: &ConnectionConfig) -> bool {
-    matches!(config.db_type, DatabaseType::Doris | DatabaseType::StarRocks)
-        || matches!(config.driver_profile.as_deref(), Some("doris" | "selectdb" | "starrocks"))
+    matches!(config.db_type, DatabaseType::Doris | DatabaseType::StarRocks | DatabaseType::ManticoreSearch)
+        || matches!(config.driver_profile.as_deref(), Some("doris" | "selectdb" | "starrocks" | "manticoresearch"))
+}
+
+fn is_manticoresearch_config(config: &ConnectionConfig) -> bool {
+    matches!(config.db_type, DatabaseType::ManticoreSearch)
+        || matches!(config.driver_profile.as_deref(), Some("manticoresearch"))
+}
+
+fn filter_mysql_system_databases_for_config(
+    databases: Vec<db::DatabaseInfo>,
+    config: Option<&ConnectionConfig>,
+) -> Vec<db::DatabaseInfo> {
+    if !config.is_some_and(is_manticoresearch_config) {
+        return databases;
+    }
+
+    databases.into_iter().filter(|database| !is_mysql_system_database(&database.name)).collect()
+}
+
+fn is_mysql_system_database(name: &str) -> bool {
+    matches!(name.to_ascii_lowercase().as_str(), "information_schema" | "mysql" | "performance_schema" | "sys")
 }
 
 fn sql_string(value: &str) -> String {

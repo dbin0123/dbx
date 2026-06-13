@@ -358,7 +358,7 @@ impl AppState {
                 .await?;
                 PoolKind::Mysql(pool, mode)
             }
-            DatabaseType::Doris | DatabaseType::StarRocks | DatabaseType::Databend => {
+            DatabaseType::Doris | DatabaseType::StarRocks | DatabaseType::ManticoreSearch | DatabaseType::Databend => {
                 let pool = if database.is_none() {
                     connect_bare_metadata_pool(&db_config, &host, port, connect_timeout, mysql_pool_max_connections)
                         .await?
@@ -1112,7 +1112,7 @@ fn default_plugin_dir() -> PathBuf {
     default_dbx_dir().join("plugins")
 }
 
-fn default_agent_dir() -> PathBuf {
+pub fn default_agent_dir() -> PathBuf {
     default_dbx_dir().join("agents")
 }
 
@@ -2286,7 +2286,8 @@ mod tests {
 
         let schemas = schema::list_schemas_core(&state, "kwdb-live", &database).await.unwrap();
         assert!(schemas.iter().any(|schema| schema == test_schema));
-        let tables = schema::list_tables_core(&state, "kwdb-live", &database, test_schema, None, None).await.unwrap();
+        let tables =
+            schema::list_tables_core(&state, "kwdb-live", &database, test_schema, None, None, None).await.unwrap();
         assert!(tables.iter().any(|table| table.name == "devices" && table.table_type == "BASE TABLE"));
         let columns = schema::get_columns_core(&state, "kwdb-live", &database, test_schema, "devices").await.unwrap();
         let id_column = columns.iter().find(|column| column.name == "id").expect("id column should be listed");

@@ -169,10 +169,17 @@ async fn execute_list_tables(
     let schema = tool_call.arguments.get("schema").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
     // Request one extra to detect whether more tables exist beyond the limit.
-    let tables =
-        crate::schema::list_tables_core(state, connection_id, database, &schema, None, Some(LIST_TABLES_LIMIT + 1))
-            .await
-            .map_err(|e| format!("Failed to list tables: {e}"))?;
+    let tables = crate::schema::list_tables_core(
+        state,
+        connection_id,
+        database,
+        &schema,
+        None,
+        Some(LIST_TABLES_LIMIT + 1),
+        None,
+    )
+    .await
+    .map_err(|e| format!("Failed to list tables: {e}"))?;
 
     let total = tables.len();
     let truncated = total > LIST_TABLES_LIMIT;

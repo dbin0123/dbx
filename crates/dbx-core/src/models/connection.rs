@@ -240,6 +240,8 @@ pub enum DatabaseType {
     Doris,
     #[serde(rename = "starrocks")]
     StarRocks,
+    #[serde(rename = "manticoresearch")]
+    ManticoreSearch,
     Databend,
     Redshift,
     Dameng,
@@ -593,12 +595,10 @@ impl ConnectionConfig {
     }
 
     pub fn needs_bare_mysql(&self) -> bool {
-        matches!(self.db_type, DatabaseType::Doris | DatabaseType::StarRocks)
-            || self
-                .driver_profile
-                .as_deref()
-                .map(|p| p.to_lowercase())
-                .is_some_and(|p| matches!(p.as_str(), "doris" | "starrocks" | "selectdb" | "oceanbase"))
+        matches!(self.db_type, DatabaseType::Doris | DatabaseType::StarRocks | DatabaseType::ManticoreSearch)
+            || self.driver_profile.as_deref().map(|p| p.to_lowercase()).is_some_and(|p| {
+                matches!(p.as_str(), "doris" | "starrocks" | "manticoresearch" | "selectdb" | "oceanbase")
+            })
     }
 
     pub fn canonicalized(&self) -> Self {
@@ -656,7 +656,11 @@ impl ConnectionConfig {
                 let fragment = self.redis_tls_insecure_fragment();
                 format!("{scheme}://{host}:{port}/{fragment}")
             }
-            DatabaseType::Mysql | DatabaseType::Doris | DatabaseType::StarRocks | DatabaseType::Databend => {
+            DatabaseType::Mysql
+            | DatabaseType::Doris
+            | DatabaseType::StarRocks
+            | DatabaseType::ManticoreSearch
+            | DatabaseType::Databend => {
                 let suffix = if params.is_empty() { String::new() } else { format!("?{params}") };
                 format!("mysql://{host}:{port}{db_part}{suffix}")
             }
@@ -777,7 +781,11 @@ impl ConnectionConfig {
                     format!("{scheme}://{username}:{password}@{host}:{port}/{fragment}")
                 }
             }
-            DatabaseType::Mysql | DatabaseType::Doris | DatabaseType::StarRocks | DatabaseType::Databend => {
+            DatabaseType::Mysql
+            | DatabaseType::Doris
+            | DatabaseType::StarRocks
+            | DatabaseType::ManticoreSearch
+            | DatabaseType::Databend => {
                 let suffix = if params.is_empty() { String::new() } else { format!("?{params}") };
                 format!("mysql://{}:{}@{host}:{port}{db_part}{suffix}", username, password)
             }
@@ -958,7 +966,7 @@ impl ConnectionConfig {
             DatabaseType::Mysql => {
                 normalize_mysql_url_params(value, self.mysql_uses_tls(), self.ca_cert_path.trim().is_empty())
             }
-            DatabaseType::Doris | DatabaseType::StarRocks | DatabaseType::Databend => {
+            DatabaseType::Doris | DatabaseType::StarRocks | DatabaseType::ManticoreSearch | DatabaseType::Databend => {
                 normalize_bare_mysql_url_params(value)
             }
             DatabaseType::Postgres | DatabaseType::Redshift => normalize_postgres_url_params(value, self.ssl),
@@ -1171,14 +1179,25 @@ fn rqlite_http_url(config: &ConnectionConfig, host: &str, port: u16) -> String {
 
 fn turso_http_url(config: &ConnectionConfig, host: &str, port: u16) -> String {
     let trimmed = host.trim();
-    if let Some(rest) = trimmed.strip_prefix("https://").or_else(|| trimmed.strip_prefix("libsql://")) {
+
+    // Handle libsql:// protocol (Turso native)
+    if let Some(rest) = trimmed.strip_prefix("libsql://") {
         return format!("https://{}", trim_http_host_port(rest, port));
     }
+
+    // Handle explicit https://
+    if let Some(rest) = trimmed.strip_prefix("https://") {
+        return format!("https://{}", trim_http_host_port(rest, port));
+    }
+
+    // Handle explicit http:// (respect ssl config)
     if let Some(rest) = trimmed.strip_prefix("http://") {
         let scheme = if config.ssl { "https" } else { "http" };
         return format!("{scheme}://{}", trim_http_host_port(rest, port));
     }
-    let scheme = if config.ssl { "https" } else { "http" };
+
+    // Default: bare hostname -> prefer HTTPS for Turso (default port 443)
+    let scheme = if port == 443 || config.ssl { "https" } else { "http" };
     format!("{scheme}://{}:{port}", bracket_ipv6(trimmed))
 }
 

@@ -13,6 +13,7 @@ export type DatabaseType =
   | "elasticsearch"
   | "doris"
   | "starrocks"
+  | "manticoresearch"
   | "databend"
   | "redshift"
   | "dameng"
@@ -375,6 +376,7 @@ export type TreeNodeType =
   | "saved-sql-root"
   | "saved-sql-folder"
   | "saved-sql-file"
+  | "load-more"
   | "column"
   | "index"
   | "fkey"
@@ -418,6 +420,11 @@ export interface TreeNode {
   savedSqlId?: string;
   savedSqlFolderId?: string;
   meta?: ColumnInfo | IndexInfo | ForeignKeyInfo | TriggerInfo;
+  loadMore?: {
+    parentId: string;
+    offset: number;
+    pageSize: number;
+  };
 }
 
 export interface QueryTab {

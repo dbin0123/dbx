@@ -111,6 +111,10 @@ export function matchesTarget(node: TreeNode, target: ActiveTabSidebarTarget): b
 export function findSidebarNodeForActiveTab(tab: QueryTab | undefined | null, flatNodes: readonly FlatTreeNode[]): FlatTreeNode | null {
   const target = activeTabSidebarTarget(tab);
   if (!target) return null;
+  return findSidebarNodeForTarget(target, flatNodes);
+}
+
+export function findSidebarNodeForTarget(target: ActiveTabSidebarTarget, flatNodes: readonly FlatTreeNode[]): FlatTreeNode | null {
   return flatNodes.find((item) => matchesTarget(item.node, target)) ?? null;
 }
 
@@ -136,6 +140,10 @@ export function scrollTopForSidebarNode(options: { index: number; currentScrollT
 export function findNodePathForActiveTab(tab: QueryTab | undefined | null, treeNodes: readonly TreeNode[]): TreeNode[] | null {
   const target = activeTabSidebarTarget(tab);
   if (!target) return null;
+  return findNodePathForTarget(target, treeNodes);
+}
+
+export function findNodePathForTarget(target: ActiveTabSidebarTarget, treeNodes: readonly TreeNode[]): TreeNode[] | null {
   return findPath(treeNodes, (node) => matchesTarget(node, target));
 }
 

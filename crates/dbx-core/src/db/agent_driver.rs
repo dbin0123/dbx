@@ -1143,6 +1143,40 @@ mod tests {
     }
 
     #[test]
+    fn agent_query_result_default_column_types_is_empty_vec() {
+        // Old agent JARs predate the column_types field. Rust tolerates the
+        // missing field via #[serde(default)] on db::QueryResult.column_types
+        // and consumers must see an empty vector rather than an error.
+        let json = serde_json::json!({
+            "columns": ["id", "name"],
+            "rows": [[1, "Ada"]],
+            "affected_rows": 0,
+            "execution_time_ms": 1
+        });
+        let result: crate::types::QueryResult = serde_json::from_value(json).expect("deserialize legacy agent result");
+        assert_eq!(result.columns, vec!["id".to_string(), "name".to_string()]);
+        assert!(result.column_types.is_empty(), "missing column_types must default to empty");
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn agent_query_result_passes_through_column_types_when_present() {
+        // New PostgresLike agents (HighGo / KingBase / Vastbase / openGauss /
+        // GaussDB) include column_types alongside columns so the desktop UI
+        // can detect geometry/geography columns and offer the map preview.
+        let json = serde_json::json!({
+            "columns": ["id", "geom"],
+            "column_types": ["int4", "geometry"],
+            "rows": [[1, "POINT(116.397 39.908)"]],
+            "affected_rows": 0,
+            "execution_time_ms": 5
+        });
+        let result: crate::types::QueryResult = serde_json::from_value(json).expect("deserialize agent result");
+        assert_eq!(result.column_types, vec!["int4".to_string(), "geometry".to_string()]);
+        assert_eq!(result.rows[0][1], serde_json::json!("POINT(116.397 39.908)"));
+    }
+
+    #[test]
     fn builds_mongo_agent_request_params() {
         assert_eq!(mongo_database_params("app"), serde_json::json!({ "database": "app" }));
         assert_eq!(

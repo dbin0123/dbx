@@ -2726,6 +2726,7 @@ where
         &request.source_schema,
         Some(table),
         Some(1),
+        None,
     )
     .await
     .unwrap_or_default()
@@ -2740,6 +2741,7 @@ where
         &request.target_schema,
         Some(table),
         Some(1),
+        None,
     )
     .await
     .map(|tables| !tables.is_empty())

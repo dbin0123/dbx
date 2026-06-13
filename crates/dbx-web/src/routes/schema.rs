@@ -15,6 +15,7 @@ pub struct SchemaQuery {
     pub table: Option<String>,
     pub filter: Option<String>,
     pub limit: Option<usize>,
+    pub offset: Option<usize>,
     pub object_type: Option<dbx_core::db::ObjectSourceKind>,
 }
 
@@ -48,6 +49,7 @@ pub async fn list_tables(
         schema,
         q.filter.as_deref(),
         q.limit,
+        q.offset,
     )
     .await
     .map_err(AppError)?;

@@ -51,6 +51,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 
 const PINNED_TREE_NODES_STORAGE_KEY = "dbx-pinned-tree-nodes";
 const ACTIVE_CONNECTION_STORAGE_KEY = "dbx-active-connection";
+const SIDEBAR_OBJECT_GROUP_PAGE_SIZE = 500;
 type ImportSource = "dbx" | "navicat" | "dbeaver" | "datagrip";
 
 // Temporary storage for DataGrip import payload (used to read Keychain passwords after import)
@@ -75,9 +76,9 @@ interface PersistedTreeChildrenLoadResult {
 
 type BeforeConnectHandler = (config: ConnectionConfig) => Promise<void>;
 
-function redisDbLabel(db: number, loadedKeyCount?: number, totalKeyCount?: number): string {
+function redisDbLabel(db: number, _loadedKeyCount?: number, totalKeyCount?: number): string {
   if (totalKeyCount == null) return `db${db}`;
-  return `db${db} (${loadedKeyCount ?? 0}/${totalKeyCount})`;
+  return `db${db} (${totalKeyCount})`;
 }
 
 export const useConnectionStore = defineStore("connection", () => {
@@ -240,6 +241,7 @@ export const useConnectionStore = defineStore("connection", () => {
       elasticsearch: "Elasticsearch",
       doris: "Doris",
       starrocks: "StarRocks",
+      manticoresearch: "Manticore Search",
       redshift: "Redshift",
       dameng: "DM (Dameng)",
       gaussdb: "GaussDB",
@@ -393,6 +395,75 @@ export const useConnectionStore = defineStore("connection", () => {
   function supportedSidebarObjectTypes(config?: ConnectionConfig): DatabaseObjectTreeKind[] {
     const dbType = effectiveDatabaseTypeForConnection(config);
     return sidebarObjectKindsForDatabase(dbType);
+  }
+
+  function objectGroupCacheKey(node: TreeNode): string {
+    return schemaCacheKey(node.connectionId || "", node.database || "", node.schema || "", node.type, "objects-v2");
+  }
+
+  function buildLoadMoreNode(parent: TreeNode, offset: number, pageSize: number): TreeNode {
+    return {
+      id: `${parent.id}:__load_more:${offset}`,
+      label: "tree.loadMore",
+      type: "load-more",
+      connectionId: parent.connectionId,
+      database: parent.database,
+      schema: parent.schema,
+      isLoading: false,
+      loadMore: {
+        parentId: parent.id,
+        offset,
+        pageSize,
+      },
+    };
+  }
+
+  function withoutLoadMoreNodes(children: TreeNode[] | undefined): TreeNode[] {
+    return (children || []).filter((child) => child.type !== "load-more");
+  }
+
+  function objectGroupChildrenFromObjects(options: { node: TreeNode; parentNodeId: string; effectiveSchema?: string; objectTypes: DatabaseObjectTreeKind[]; objects: ObjectInfo[] }): TreeNode[] {
+    const grouped = buildGroupedObjectTreeNodes({
+      nodeId: options.parentNodeId,
+      connectionId: options.node.connectionId || "",
+      database: options.node.database || "",
+      schema: options.effectiveSchema,
+      objects: options.objects.filter((object) => options.objectTypes.includes(normalizedObjectTreeKind(object.object_type))),
+    });
+    const refreshedGroup = grouped.find((group) => group.type === options.node.type);
+    return refreshedGroup?.children ?? [];
+  }
+
+  async function loadPagedTableGroupChildren(options: {
+    node: TreeNode;
+    parentNodeId: string;
+    querySchema: string;
+    effectiveSchema?: string;
+    objectTypes: DatabaseObjectTreeKind[];
+    offset: number;
+    pageSize: number;
+  }): Promise<{ children: TreeNode[]; objectCount: number; hasMore: boolean; nextOffset: number }> {
+    if (!options.node.connectionId || !options.node.database) {
+      return { children: [], objectCount: 0, hasMore: false, nextOffset: options.offset };
+    }
+    const fetchLimit = options.pageSize + 1;
+    const tables = await api.listTables(options.node.connectionId, options.node.database, options.querySchema, undefined, fetchLimit, options.offset);
+    const hasMore = tables.length > options.pageSize;
+    const pageTables = hasMore ? tables.slice(0, options.pageSize) : tables;
+    const objects = mergeTableInfosIntoObjects([], pageTables, options.effectiveSchema);
+    const visibleObjectCount = objects.filter((object) => options.objectTypes.includes(normalizedObjectTreeKind(object.object_type))).length;
+    return {
+      children: objectGroupChildrenFromObjects({
+        node: options.node,
+        parentNodeId: options.parentNodeId,
+        effectiveSchema: options.effectiveSchema,
+        objectTypes: options.objectTypes,
+        objects,
+      }),
+      objectCount: visibleObjectCount,
+      hasMore,
+      nextOffset: options.offset + pageTables.length,
+    };
   }
 
   function refreshStaleTreeNode(node: TreeNode) {
@@ -1190,7 +1261,7 @@ export const useConnectionStore = defineStore("connection", () => {
       const config = getConfig(node.connectionId);
       const querySchema = connectionObjectTreeQuerySchema(config, node.database, node.schema);
       const effectiveSchema = connectionObjectTreeNodeSchema(config, node.database, node.schema);
-      const cacheKey = schemaCacheKey(node.connectionId, node.database, node.schema || "", node.type, "objects-v1");
+      const cacheKey = objectGroupCacheKey(node);
       if (!options?.force) {
         const cached = await loadPersistedTreeChildren(node, cacheKey);
         if (cached.hit) {
@@ -1200,22 +1271,73 @@ export const useConnectionStore = defineStore("connection", () => {
       }
 
       const wantsOnlyTablesOrViews = objectTypes.every((objectType) => objectType === "TABLE" || objectType === "VIEW");
-      const objects = wantsOnlyTablesOrViews ? mergeTableInfosIntoObjects([], await api.listTables(node.connectionId, node.database, querySchema), effectiveSchema) : await api.listObjects(node.connectionId, node.database, querySchema, objectTypes);
-      const grouped = buildGroupedObjectTreeNodes({
-        nodeId: parentNodeId,
-        connectionId: node.connectionId,
-        database: node.database,
-        schema: effectiveSchema,
-        objects: objects.filter((object) => objectTypes.includes(normalizedObjectTreeKind(object.object_type))),
-      });
-      const refreshedGroup = grouped.find((group) => group.type === node.type);
-      const children = refreshedGroup?.children ?? [];
-      node.objectCount = refreshedGroup?.objectCount ?? children.length;
+      let children: TreeNode[];
+      if (wantsOnlyTablesOrViews) {
+        const page = await loadPagedTableGroupChildren({
+          node,
+          parentNodeId,
+          querySchema,
+          effectiveSchema,
+          objectTypes,
+          offset: 0,
+          pageSize: SIDEBAR_OBJECT_GROUP_PAGE_SIZE,
+        });
+        children = page.hasMore ? [...page.children, buildLoadMoreNode(node, page.nextOffset, SIDEBAR_OBJECT_GROUP_PAGE_SIZE)] : page.children;
+        node.objectCount = page.objectCount;
+      } else {
+        const objects = await api.listObjects(node.connectionId, node.database, querySchema, objectTypes);
+        children = objectGroupChildrenFromObjects({
+          node,
+          parentNodeId,
+          effectiveSchema,
+          objectTypes,
+          objects,
+        });
+        node.objectCount = children.length;
+      }
       setChildren(node, children);
       await savePersistedTreeChildren(cacheKey, children);
       node.isExpanded = true;
     } catch (e) {
       recordMetadataLoadError(node.connectionId, e);
+      throw e;
+    } finally {
+      node.isLoading = false;
+    }
+  }
+
+  async function loadMoreObjectGroupChildren(node: TreeNode) {
+    if (node.type !== "load-more" || !node.loadMore) return;
+    const parent = findNode(treeNodes.value, node.loadMore.parentId);
+    if (!parent?.connectionId || !hasTreeNodeDatabaseContext(parent)) return;
+    node.isLoading = true;
+    try {
+      await ensureConnected(parent.connectionId);
+      const objectTypes = objectTypesForGroupNode(parent.type);
+      const parentNodeId = objectGroupRefreshParentId(parent);
+      if (!objectTypes || !parentNodeId) return;
+      if (!objectTypes.every((objectType) => objectType === "TABLE" || objectType === "VIEW")) return;
+
+      const config = getConfig(parent.connectionId);
+      const querySchema = connectionObjectTreeQuerySchema(config, parent.database, parent.schema);
+      const effectiveSchema = connectionObjectTreeNodeSchema(config, parent.database, parent.schema);
+      const page = await loadPagedTableGroupChildren({
+        node: parent,
+        parentNodeId,
+        querySchema,
+        effectiveSchema,
+        objectTypes,
+        offset: node.loadMore.offset,
+        pageSize: node.loadMore.pageSize,
+      });
+      const currentChildren = withoutLoadMoreNodes(parent.children);
+      const nextChildren = page.hasMore ? [...currentChildren, ...page.children, buildLoadMoreNode(parent, page.nextOffset, node.loadMore.pageSize)] : [...currentChildren, ...page.children];
+      parent.objectCount = (parent.objectCount ?? currentChildren.length) + page.objectCount;
+      setChildren(parent, nextChildren);
+      await savePersistedTreeChildren(objectGroupCacheKey(parent), nextChildren);
+      parent.isExpanded = true;
+    } catch (e) {
+      recordMetadataLoadError(parent.connectionId, e);
       throw e;
     } finally {
       node.isLoading = false;
@@ -2575,6 +2697,7 @@ export const useConnectionStore = defineStore("connection", () => {
     loadSqlServerDatabaseObjects,
     loadTables,
     loadObjectGroupChildren,
+    loadMoreObjectGroupChildren,
     loadTableGroups,
     loadColumns,
     loadIndexes,

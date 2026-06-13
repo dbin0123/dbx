@@ -23,6 +23,7 @@ import { applyParsedConnectionUrl, normalizeMongoConnectionString, parseConnecti
 import type { ConnectionDeepLinkDraft } from "@/lib/connectionDeepLink";
 import { connectionUrlPlaceholder as getUrlPlaceholder } from "@/lib/connectionPresentation";
 import { h2ConnectionModeForConfig, h2FileJdbcUrl, h2FilePathFromJdbcUrl, type H2ConnectionMode } from "@/lib/h2Connection";
+import { isLocalFileTypeDb } from "@/lib/connectionFile";
 import { mongodbAuthFailureHint, mongoUrlParam, setMongoUrlParam } from "@/lib/mongoConnectionOptions";
 import { copyToClipboard } from "@/lib/clipboard";
 import { showAgentDriverInstallHint, type AgentDriverInstallState } from "@/lib/agentDriverInstallHint";
@@ -419,6 +420,14 @@ const driverProfiles: Record<
     icon: "starrocks",
     urlParams: "",
   },
+  manticoresearch: {
+    type: "manticoresearch",
+    port: 9306,
+    user: "root",
+    label: "Manticore Search",
+    icon: "manticoresearch",
+    urlParams: "",
+  },
   redshift: { type: "redshift", port: 5439, user: "awsuser", label: "Redshift", icon: "redshift" },
   cockroachdb: {
     type: "postgres",
@@ -733,6 +742,7 @@ const iconTypeMap: Record<string, string> = {
   doris: "doris",
   selectdb: "selectdb",
   starrocks: "starrocks",
+  manticoresearch: "manticoresearch",
   redshift: "redshift",
   cockroachdb: "cockroachdb",
   tdengine: "tdengine",
@@ -818,6 +828,9 @@ const dbOptions: DbOption[] = [
   { value: "influxdb", label: "InfluxDB" },
   { value: "iris", label: "IRIS" },
   { value: "jdbc", label: "JDBC" },
+  { value: "manticoresearch", label: "Manticore Search" },
+  { value: "custom_mysql", label: "Custom (MySQL)" },
+  { value: "custom_postgres", label: "Custom (PostgreSQL)" },
 ];
 
 const dbCategories = computed<DbCategory[]>(() => [{ key: "all", title: "", options: dbOptions }]);
@@ -847,7 +860,7 @@ const hasDbPickerResults = computed(() => filteredDbCategories.value.some((categ
 const selectedDbIcon = computed(() => iconTypeMap[selectedType.value] || selectedProfile().icon || selectedType.value);
 const isJdbcConnection = computed(() => form.value.db_type === "jdbc");
 const isH2FileMode = computed(() => form.value.db_type === "h2" && h2ConnectionMode.value === "file");
-const usesLocalFilePathInput = computed(() => form.value.db_type === "sqlite" || form.value.db_type === "duckdb" || form.value.db_type === "access" || isH2FileMode.value);
+const usesLocalFilePathInput = computed(() => isLocalFileTypeDb(form.value.db_type) && (form.value.db_type !== "h2" || isH2FileMode.value));
 
 const connectionUrlPlaceholder = computed(() => getUrlPlaceholder(form.value.db_type));
 const filePathPlaceholder = computed(() => {
@@ -866,6 +879,7 @@ const sqliteExtensionPaths = computed({
 const tlsCapableDatabaseTypes = new Set<DatabaseType>(["mysql", "postgres", "redshift", "gaussdb", "kwdb", "opengauss", "redis", "etcd", "clickhouse", "elasticsearch", "influxdb"]);
 const supportsTlsToggle = computed(() => tlsCapableDatabaseTypes.has(form.value.db_type));
 const supportsCaCertificatePath = computed(() => form.value.db_type === "clickhouse");
+const supportsGenericUrlParams = computed(() => form.value.db_type !== "manticoresearch");
 const bareMysqlProfiles = new Set(["doris", "starrocks", "selectdb", "oceanbase"]);
 const supportsMysqlTlsOptions = computed(() => form.value.db_type === "mysql" && !bareMysqlProfiles.has(selectedType.value));
 const mysqlTlsMode = computed({
@@ -1071,6 +1085,9 @@ function connectionConfigForSubmit(id: string): ConnectionConfig {
   config.query_timeout_secs = Number.isFinite(queryTimeout) && queryTimeout >= 0 ? queryTimeout : 30;
   const idleTimeout = Number(config.idle_timeout_secs);
   config.idle_timeout_secs = Number.isFinite(idleTimeout) && idleTimeout >= 0 ? idleTimeout : 60;
+  if (config.db_type === "manticoresearch") {
+    config.url_params = "";
+  }
   if (!config.one_time) config.one_time = undefined;
   if (!config.read_only) config.read_only = undefined;
   if (config.db_type === "mongodb" && !mongoUseUrl.value) {
@@ -2542,6 +2559,34 @@ function openExternalUrl(url: string) {
                   </template>
                 </template>
 
+                <!-- Turso: simplified form (URL + Token) -->
+                <template v-else-if="form.db_type === 'turso'">
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.host") }}</Label>
+                    <Input v-model="form.host" class="col-span-3" placeholder="your-database.turso.io 或 libsql://your-database.turso.io" />
+                  </div>
+
+                  <div class="grid grid-cols-4 items-start gap-4">
+                    <span />
+                    <p class="col-span-3 text-xs text-muted-foreground">支持 libsql:// 或 https:// 协议，也可以只填主机名（自动使用 HTTPS）</p>
+                  </div>
+
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">Auth Token</Label>
+                    <Input v-model="form.password" type="password" class="col-span-3" placeholder="eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." />
+                  </div>
+
+                  <div class="grid grid-cols-4 items-start gap-4">
+                    <span />
+                    <p class="col-span-3 text-xs text-muted-foreground">使用 <code class="px-1 py-0.5 rounded bg-muted text-xs">turso db tokens create &lt;database-name&gt;</code> 创建 token</p>
+                  </div>
+
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.urlParams") }}</Label>
+                    <Input v-model="form.url_params" class="col-span-3" placeholder="authToken=xxx（可选，优先使用上面的 Token 字段）" />
+                  </div>
+                </template>
+
                 <!-- MySQL / PostgreSQL: host, port, user, password, database -->
                 <template v-else>
                   <div class="grid grid-cols-4 items-center gap-4">
@@ -2605,7 +2650,7 @@ function openExternalUrl(url: string) {
                     </label>
                   </div>
 
-                  <div class="grid grid-cols-4 items-center gap-4">
+                  <div v-if="supportsGenericUrlParams" class="grid grid-cols-4 items-center gap-4">
                     <Label class="text-right">{{ t("connection.urlParams") }}</Label>
                     <Input
                       v-model="form.url_params"

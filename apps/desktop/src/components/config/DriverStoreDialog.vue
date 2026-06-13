@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Activity, ExternalLink, Cpu, FolderOpen, MemoryStick, Search, Square, Trash2, Download, RotateCcw, Loader2, RefreshCw, Check, Clock3, FileUp } from "@lucide/vue";
+import { Activity, ExternalLink, Cpu, FolderOpen, FolderSync, MemoryStick, Search, Square, Trash2, Download, RotateCcw, Loader2, RefreshCw, Check, Clock3, FileUp } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DriverInstallProgressCircle from "@/components/config/DriverInstallProgressCircle.vue";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
@@ -37,6 +38,108 @@ const emit = defineEmits<{
 }>();
 
 const driverStoreTab = ref("agent");
+
+// ──────────── Driver store path ────────────
+
+import { useSettingsStore } from "@/stores/settingsStore";
+import type { DriverStorePathInfo } from "@/lib/api";
+const settingsStore = useSettingsStore();
+
+type DriverStoreDirKind = "plugin" | "agent";
+
+const legacyDriverStoreDir = computed(() => settingsStore.desktopSettings.driver_store_dir ?? null);
+const pluginStoreDir = computed(() => settingsStore.desktopSettings.plugin_store_dir ?? null);
+const agentStoreDir = computed(() => settingsStore.desktopSettings.agent_store_dir ?? null);
+const driverStoreDirMigrating = ref<DriverStoreDirKind | null>(null);
+const currentDriverStorePath = ref<DriverStorePathInfo | null>(null);
+
+async function loadDriverStorePath() {
+  if (isWeb) return;
+  try {
+    currentDriverStorePath.value = await api.getDriverStorePath();
+  } catch {
+    currentDriverStorePath.value = null;
+  }
+}
+
+function configuredDriverStoreDir(kind: DriverStoreDirKind): string | null {
+  if (kind === "plugin") {
+    return pluginStoreDir.value ?? (legacyDriverStoreDir.value ? `${legacyDriverStoreDir.value}/plugins` : null);
+  }
+  return agentStoreDir.value ?? (legacyDriverStoreDir.value ? `${legacyDriverStoreDir.value}/agents` : null);
+}
+
+function actualDriverStoreDir(kind: DriverStoreDirKind): string | null {
+  if (!currentDriverStorePath.value) return null;
+  return kind === "plugin" ? currentDriverStorePath.value.plugins_dir : currentDriverStorePath.value.agents_dir;
+}
+
+function driverStoreDirDisplay(kind: DriverStoreDirKind): string {
+  return actualDriverStoreDir(kind) ?? configuredDriverStoreDir(kind) ?? t("driverStore.driverStoreDirDefault");
+}
+
+function driverStoreTargetLabel(kind: DriverStoreDirKind): string {
+  return kind === "plugin" ? t("driverStore.pluginStoreDir") : t("driverStore.agentStoreDir");
+}
+
+const driverStorePathRows = computed(() => [
+  {
+    kind: "plugin" as const,
+    label: t("driverStore.pluginStoreDir"),
+    description: t("driverStore.pluginStoreDirDescription"),
+    display: driverStoreDirDisplay("plugin"),
+    custom: Boolean(pluginStoreDir.value || legacyDriverStoreDir.value),
+  },
+  {
+    kind: "agent" as const,
+    label: t("driverStore.agentStoreDir"),
+    description: t("driverStore.agentStoreDirDescription"),
+    display: driverStoreDirDisplay("agent"),
+    custom: Boolean(agentStoreDir.value || legacyDriverStoreDir.value),
+  },
+]);
+
+async function chooseDriverStoreDir(kind: DriverStoreDirKind) {
+  if (isWeb || driverStoreDirMigrating.value) return;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({
+    title: t("driverStore.driverStoreDirDialogTitle", { target: driverStoreTargetLabel(kind) }),
+    directory: true,
+    multiple: false,
+  });
+  if (typeof selected === "string") {
+    await applyDriverStoreDir(kind, selected);
+  }
+}
+
+async function resetDriverStoreDir(kind: DriverStoreDirKind) {
+  if (driverStoreDirMigrating.value) return;
+  await applyDriverStoreDir(kind, null);
+}
+
+async function applyDriverStoreDir(kind: DriverStoreDirKind, newDir: string | null) {
+  if (driverStoreDirMigrating.value) return;
+
+  const target = driverStoreTargetLabel(kind);
+  const confirmed = window.confirm(t("driverStore.driverStoreDirConfirm", { target }));
+  if (!confirmed) return;
+
+  driverStoreDirMigrating.value = kind;
+  try {
+    const result = kind === "plugin" ? await api.setPluginStoreDir(newDir) : await api.setAgentStoreDir(newDir);
+    settingsStore.desktopSettings.driver_store_dir = result.driver_store_dir;
+    settingsStore.desktopSettings.plugin_store_dir = result.plugin_store_dir;
+    settingsStore.desktopSettings.agent_store_dir = result.agent_store_dir;
+    toast(t("driverStore.driverStoreDirSuccess", { target }));
+    // Restart the app to use the new paths
+    const { relaunch } = await import("@tauri-apps/plugin-process");
+    relaunch();
+  } catch (e: any) {
+    toast(t("driverStore.driverStoreDirMigrationFailed", { error: e?.message || String(e) }), 5000);
+  } finally {
+    driverStoreDirMigrating.value = null;
+  }
+}
 
 // ──────────── Agent drivers ────────────
 
@@ -585,7 +688,7 @@ function startDriverRuntimePolling() {
   if (runtimeTimer) return;
   void loadDriverRuntimeSummary(true);
   runtimeTimer = setInterval(() => {
-    if (driverStoreTab.value !== "runtime") {
+    if (driverStoreTab.value !== "storage") {
       stopDriverRuntimePolling();
       return;
     }
@@ -817,6 +920,7 @@ onMounted(async () => {
   updateAgentDrivers(await api.listInstalledAgentsLocal());
   void loadJavaRuntimeConfig();
   void loadDriverStoreUsage();
+  void loadDriverStorePath();
 
   if (props.updateNotificationsEnabled) {
     api.listInstalledAgents().then((result) => {
@@ -846,7 +950,7 @@ onUnmounted(() => {
 });
 
 watch(driverStoreTab, (tab) => {
-  if (tab === "runtime") {
+  if (tab === "storage") {
     startDriverRuntimePolling();
   } else {
     stopDriverRuntimePolling();
@@ -859,32 +963,6 @@ watch(driverStoreTab, (tab) => {
     <div class="flex-1 min-h-0 overflow-y-auto">
       <div class="max-w-4xl mx-auto px-6 py-6">
         <Tabs v-model="driverStoreTab" default-value="agent">
-          <div class="mb-5 rounded-xl border bg-muted/20 p-4">
-            <div class="flex items-center justify-between gap-3">
-              <div class="text-sm font-medium">{{ t("driverStore.usageTitle") }}</div>
-              <div class="text-xs text-muted-foreground">
-                {{ usageSummary.length ? t("driverStore.usageTotal", { size: formatBytes(usageSummary[0].bytes) }) : t("driverStore.calculating") }}
-              </div>
-            </div>
-            <div v-if="usageSummary.length" class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
-              <div v-for="item in usageSummary" :key="item.key" class="rounded-lg border bg-background/50 px-2.5 py-2 text-center">
-                <div class="text-[11px] text-muted-foreground">{{ item.label }}</div>
-                <div class="mt-0.5 text-xs font-medium">{{ formatBytes(item.bytes) }}</div>
-              </div>
-            </div>
-            <div class="mt-3 rounded-lg border bg-background/50 px-2.5 py-2">
-              <div class="flex items-center justify-between gap-3">
-                <div class="min-w-0 truncate text-xs text-muted-foreground">
-                  {{ t("driverStore.offlineDownloadHint") }}
-                </div>
-                <Button variant="outline" size="sm" class="h-7 shrink-0 rounded-full text-xs gap-1 whitespace-nowrap" @click="openOfflineDriverDownload">
-                  <ExternalLink class="h-3.5 w-3.5" />
-                  {{ t("driverStore.offlineDownloadLink") }}
-                </Button>
-              </div>
-            </div>
-          </div>
-
           <div class="flex items-center justify-between">
             <TabsList class="w-fit">
               <TabsTrigger value="agent" class="gap-1.5 relative">
@@ -895,11 +973,11 @@ watch(driverStoreTab, (tab) => {
                 {{ t("driverStore.jdbcDrivers") }}
                 <span v-if="jdbcTabUpdateCount > 0" class="inline-block h-2 w-2 rounded-full bg-red-500" />
               </TabsTrigger>
-              <TabsTrigger value="runtime" class="gap-1.5 relative">
-                {{ t("driverStore.runtimeDrivers") }}
+              <TabsTrigger value="storage" class="gap-1.5">
+                {{ t("driverStore.storageTab") }}
               </TabsTrigger>
             </TabsList>
-            <div v-if="driverStoreTab !== 'runtime'" class="flex items-center gap-2">
+            <div v-if="driverStoreTab !== 'storage'" class="flex items-center gap-2">
               <Button variant="ghost" size="sm" class="h-7 rounded-full text-xs gap-1 text-muted-foreground" :disabled="importingZip" @click="importOfflineZip">
                 <FileUp class="h-3.5 w-3.5" />
                 {{ importingZip ? t("driverStore.importing") : t("driverStore.importOfflinePackage") }}
@@ -1164,7 +1242,77 @@ watch(driverStoreTab, (tab) => {
           </TabsContent>
 
           <!-- Runtime Tab -->
-          <TabsContent value="runtime" class="mt-5">
+          <TabsContent value="storage" class="mt-5 space-y-5">
+            <!-- Storage Usage -->
+            <div class="rounded-xl border bg-muted/20 p-4 space-y-3">
+              <div class="flex items-center justify-between gap-3">
+                <div class="text-sm font-medium">{{ t("driverStore.usageTitle") }}</div>
+                <div class="text-xs text-muted-foreground">
+                  {{ usageSummary.length ? t("driverStore.usageTotal", { size: formatBytes(usageSummary[0].bytes) }) : t("driverStore.calculating") }}
+                </div>
+              </div>
+              <div v-if="usageSummary.length" class="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                <div v-for="item in usageSummary" :key="item.key" class="rounded-lg border bg-background/50 px-2.5 py-2 text-center">
+                  <div class="text-[11px] text-muted-foreground">{{ item.label }}</div>
+                  <div class="mt-0.5 text-xs font-medium">{{ formatBytes(item.bytes) }}</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Driver Store Path -->
+            <div v-if="!isWeb" class="rounded-xl border bg-muted/20 p-4 space-y-3">
+              <div class="text-sm font-medium">{{ t("driverStore.driverStoreDir") }}</div>
+              <p class="text-xs text-muted-foreground">{{ t("driverStore.driverStoreDirDescription") }}</p>
+              <div class="space-y-2.5">
+                <div v-for="row in driverStorePathRows" :key="row.kind" class="rounded-lg border bg-background/50 p-3">
+                  <div class="mb-2 flex items-start justify-between gap-3">
+                    <div class="min-w-0 text-xs leading-5">
+                      <span class="font-medium">{{ row.label }}</span>
+                      <span class="ml-2 text-[11px] text-muted-foreground">{{ row.description }}</span>
+                    </div>
+                    <Loader2 v-if="driverStoreDirMigrating === row.kind" class="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <div class="min-w-0 flex-1 rounded-md border bg-background px-3 py-2 text-xs font-mono truncate">
+                          {{ row.display }}
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" class="max-w-100 break-all text-xs">
+                        {{ row.display }}
+                      </TooltipContent>
+                    </Tooltip>
+                    <Button variant="outline" size="sm" class="shrink-0 gap-1" :disabled="Boolean(driverStoreDirMigrating)" @click="chooseDriverStoreDir(row.kind)">
+                      <FolderSync class="h-3.5 w-3.5" />
+                      {{ t("driverStore.driverStoreDirChange") }}
+                    </Button>
+                    <Button v-if="row.custom" variant="ghost" size="sm" class="shrink-0 gap-1 text-muted-foreground" :disabled="Boolean(driverStoreDirMigrating)" @click="resetDriverStoreDir(row.kind)">
+                      {{ t("driverStore.driverStoreDirReset") }}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+              <p v-if="driverStoreDirMigrating" class="text-xs text-muted-foreground flex items-center gap-1.5">
+                <Loader2 class="h-3 w-3 animate-spin" />
+                {{ t("driverStore.driverStoreDirMigrating", { target: driverStoreTargetLabel(driverStoreDirMigrating) }) }}
+              </p>
+            </div>
+
+            <!-- Offline Download -->
+            <div class="rounded-xl border bg-muted/20 p-4">
+              <div class="flex items-center justify-between gap-3">
+                <div class="min-w-0 text-xs text-muted-foreground">
+                  {{ t("driverStore.offlineDownloadHint") }}
+                </div>
+                <Button variant="outline" size="sm" class="shrink-0 gap-1" @click="openOfflineDriverDownload">
+                  <ExternalLink class="h-3.5 w-3.5" />
+                  {{ t("driverStore.offlineDownloadLink") }}
+                </Button>
+              </div>
+            </div>
+
+            <!-- Runtime Info -->
             <div class="overflow-hidden rounded-md border bg-background">
               <div class="flex flex-col gap-3 border-b px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
                 <div class="flex min-w-0 items-center gap-2.5">

@@ -234,6 +234,25 @@ jobs:
             --clobber
           ls -lh assets/
 
+      - name: Rewrite latest.json download URLs to R2 CDN
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          LATEST_JSON="assets/latest.json"
+          if [ ! -f "$LATEST_JSON" ]; then
+            echo "::warning::latest.json not found, skipping URL rewrite"
+            exit 0
+          fi
+          echo "Before:"
+          jq '.platforms[]?.url // empty' "$LATEST_JSON"
+          jq --arg tag "$TAG" '
+            (.platforms[]?.url?) |= (
+              sub("https://github\\.com/t8y2/dbx/releases/download/" + $tag + "/"; "https://dl.dbxio.com/releases/latest/")
+            )
+          ' "$LATEST_JSON" > "$LATEST_JSON.tmp"
+          mv "$LATEST_JSON.tmp" "$LATEST_JSON"
+          echo "After:"
+          jq '.platforms[]?.url // empty' "$LATEST_JSON"
+
       - name: Upload to R2 (versioned)
         run: |
           aws s3 sync ./assets "s3://${{ secrets.R2_BUCKET_NAME }}/releases/${{ steps.version.outputs.tag }}/" \

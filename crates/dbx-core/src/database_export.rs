@@ -352,9 +352,16 @@ pub async fn export_database_sql_core(
     let pool_key = state.get_or_create_pool(&request.connection_id, Some(&request.database)).await?;
 
     // 3. List tables
-    let all_tables =
-        crate::schema::list_tables_core(state, &request.connection_id, &request.database, &request.schema, None, None)
-            .await?;
+    let all_tables = crate::schema::list_tables_core(
+        state,
+        &request.connection_id,
+        &request.database,
+        &request.schema,
+        None,
+        None,
+        None,
+    )
+    .await?;
     let all_tables = filter_selected_table_infos(all_tables, &request.selected_tables);
 
     // 4. Create file

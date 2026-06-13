@@ -633,15 +633,20 @@ pub async fn list_tables(
     schema: &str,
     filter: Option<&str>,
     limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<Vec<TableInfo>, String> {
-    let top = limit.map(|value| format!("TOP ({}) ", value.min(1000))).unwrap_or_default();
+    let fetch_clause = limit
+        .map(|value| format!(" OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", offset.unwrap_or(0), value.min(1000)))
+        .unwrap_or_else(|| {
+            offset.filter(|value| *value > 0).map(|value| format!(" OFFSET {value} ROWS")).unwrap_or_default()
+        });
     let filter_clause = filter
         .filter(|value| !value.trim().is_empty())
         .map(|value| format!(" AND o.name LIKE '%{}%' ESCAPE '\\' ", escape_like_literal(value.trim())))
         .unwrap_or_default();
     let schema_escaped = schema.replace('\'', "''");
     let sql = format!(
-        "SELECT {top}o.name, CASE WHEN o.type = 'V' THEN 'VIEW' ELSE 'BASE TABLE' END, \
+        "SELECT o.name, CASE WHEN o.type = 'V' THEN 'VIEW' ELSE 'BASE TABLE' END, \
          ep.value AS TABLE_COMMENT \
          FROM sys.objects o \
          JOIN sys.schemas s ON s.schema_id = o.schema_id \
@@ -650,7 +655,7 @@ pub async fn list_tables(
            AND o.type IN ('U','V') \
            AND o.is_ms_shipped = 0 \
            {filter_clause}\
-         ORDER BY o.name"
+         ORDER BY o.name{fetch_clause}"
     );
     let stream = client.query(&*sql, &[]).await.map_err(|e| e.to_string())?;
     let rows = stream.into_first_result().await.map_err(|e| e.to_string())?;
