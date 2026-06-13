@@ -27,6 +27,14 @@ export interface AiConfig {
   enableThinking?: boolean;
 }
 
+export interface AiTestConnectionResult {
+  success: boolean;
+  message: string;
+  latencyMs?: number;
+  modelUsed: string;
+  errorCategory?: string;
+}
+
 export interface DesktopSettings {
   show_tray_icon: boolean;
   icon_theme: DesktopIconTheme;
@@ -213,13 +221,36 @@ export const DEFAULT_CUSTOM_THEME_COLORS: CustomThemeColors = {
   builtin: "#f38ba8",
 };
 
+export interface CustomThemeDdlColors {
+  addedRowBg: string;
+  addedRowBgAlpha: number;
+  removedRowBg: string;
+  removedRowBgAlpha: number;
+  modifiedRowBg: string;
+  modifiedRowBgAlpha: number;
+  modifiedCharBg: string;
+  modifiedCharBgAlpha: number;
+}
+
+export const DEFAULT_CUSTOM_THEME_DDL_COLORS: CustomThemeDdlColors = {
+  addedRowBg: "#22c55e",
+  addedRowBgAlpha: 10,
+  removedRowBg: "#ef4444",
+  removedRowBgAlpha: 10,
+  modifiedRowBg: "#eab308",
+  modifiedRowBgAlpha: 10,
+  modifiedCharBg: "#f59e0b",
+  modifiedCharBgAlpha: 50,
+};
+
 export interface CustomTheme {
   id: string;
   name: string;
   colors: CustomThemeColors;
+  ddlColors: CustomThemeDdlColors;
 }
 
-export const DEFAULT_CUSTOM_THEMES: CustomTheme[] = [{ id: "default", name: "Custom", colors: { ...DEFAULT_CUSTOM_THEME_COLORS } }];
+export const DEFAULT_CUSTOM_THEMES: CustomTheme[] = [{ id: "default", name: "Custom", colors: { ...DEFAULT_CUSTOM_THEME_COLORS }, ddlColors: { ...DEFAULT_CUSTOM_THEME_DDL_COLORS } }];
 
 export interface EditorSettings {
   fontFamily: string;
@@ -420,6 +451,7 @@ function normalizeCustomColumnFormatters(value: unknown): Record<string, CustomC
 
 function normalizeSqlSnippets(value: unknown, existing?: SqlSnippet[]): SqlSnippet[] {
   if (!Array.isArray(value)) return existing ?? DEFAULT_SQL_SNIPPETS;
+  if (value.length === 0) return [];
   const valid: SqlSnippet[] = [];
   const seenPrefixes = new Set<string>();
   for (const item of value) {
@@ -464,7 +496,14 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     },
     customThemes: (() => {
       if (Array.isArray(settings.customThemes) && settings.customThemes.length > 0) {
-        return settings.customThemes.map((theme) => (theme.name === "默认" ? { ...theme, name: "Custom" } : theme));
+        return settings.customThemes.map((theme) => {
+          const renamed = theme.name === "默认" ? { ...theme, name: "Custom" } : { ...theme };
+          return {
+            ...renamed,
+            colors: { ...DEFAULT_CUSTOM_THEME_COLORS, ...renamed.colors },
+            ddlColors: { ...DEFAULT_CUSTOM_THEME_DDL_COLORS, ...(renamed as any).ddlColors },
+          };
+        });
       }
       return [
         ...(settings.customThemeColors
@@ -473,10 +512,10 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
                 id: "migrated",
                 name: "Migrated",
                 colors: { ...DEFAULT_CUSTOM_THEME_COLORS, ...settings.customThemeColors },
+                ddlColors: { ...DEFAULT_CUSTOM_THEME_DDL_COLORS },
               },
             ]
           : []),
-        ...DEFAULT_CUSTOM_THEMES,
       ];
     })(),
     activeCustomThemeId: settings.activeCustomThemeId ?? "default",

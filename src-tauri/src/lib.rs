@@ -317,6 +317,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::ai::ai_complete,
             commands::ai::ai_stream,
+            commands::ai::ai_agent_stream,
             commands::ai::ai_cancel_stream,
             commands::ai::ai_test_connection,
             commands::ai::ai_list_models,
@@ -368,6 +369,10 @@ pub fn run() {
             commands::schema::list_foreign_keys,
             commands::schema::list_triggers,
             commands::schema::get_table_ddl,
+            commands::schema::list_functions,
+            commands::schema::list_sequences,
+            commands::schema::list_rules,
+            commands::schema::list_owners,
             commands::schema_diff::prepare_schema_diff,
             commands::schema_diff::generate_schema_sync_sql,
             commands::schema_cache::save_schema_cache,

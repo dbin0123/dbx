@@ -38,7 +38,7 @@ import { isSchemaAware, isSingleDatabase } from "@/lib/databaseFeatureSupport";
 import * as api from "@/lib/api";
 import { areSqlSemanticDiagnosticsEqual, buildSqlParserErrorDiagnostic, buildSqlSemanticDiagnostics, shouldRunSqlSemanticDiagnostics, type SqlSemanticDiagnostic } from "@/lib/sqlSemanticDiagnostics";
 import type { SqlCompletionColumn, SqlCompletionForeignKey, SqlCompletionItem, SqlCompletionObject } from "@/lib/sqlCompletion";
-import type { DatabaseType, ForeignKeyInfo, SqlReferenceAnalysis, SqlTableReference, SqlTextSpan } from "@/types/database";
+import type { DatabaseType, SqlReferenceAnalysis, SqlTableReference, SqlTextSpan } from "@/types/database";
 
 const props = defineProps<{
   modelValue: string;
@@ -131,6 +131,7 @@ const completionTranslations = computed(() => ({
   functionDescriptions: Object.fromEntries(SQL_FUNCTION_NAMES.map((name) => [name, t(`editor.completion.functionDescriptions.${name}`)])) as Record<string, string>,
 }));
 const MAX_COMPLETION_TABLES = 200;
+const MAX_JOIN_FK_PREFETCH_TABLES = 24;
 const liveFontSize = ref(settingsStore.editorSettings.fontSize);
 const gestureStartFontSize = ref(settingsStore.editorSettings.fontSize);
 const isGestureZooming = ref(false);
@@ -455,23 +456,24 @@ async function ensureForeignKeysForTable(table: { name: string; schema?: string 
   if (cachedForeignKeysByTable.has(cacheKey) || !props.connectionId || props.database == null) return;
   const target = completionMetadataTarget(table);
   if (!target) return;
-  const querySchema = target.schema ?? target.database;
   try {
-    const foreignKeys = await api.listForeignKeys(props.connectionId, target.database, querySchema, table.name);
-    cachedForeignKeysByTable.set(
-      cacheKey,
-      foreignKeys.map((foreignKey: ForeignKeyInfo) => ({
-        name: foreignKey.name,
-        column: foreignKey.column,
-        ref_schema: foreignKey.ref_schema,
-        ref_table: foreignKey.ref_table,
-        ref_column: foreignKey.ref_column,
-      })),
-    );
+    const foreignKeys = await connectionStore.listCompletionForeignKeys(props.connectionId, target.database, table.name, target.schema);
+    cachedForeignKeysByTable.set(cacheKey, foreignKeys);
   } catch (e) {
     console.warn(`[DBX] Failed to load foreign keys for ${cacheKey}:`, e);
     cachedForeignKeysByTable.set(cacheKey, []);
   }
+}
+
+async function ensureForeignKeysForTables(tables: Array<{ name: string; schema?: string | null }>) {
+  const seen = new Set<string>();
+  const uniqueTables = tables.filter((table) => {
+    const key = completionCacheKey(table).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  await Promise.all(uniqueTables.map((table) => ensureForeignKeysForTable(table)));
 }
 
 function createHoverDom(title: string, detail: string, rows: string[] = []) {
@@ -684,7 +686,7 @@ async function refreshSemanticDiagnostics() {
     setSemanticDiagnostics([]);
     return;
   }
-  if (props.databaseType === "mongodb" || props.databaseType === "elasticsearch") {
+  if (props.databaseType === "mongodb" || props.databaseType === "elasticsearch" || props.databaseType === "redis") {
     setSemanticDiagnostics([]);
     return;
   }
@@ -1058,6 +1060,10 @@ function buildLocalSqlCompletionResult(completionContext: ReturnType<typeof getS
     if (localColumns.length > 0) {
       columnsByTable.set(cacheKey, localColumns);
     }
+    const localForeignKeys = target ? connectionStore.lookupLocalCompletionForeignKeys(props.connectionId, target.database, refTable.name, target.schema) : [];
+    if (localForeignKeys.length > 0) {
+      cachedForeignKeysByTable.set(cacheKey, localForeignKeys);
+    }
   }
 
   if (tables.length === 0 && completionObjects.length === 0 && schemaNames.length === 0 && columnsByTable.size === 0 && (completionContext.exclusiveTableSuggestions || completionContext.exclusiveColumnSuggestions || completionContext.exclusiveRoutineSuggestions)) {
@@ -1089,6 +1095,9 @@ function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof 
       .refreshCompletionTables(connectionId, database, completionContext.qualifier && !schema ? completionContext.qualifier : completionContext.prefix, MAX_COMPLETION_TABLES, schema)
       .then((tables) => {
         cachedTables = mergeCompletionTables(cachedTables, tables);
+        if (completionContext.suggestTables && completionContext.referencedTables.length > 0) {
+          void ensureForeignKeysForTables([...completionContext.referencedTables, ...tables.slice(0, MAX_JOIN_FK_PREFETCH_TABLES)]);
+        }
       })
       .catch(() => {});
   }
@@ -1128,6 +1137,9 @@ function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof 
         if (columns.length > 0) cachedColumnsByTable.set(cacheKey, columns);
       })
       .catch(() => {});
+  }
+  if ((completionContext.suggestTables || completionContext.suggestJoinConditions) && completionContext.referencedTables.length > 0) {
+    void ensureForeignKeysForTables(completionContext.referencedTables);
   }
 }
 
@@ -1271,13 +1283,9 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
   );
   if (epoch !== completionEpoch) return null;
 
-  if (completionContext.suggestJoinConditions) {
-    await Promise.all(
-      refs.map(async (refTable) => {
-        if (refTable.columns && refTable.columns.length > 0) return;
-        await ensureForeignKeysForTable(refTable);
-      }),
-    );
+  if ((completionContext.suggestTables || completionContext.suggestJoinConditions) && refs.length > 0) {
+    const fkPrefetchTables = completionContext.suggestTables ? [...refs, ...tables.slice(0, MAX_JOIN_FK_PREFETCH_TABLES)] : refs;
+    await ensureForeignKeysForTables(fkPrefetchTables.filter((table) => !("columns" in table) || !table.columns || table.columns.length === 0));
     if (epoch !== completionEpoch) return null;
   }
 
@@ -1307,7 +1315,12 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
       if (cached) {
         columnsByTable.set(cacheKey, cached);
       }
-      const cachedForeignKeys = cachedForeignKeysByTable.get(cacheKey);
+      let cachedForeignKeys = cachedForeignKeysByTable.get(cacheKey);
+      if (!cachedForeignKeys) {
+        const target = completionMetadataTarget(refTable);
+        cachedForeignKeys = target ? connectionStore.lookupLocalCompletionForeignKeys(props.connectionId!, target.database, refTable.name, target.schema) : [];
+        if (cachedForeignKeys.length > 0) cachedForeignKeysByTable.set(cacheKey, cachedForeignKeys);
+      }
       if (cachedForeignKeys) {
         foreignKeysByTable.set(cacheKey, cachedForeignKeys);
       }

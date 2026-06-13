@@ -695,6 +695,35 @@ test("suggests user functions and triggers with fuzzy matching", () => {
   assert.ok(triggerItems.some((item) => item.label === "trg_users_audit" && item.detail === "trigger on users"));
 });
 
+test("suggests Oracle table-function helpers in table reference context", () => {
+  const items = buildSqlCompletionItems("select * from tab", "select * from tab".length, {
+    tables,
+    columnsByTable,
+    databaseType: "oracle",
+  });
+
+  const tableFunction = items.find((item) => item.label === "TABLE" && item.type === "function");
+  assert.ok(tableFunction);
+  assert.ok(tableFunction.apply?.startsWith("TABLE("));
+});
+
+test("suggests package members after package qualifier", () => {
+  const items = buildSqlCompletionItems("begin PAYROLL.ca", "begin PAYROLL.ca".length, {
+    tables,
+    columnsByTable,
+    objects: [
+      { name: "PAYROLL", schema: "HR", type: "package" },
+      { name: "calculate_bonus", schema: "HR", type: "function", parentSchema: "HR", parentName: "PAYROLL" },
+    ],
+    databaseType: "oracle",
+  });
+
+  const member = items.find((item) => item.label === "calculate_bonus");
+  assert.ok(member);
+  assert.equal(member.type, "function");
+  assert.equal(member.apply, "calculate_bonus()");
+});
+
 test("matches alias qualifier case-insensitively", () => {
   const sql = "select O. from public.orders o";
   const cursor = "select O.".length;
@@ -1074,6 +1103,56 @@ test("suggests table alias after FROM table", () => {
   assert.ok(aliasItem!.apply!.includes("AS"), "alias apply should include AS");
 });
 
+test("prioritizes table acronym matches above alias snippets", () => {
+  const acronymTables: SqlCompletionTable[] = [...tables, { name: "user_basic_info", schema: "public", type: "table" }];
+  const items = buildSqlCompletionItems("select * from ubi", "select * from ubi".length, {
+    tables: acronymTables,
+    columnsByTable,
+  });
+
+  assert.equal(items[0]?.label, "user_basic_info");
+  assert.equal(items[0]?.type, "table");
+  assert.ok(
+    items.some((item) => item.type === "snippet" && item.apply === "AS ubi "),
+    "alias snippet should remain available",
+  );
+});
+
+test("matches camelCase table acronyms", () => {
+  const acronymTables: SqlCompletionTable[] = [...tables, { name: "userBasicInfo", schema: "public", type: "table" }];
+  const items = buildSqlCompletionItems("select * from ubi", "select * from ubi".length, {
+    tables: acronymTables,
+    columnsByTable,
+  });
+
+  assert.equal(items[0]?.label, "userBasicInfo");
+  assert.equal(items[0]?.type, "table");
+});
+
+test("table alias suggestions avoid reserved words", () => {
+  const items = buildSqlCompletionItems("select * from orders ", "select * from orders ".length, {
+    tables,
+    columnsByTable,
+  });
+
+  const aliasItem = items.find((item) => item.type === "snippet" && item.detail === "alias for orders");
+  assert.ok(aliasItem);
+  assert.notEqual(aliasItem!.apply, "AS or ");
+  assert.equal(aliasItem!.apply, "AS ord ");
+});
+
+test("table alias suggestions avoid existing aliases", () => {
+  const items = buildSqlCompletionItems("select * from customer_orders co join customer_orders ", "select * from customer_orders co join customer_orders ".length, {
+    tables: [...tables, { name: "customer_orders", schema: "public", type: "table" }],
+    columnsByTable,
+  });
+
+  const aliasItem = items.find((item) => item.type === "snippet" && item.detail === "alias for customer_orders");
+  assert.ok(aliasItem);
+  assert.notEqual(aliasItem!.apply, "AS co ");
+  assert.equal(aliasItem!.apply, "AS cu ");
+});
+
 // --- CASE snippet ---
 
 test("suggests CASE WHEN snippet", () => {
@@ -1143,6 +1222,49 @@ test("getSqlCompletionContext returns nonAggregatedSelectColumns", () => {
   assert.ok(!context.nonAggregatedSelectColumns.includes("id"), "id inside COUNT should not be non-aggregated");
 });
 
+// --- UPDATE / DELETE completion contexts ---
+
+test("suggests SET immediately after UPDATE target table", () => {
+  const sql = "update users se";
+  const items = buildSqlCompletionItems(sql, sql.length, {
+    tables,
+    columnsByTable,
+  });
+
+  assert.equal(items[0]?.label, "SET");
+});
+
+test("suggests target table columns inside UPDATE SET clause", () => {
+  const sql = "update users set na";
+  const items = buildSqlCompletionItems(sql, sql.length, {
+    tables,
+    columnsByTable,
+  });
+
+  assert.equal(items[0]?.label, "name");
+  assert.equal(items[0]?.type, "column");
+});
+
+test("suggests WHERE after UPDATE SET assignments", () => {
+  const sql = "update users set name = 'a' wh";
+  const items = buildSqlCompletionItems(sql, sql.length, {
+    tables,
+    columnsByTable,
+  });
+
+  assert.equal(items[0]?.label, "WHERE");
+});
+
+test("suggests WHERE immediately after DELETE target table", () => {
+  const sql = "delete from users wh";
+  const items = buildSqlCompletionItems(sql, sql.length, {
+    tables,
+    columnsByTable,
+  });
+
+  assert.equal(items[0]?.label, "WHERE");
+});
+
 // --- Better FK join inference ---
 
 test("prefers explicit foreign-key join condition with table aliases", () => {
@@ -1180,6 +1302,52 @@ test("suggests explicit foreign-key join when the joined table owns the key", ()
 
   const fkJoin = items.find((item) => item.label === "o.customer_id = c.id");
   assert.ok(fkJoin, "should suggest FK join when the right side owns the foreign key");
+});
+
+test("boosts foreign-key related table candidates in JOIN table context", () => {
+  const foreignKeysByTable = new Map<string, SqlCompletionForeignKey[]>([["public.orders", [{ name: "orders_user_id_fkey", column: "user_id", ref_table: "users", ref_column: "id" }]]]);
+  const sql = "select * from public.orders o join us";
+  const items = buildSqlCompletionItems(sql, sql.length, {
+    tables,
+    columnsByTable,
+    foreignKeysByTable,
+  });
+
+  assert.equal(items[0]?.label, "users");
+  assert.equal(items[0]?.type, "table");
+  assert.ok(items[0]?.detail?.includes("related by"));
+});
+
+test("boosts inbound foreign-key table candidates in JOIN table context", () => {
+  const foreignKeysByTable = new Map<string, SqlCompletionForeignKey[]>([["public.orders", [{ name: "orders_customer_id_fkey", column: "customer_id", ref_schema: "public", ref_table: "customers", ref_column: "id" }]]]);
+  const sql = "select * from public.customers c join ord";
+  const items = buildSqlCompletionItems(sql, sql.length, {
+    tables,
+    columnsByTable,
+    foreignKeysByTable,
+  });
+
+  assert.equal(items[0]?.label, "orders");
+  assert.equal(items[0]?.type, "table");
+  assert.ok(items[0]?.detail?.includes("orders.customer_id"));
+});
+
+test("uses owner schema when ranking inbound foreign-key table candidates", () => {
+  const foreignKeysByTable = new Map<string, SqlCompletionForeignKey[]>([["sales.orders", [{ name: "orders_customer_id_fkey", column: "customer_id", ref_schema: "crm", ref_table: "customers", ref_column: "id" }]]]);
+  const sql = "select * from crm.customers c join ord";
+  const items = buildSqlCompletionItems(sql, sql.length, {
+    tables: [
+      { name: "orders", schema: "public", type: "table" },
+      { name: "orders", schema: "sales", type: "table" },
+      { name: "customers", schema: "crm", type: "table" },
+    ],
+    columnsByTable,
+    foreignKeysByTable,
+  });
+
+  assert.equal(items[0]?.label, "orders");
+  assert.equal(items[0]?.detail, "related by sales.orders.customer_id → id");
+  assert.equal(items[0]?.apply, "orders");
 });
 
 test("suggests composite explicit foreign-key join conditions", () => {

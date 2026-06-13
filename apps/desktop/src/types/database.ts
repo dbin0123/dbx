@@ -259,12 +259,46 @@ export interface ForeignKeyInfo {
   ref_schema?: string | null;
   ref_table: string;
   ref_column: string;
+  on_update?: string | null;
+  on_delete?: string | null;
 }
 
 export interface TriggerInfo {
   name: string;
   event: string;
   timing: string;
+  statement?: string | null;
+}
+
+export interface FunctionInfo {
+  name: string;
+  function_type: string;
+  data_type: string;
+  definition: string;
+  arguments: string;
+}
+
+export interface SequenceInfo {
+  name: string;
+  data_type: string;
+  start_value: string;
+  min_value: string;
+  max_value: string;
+  increment: string;
+  cycle: boolean;
+  last_value?: string | null;
+}
+
+export interface RuleInfo {
+  name: string;
+  table_name: string;
+  definition: string;
+}
+
+export interface OwnerInfo {
+  object_name: string;
+  object_type: string;
+  owner: string;
 }
 
 export interface QueryResult {
@@ -395,6 +429,7 @@ export interface QueryTab {
   schema?: string;
   sql: string;
   savedSqlId?: string;
+  originalSql?: string;
   lastExecutedSql?: string;
   resultBaseSql?: string;
   resultSortedSql?: string;
@@ -448,6 +483,7 @@ export interface QueryTab {
   tableMeta?: {
     schema?: string;
     tableName: string;
+    tableType?: string;
     columns: ColumnInfo[];
     primaryKeys: string[];
   };

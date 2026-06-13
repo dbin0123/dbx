@@ -1,5 +1,5 @@
-import type { ColumnInfo, DatabaseType, IndexInfo } from "../types/database.ts";
-import type { ColumnExtra, EditableStructureColumn, EditableStructureIndex } from "./tableStructureEditorSql.ts";
+import type { ColumnInfo, DatabaseType, ForeignKeyInfo, IndexInfo, TriggerInfo } from "../types/database.ts";
+import type { ColumnExtra, EditableStructureColumn, EditableStructureForeignKey, EditableStructureIndex, EditableStructureTrigger } from "./tableStructureEditorSql.ts";
 
 export const DATA_TYPE_OPTIONS: Record<string, string[]> = {
   mysql: [
@@ -366,6 +366,47 @@ export function createIndexDrafts(indexes: IndexInfo[]): EditableStructureIndex[
     includedColumns: index.included_columns ? [...index.included_columns] : [],
     comment: index.comment ?? "",
     original: index,
+    markedForDrop: false,
+  }));
+}
+
+export function createForeignKeyDrafts(foreignKeys: ForeignKeyInfo[]): EditableStructureForeignKey[] {
+  const groups = new Map<string, ForeignKeyInfo[]>();
+  for (const foreignKey of foreignKeys) {
+    const key = [foreignKey.name, foreignKey.ref_schema ?? "", foreignKey.ref_table, foreignKey.on_update ?? "", foreignKey.on_delete ?? ""].join("\u0000");
+    groups.set(key, [...(groups.get(key) ?? []), foreignKey]);
+  }
+
+  return [...groups.values()].map((group, index) => {
+    const first = group[0]!;
+    const original = {
+      ...first,
+      column: group.map((foreignKey) => foreignKey.column).join(", "),
+      ref_column: group.map((foreignKey) => foreignKey.ref_column).join(", "),
+    };
+    return {
+      id: `existing:${first.name}:${index}`,
+      name: first.name,
+      column: original.column,
+      refSchema: first.ref_schema ?? "",
+      refTable: first.ref_table,
+      refColumn: original.ref_column,
+      onUpdate: first.on_update ?? "",
+      onDelete: first.on_delete ?? "",
+      original,
+      markedForDrop: false,
+    };
+  });
+}
+
+export function createTriggerDrafts(triggers: TriggerInfo[]): EditableStructureTrigger[] {
+  return triggers.map((trigger) => ({
+    id: `existing:${trigger.name}`,
+    name: trigger.name,
+    timing: trigger.timing,
+    event: trigger.event,
+    statement: trigger.statement ?? "",
+    original: trigger,
     markedForDrop: false,
   }));
 }

@@ -63,7 +63,7 @@ import { resolveDefaultDatabase } from "@/lib/defaultDatabase";
 import { canTreeNodeShowExpander, treeItemPaddingLeft, usesFullWidthTreeLabel } from "@/lib/sidebarTreeItemLayout";
 import { buildTableSelectSql } from "@/lib/tableSelectSql";
 import { clearActiveTableReferencePayload, createTableReferencePayload, createTableReferenceDropEvent, setActiveTableReferencePayload, type QueryEditorTableReferencePayload } from "@/lib/queryEditorTableDrop";
-import { editablePrimaryKeys } from "@/lib/tableEditing";
+import { editablePrimaryKeys, usesSyntheticRowIdKey } from "@/lib/tableEditing";
 import { supportsDatabaseCreation, supportsDatabaseSearch, supportsFieldLineage, supportsObjectBrowserTreeNode, supportsSchemaDiagram, supportsSqlFileExecution, supportsTableImport, supportsTableTruncate, supportsTableStructureEditing, usesTreeSchemaMode } from "@/lib/databaseCapabilities";
 import { copyNameForTreeNode, objectSourceKindForTreeNode, sidebarSelectionCopyAction, treeNodeRowAction, treeNodeRowDoubleClickAction } from "@/lib/treeNodeClick";
 import { formatSqlInsert } from "@/lib/exportFormats";
@@ -686,6 +686,7 @@ async function openData() {
   queryStore.setTableMeta(tabId, {
     schema: tableSchema,
     tableName: node.label,
+    tableType: node.type === "view" ? "VIEW" : "TABLE",
     columns: [],
     primaryKeys: [],
   });
@@ -700,56 +701,59 @@ async function openData() {
     const querySchema = connectionObjectTreeQuerySchema(config, node.database, tableSchema);
     const effectiveDbType = effectiveDatabaseTypeForConnection(config);
     const limit = settingsStore.editorSettings.pageSize;
+    let columns: ColumnInfo[] = [];
+    let primaryKeys: string[] = [];
+    try {
+      console.info("[DBX][openData:get-columns:start]", {
+        traceId,
+        database: node.database,
+        schema: querySchema,
+        table: node.label,
+        elapsed: elapsed(),
+      });
+      columns = await api.getColumns(node.connectionId, node.database, querySchema, node.label);
+      primaryKeys = editablePrimaryKeys(effectiveDbType, columns, node.type === "view" ? "VIEW" : "TABLE");
+      console.info("[DBX][openData:get-columns:done]", {
+        traceId,
+        columnCount: columns.length,
+        primaryKeys,
+        elapsed: elapsed(),
+      });
+      queryStore.setTableMeta(tabId, {
+        schema: tableSchema,
+        tableName: node.label,
+        tableType: node.type === "view" ? "VIEW" : "TABLE",
+        columns,
+        primaryKeys,
+      });
+    } catch (error) {
+      console.warn("[DBX][openData:get-columns:error]", { traceId, elapsed: elapsed(), error });
+    }
+
+    const includeRowId = usesSyntheticRowIdKey(effectiveDbType, primaryKeys);
+    const fallbackOrderColumns = effectiveDbType === "sqlserver" && !primaryKeys.length ? columns.slice(0, 1).map((column) => column.name) : undefined;
     const sql = await buildTableSelectSql({
       databaseType: effectiveDbType,
       schema: tableSchema,
       tableName: node.label,
-      columns: [],
-      primaryKeys: [],
+      columns: columns.map((column) => column.name),
+      primaryKeys,
+      fallbackOrderColumns,
       limit,
-      includeRowId: false,
+      includeRowId,
     });
     console.info("[DBX][openData:sql-built]", {
       traceId,
-      primaryKeys: [],
-      includeRowId: false,
+      primaryKeys,
+      includeRowId,
       sql,
       elapsed: elapsed(),
     });
     queryStore.updateSql(tabId, sql);
 
-    const loadTableMeta = async () => {
-      try {
-        console.info("[DBX][openData:get-columns:start]", {
-          traceId,
-          database: node.database,
-          schema: querySchema,
-          table: node.label,
-          elapsed: elapsed(),
-        });
-        const columns = await api.getColumns(node.connectionId, node.database, querySchema, node.label);
-        console.info("[DBX][openData:get-columns:done]", {
-          traceId,
-          columnCount: columns.length,
-          primaryKeys: columns.filter((column) => column.is_primary_key).map((column) => column.name),
-          elapsed: elapsed(),
-        });
-        const pks = editablePrimaryKeys(effectiveDbType, columns);
-        queryStore.setTableMeta(tabId, {
-          schema: tableSchema,
-          tableName: node.label,
-          columns,
-          primaryKeys: pks,
-        });
-      } catch (error) {
-        console.warn("[DBX][openData:get-columns:error]", { traceId, elapsed: elapsed(), error });
-      }
-    };
-
     console.info("[DBX][openData:execute:start]", { traceId, tabId, elapsed: elapsed() });
     await queryStore.executeTabSql(tabId, sql);
     console.info("[DBX][openData:execute:done]", { traceId, tabId, elapsed: elapsed() });
-    void loadTableMeta();
   } catch (e: any) {
     console.error("[DBX][openData:error]", { traceId, elapsed: elapsed(), error: e });
     queryStore.setErrorResult(tabId, e);

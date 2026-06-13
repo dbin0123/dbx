@@ -942,12 +942,25 @@ const aiCompletionsMode = computed(() => aiEditApiStyle.value === "completions")
 const aiTesting = ref(false);
 const aiTestResult = ref<"" | "success" | "error">("");
 const aiTestError = ref("");
+const aiTestLatency = ref<number | null>(null);
 const aiRequiresApiKey = computed(() => AI_PROVIDER_PRESETS[aiEditProvider.value].requiresApiKey);
 const aiSupportsAuthMethod = computed(() => aiEditProvider.value === "claude");
 const aiCredentialLabel = computed(() => (aiSupportsAuthMethod.value && aiEditAuthMethod.value === "bearer" ? "Auth Token" : "API Key"));
 const aiCredentialPlaceholder = computed(() => {
   if (!aiRequiresApiKey.value) return "Optional";
   if (aiSupportsAuthMethod.value && aiEditAuthMethod.value === "bearer") return "ANTHROPIC_AUTH_TOKEN";
+  return "";
+});
+const aiEndpointPlaceholder = computed(() => {
+  if (aiEditProvider.value === "openai-compatible" || aiEditProvider.value === "custom") {
+    return "https://api.example.com/v1";
+  }
+  return "https://api.openai.com/v1";
+});
+const aiEndpointHint = computed(() => {
+  if (aiEditProvider.value === "openai-compatible" || aiEditProvider.value === "custom") {
+    return "大多数 OpenAI 兼容 API 需要 /v1 路径前缀";
+  }
   return "";
 });
 const aiSupportsApiStyle = computed(() => aiEditProvider.value === "openai" || aiEditProvider.value === "openai-compatible" || aiEditProvider.value === "custom");
@@ -1065,6 +1078,7 @@ function syncAiEditState() {
   aiEditEnableThinking.value = settingsStore.aiConfig.enableThinking ?? true;
   aiTestResult.value = "";
   aiTestError.value = "";
+  aiTestLatency.value = null;
   clearAiModelOptions();
 }
 
@@ -1075,6 +1089,9 @@ function aiSelectProvider(provider: AiProvider) {
   aiEditApiStyle.value = AI_PROVIDER_PRESETS[provider].apiStyle;
   aiEditAuthMethod.value = AI_PROVIDER_PRESETS[provider].authMethod;
   if (!AI_PROVIDER_PRESETS[provider].requiresApiKey) aiEditApiKey.value = "";
+  aiTestResult.value = "";
+  aiTestError.value = "";
+  aiTestLatency.value = null;
   clearAiModelOptions();
 }
 
@@ -1101,9 +1118,11 @@ async function aiTestConn() {
   aiTesting.value = true;
   aiTestResult.value = "";
   aiTestError.value = "";
+  aiTestLatency.value = null;
   try {
-    await aiTestConnection(currentAiEditConfig());
+    const result = await aiTestConnection(currentAiEditConfig());
     aiTestResult.value = "success";
+    aiTestLatency.value = result.latencyMs ?? null;
   } catch (e: any) {
     aiTestResult.value = "error";
     aiTestError.value = e?.message || String(e);
@@ -2097,9 +2116,12 @@ watch(
                   <Input v-model="aiEditApiKey" type="password" autocomplete="off" class="col-span-2 h-8 text-xs" :placeholder="aiCredentialPlaceholder" />
                 </div>
 
-                <div class="grid grid-cols-3 items-center gap-3">
-                  <Label class="text-right text-xs">Endpoint</Label>
-                  <Input v-model="aiEditEndpoint" placeholder="https://api.openai.com/v1" autocomplete="off" class="col-span-2 h-8 text-xs" />
+                <div class="grid grid-cols-3 items-start gap-3">
+                  <Label class="pt-2 text-right text-xs">Endpoint</Label>
+                  <div class="col-span-2 space-y-1.5">
+                    <Input v-model="aiEditEndpoint" :placeholder="aiEndpointPlaceholder" autocomplete="off" class="h-8 text-xs" />
+                    <p v-if="aiEndpointHint" class="text-[11px] text-muted-foreground">{{ aiEndpointHint }}</p>
+                  </div>
                 </div>
 
                 <div class="grid grid-cols-3 items-start gap-3">
@@ -2440,8 +2462,9 @@ watch(
                 <Loader2 v-if="aiTesting" class="h-3 w-3 animate-spin mr-1" />
                 {{ t("connection.test") }}
               </Button>
-              <span v-if="aiTestResult === 'success'" class="text-xs text-green-500">
-                {{ t("connection.testSuccess") }}
+              <span v-if="aiTestResult === 'success'" class="text-xs text-green-500 flex items-center gap-1.5">
+                <span>{{ t("connection.testSuccess") }}</span>
+                <span v-if="aiTestLatency != null" class="text-green-500/70">{{ aiTestLatency }}ms</span>
               </span>
               <span v-else-if="aiTestResult === 'error'" class="text-xs text-destructive truncate max-w-[200px]" :title="aiTestError">
                 {{ aiTestError }}

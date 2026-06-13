@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+﻿import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ConnectionConfig,
@@ -11,6 +11,10 @@ import type {
   IndexInfo,
   ForeignKeyInfo,
   TriggerInfo,
+  FunctionInfo,
+  SequenceInfo,
+  RuleInfo,
+  OwnerInfo,
   QueryResult,
   SqlReferenceAnalysis,
   DatabaseType,
@@ -23,11 +27,11 @@ import type {
   SavedSqlLibrary,
 } from "@/types/database";
 import type { SidebarObjectKind } from "@/lib/databaseObjectCapabilities";
-import type { AiConfig } from "@/stores/settingsStore";
+import type { AiConfig, AiTestConnectionResult } from "@/stores/settingsStore";
 import type { QueryEditability } from "@/lib/sqlAnalysis";
 import type { DataGridColumnValueFilterConditionOptions, DataGridContextFilterConditionOptions, DataGridCountSqlOptions, DataGridCopyInsertStatementOptions, DataGridCopyUpdateStatementOptions, DataGridSaveStatementOptions, HiveTablePropertiesSqlOptions } from "@/lib/dataGridSql";
 import type { DataCompareFromTablesOptions, DataCompareFromTablesPreparation, DataCompareSyncPlan, DataCompareSyncPlanOptions, DataComparePreparation, DataComparePreparationOptions } from "@/lib/dataCompare";
-import type { SchemaDiffPreparation, SchemaDiffPreparationOptions, TableDiff } from "@/lib/schemaDiff";
+import type { SchemaDiffPreparation, SchemaDiffPreparationOptions, TableDiff, FunctionDiff, SequenceDiff, RuleDiff, OwnerDiff } from "@/lib/schemaDiff";
 import type { BuildTableStructureChangeSqlOptions, BuildSingleColumnAlterSqlOptions, TableStructureChangeSql } from "@/lib/tableStructureEditorSql";
 import type { BuildTableSelectSqlOptions } from "@/lib/tableSelectSql";
 import type { DatabaseSearchSql, DatabaseSearchSqlOptions, SearchResultWhereOptions } from "@/lib/databaseSearch";
@@ -274,11 +278,36 @@ export async function aiStream(sessionId: string, request: AiCompletionRequest, 
   }
 }
 
+export type AgentEvent =
+  | { type: "turn_start"; turn: number }
+  | { type: "text_delta"; delta: string }
+  | { type: "reasoning_delta"; delta: string }
+  | { type: "tool_call_start"; tool_call_id: string; tool_name: string; args: Record<string, unknown> }
+  | { type: "tool_call_end"; tool_call_id: string; tool_name: string; result: unknown; is_error: boolean }
+  | { type: "turn_end"; turn: number }
+  | { type: "agent_end"; total_tokens?: number }
+  | { type: "error"; message: string };
+
+export async function aiAgentStream(sessionId: string, request: AiCompletionRequest, connectionId: string, database: string, dbType: string, onEvent: (event: AgentEvent) => void, mode?: string, _signal?: AbortSignal): Promise<string> {
+  const unlisten: UnlistenFn = await listen<AgentEvent>("ai-agent-event", (event) => {
+    onEvent(event.payload);
+    if (event.payload.type === "agent_end" || event.payload.type === "error") {
+      unlisten();
+    }
+  });
+  try {
+    return await invoke("ai_agent_stream", { sessionId, request, connectionId, database, dbType, mode });
+  } catch (e) {
+    unlisten();
+    throw e;
+  }
+}
+
 export async function saveAiConfig(config: AiConfig): Promise<void> {
   return invoke("save_ai_config", { config });
 }
 
-export async function aiTestConnection(config: AiConfig): Promise<string> {
+export async function aiTestConnection(config: AiConfig): Promise<AiTestConnectionResult> {
   return invoke("ai_test_connection", { config });
 }
 
@@ -725,8 +754,33 @@ export async function prepareSchemaDiff(options: SchemaDiffPreparationOptions): 
   return invoke("prepare_schema_diff", { options });
 }
 
-export async function generateSchemaSyncSql(diffs: TableDiff[], databaseType: DatabaseType, targetSchema?: string): Promise<string> {
-  return invoke("generate_schema_sync_sql", { diffs, databaseType, targetSchema });
+export async function generateSchemaSyncSql(diffs: TableDiff[], databaseType: DatabaseType, targetSchema?: string, functionDiffs?: FunctionDiff[], sequenceDiffs?: SequenceDiff[], ruleDiffs?: RuleDiff[], ownerDiffs?: OwnerDiff[], cascadeDelete?: boolean): Promise<string> {
+  return invoke("generate_schema_sync_sql", {
+    diffs,
+    databaseType,
+    targetSchema,
+    functionDiffs: functionDiffs ?? [],
+    sequenceDiffs: sequenceDiffs ?? [],
+    ruleDiffs: ruleDiffs ?? [],
+    ownerDiffs: ownerDiffs ?? [],
+    cascadeDelete: cascadeDelete ?? false,
+  });
+}
+
+export async function listFunctions(connectionId: string, database: string, schema: string): Promise<FunctionInfo[]> {
+  return invoke("list_functions", { connectionId, database, schema });
+}
+
+export async function listSequences(connectionId: string, database: string, schema: string, withLastValues: boolean): Promise<SequenceInfo[]> {
+  return invoke("list_sequences", { connectionId, database, schema, withLastValues });
+}
+
+export async function listRules(connectionId: string, database: string, schema: string): Promise<RuleInfo[]> {
+  return invoke("list_rules", { connectionId, database, schema });
+}
+
+export async function listOwners(connectionId: string, database: string, schema: string): Promise<OwnerInfo[]> {
+  return invoke("list_owners", { connectionId, database, schema });
 }
 
 export async function saveConnections(configs: ConnectionConfig[]): Promise<void> {
@@ -1007,8 +1061,8 @@ export async function redisScanKeys(connectionId: string, db: number, cursor: nu
   return invoke("redis_scan_keys", { connectionId, db, cursor, pattern, count });
 }
 
-export async function redisScanValues(connectionId: string, db: number, cursor: number, pattern: string, query: string, count: number): Promise<RedisScanResult> {
-  return invoke("redis_scan_values", { connectionId, db, cursor, pattern, query, count });
+export async function redisScanValues(connectionId: string, db: number, cursor: number, pattern: string, query: string, count: number, includeKeyMatches = false): Promise<RedisScanResult> {
+  return invoke("redis_scan_values", { connectionId, db, cursor, pattern, query, includeKeyMatches, count });
 }
 
 export async function redisGetValue(connectionId: string, db: number, keyRaw: string): Promise<RedisValue> {
@@ -1083,8 +1137,8 @@ export async function redisFlushDb(connectionId: string, db: number): Promise<vo
   return invoke("redis_flush_db", { connectionId, db });
 }
 
-export async function redisExecuteCommand(connectionId: string, db: number, command: string): Promise<RedisCommandResult> {
-  return invoke("redis_execute_command", { connectionId, db, command });
+export async function redisExecuteCommand(connectionId: string, db: number, command: string, skipSafetyCheck?: boolean): Promise<RedisCommandResult> {
+  return invoke("redis_execute_command", { connectionId, db, command, skipSafetyCheck: skipSafetyCheck ?? false });
 }
 
 export async function redisLoadMore(connectionId: string, db: number, keyRaw: string, keyType: string, cursor: number, count: number): Promise<RedisValue> {

@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { uuid } from "@/lib/utils";
 import { ref, computed, watch } from "vue";
-import type { ColumnInfo, ConnectionConfig, ObjectInfo, SidebarLayout, TreeNode } from "@/types/database";
+import type { ColumnInfo, ConnectionConfig, ForeignKeyInfo, ObjectInfo, SidebarLayout, TreeNode } from "@/types/database";
 import { applyPinnedTreeNodeState, orderPinnedFirst } from "@/lib/pinnedItems";
 import {
   reconcileLayout,
@@ -14,10 +14,11 @@ import {
   deleteGroup as deleteGroupOp,
   toggleGroupCollapsed as toggleGroupCollapsedOp,
   moveConnectionToGroup as moveConnectionToGroupOp,
+  remapSidebarLayoutConnectionIds,
   reorderEntry as reorderEntryOp,
   type DropPosition,
 } from "@/lib/sidebarLayout";
-import type { SqlCompletionColumn, SqlCompletionObject, SqlCompletionTable } from "@/lib/sqlCompletion";
+import type { SqlCompletionColumn, SqlCompletionForeignKey, SqlCompletionObject, SqlCompletionTable } from "@/lib/sqlCompletion";
 import * as api from "@/lib/api";
 import { isTauriRuntime } from "@/lib/tauriRuntime";
 import { isSchemaAware, normalizeSidebarObjectKind, sidebarObjectKindsForDatabase, usesTreeSchemaMode } from "@/lib/databaseCapabilities";
@@ -103,12 +104,14 @@ export const useConnectionStore = defineStore("connection", () => {
   const completionTablesCache = ref<Record<string, SqlCompletionTable[]>>({});
   const completionObjectsCache = ref<Record<string, SqlCompletionObject[]>>({});
   const completionColumnsCache = ref<Record<string, ColumnInfo[]>>({});
+  const completionForeignKeysCache = ref<Record<string, ForeignKeyInfo[]>>({});
   const completionDatabasesCache = ref<Record<string, string[]>>({});
   const elasticsearchCompletionIndicesCache = ref<Record<string, string[]>>({});
   const schemaListCache = ref<Record<string, string[]>>({});
   const completionTableIndex = new Map<string, { touched: number; tables: SqlCompletionTable[] }>();
   const completionObjectIndex = new Map<string, { touched: number; objects: SqlCompletionObject[] }>();
   const completionColumnIndex = new Map<string, { touched: number; columns: SqlCompletionColumn[] }>();
+  const completionForeignKeyIndex = new Map<string, { touched: number; foreignKeys: SqlCompletionForeignKey[] }>();
   const completionInFlight = new Map<string, Promise<unknown>>();
   const transferSource = ref<{ connectionId: string; database: string } | null>(null);
   const schemaDiffSource = ref<{ connectionId: string; database: string; schema?: string } | null>(null);
@@ -516,6 +519,9 @@ export const useConnectionStore = defineStore("connection", () => {
     for (const key of Object.keys(completionColumnsCache.value)) {
       if (key === exactCacheKey || key.startsWith(cachePrefix)) delete completionColumnsCache.value[key];
     }
+    for (const key of Object.keys(completionForeignKeysCache.value)) {
+      if (key === exactCacheKey || key.startsWith(cachePrefix)) delete completionForeignKeysCache.value[key];
+    }
     for (const key of Object.keys(schemaListCache.value)) {
       if (key === exactCacheKey || key.startsWith(cachePrefix)) delete schemaListCache.value[key];
     }
@@ -530,6 +536,9 @@ export const useConnectionStore = defineStore("connection", () => {
     }
     for (const key of completionColumnIndex.keys()) {
       if (key.startsWith(cachePrefix)) completionColumnIndex.delete(key);
+    }
+    for (const key of completionForeignKeyIndex.keys()) {
+      if (key.startsWith(cachePrefix)) completionForeignKeyIndex.delete(key);
     }
     for (const key of completionInFlight.keys()) {
       if (key.startsWith(cachePrefix)) completionInFlight.delete(key);
@@ -1368,6 +1377,10 @@ export const useConnectionStore = defineStore("connection", () => {
       }
       const querySchema = metadataQuerySchema(connectionId, database, schema);
       const fkeys = await api.listForeignKeys(connectionId, database, querySchema, table);
+      const cacheKey = `${connectionId}:${database}:${schema || ""}:${table}`;
+      completionForeignKeysCache.value[cacheKey] = fkeys;
+      evictOldestCacheEntries(completionForeignKeysCache.value, COMPLETION_CACHE_MAX);
+      indexCompletionForeignKeys(connectionId, database, table, schema, sqlCompletionForeignKeys(fkeys));
       setChildren(
         node,
         fkeys.map((fk) => ({
@@ -1561,6 +1574,10 @@ export const useConnectionStore = defineStore("connection", () => {
     return `${completionScopeKey(connectionId, database, schema)}:${table.toLowerCase()}`;
   }
 
+  function completionForeignKeysKey(connectionId: string, database: string, table: string, schema?: string): string {
+    return `${completionScopeKey(connectionId, database, schema)}:${table.toLowerCase()}:fkeys`;
+  }
+
   function touchCompletionIndex<T>(index: Map<string, { touched: number } & T>, key: string, value: T, max = COMPLETION_CACHE_MAX) {
     index.set(key, { ...value, touched: Date.now() });
     if (index.size <= max) return;
@@ -1578,6 +1595,32 @@ export const useConnectionStore = defineStore("connection", () => {
     return promise;
   }
 
+  function completionNameSegments(name: string): string[] {
+    return name
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .split(/[\s_.:-]+/)
+      .map((segment) => segment.trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  function completionNameAcronym(name: string): string {
+    return completionNameSegments(name)
+      .map((segment) => segment[0])
+      .join("");
+  }
+
+  function orderedSubsequenceScore(text: string, filter: string): number {
+    let index = 0;
+    let gaps = 0;
+    for (const ch of filter) {
+      const found = text.indexOf(ch, index);
+      if (found < 0) return -1;
+      gaps += found - index;
+      index = found + 1;
+    }
+    return 1_000 - gaps - text.length;
+  }
+
   function tableMatchScore(table: SqlCompletionTable, filter: string, preferredSchema?: string): number {
     const text = table.name.toLowerCase();
     const schema = table.schema?.toLowerCase();
@@ -1585,15 +1628,16 @@ export const useConnectionStore = defineStore("connection", () => {
     let score = schema && preferredSchema && schema === preferredSchema.toLowerCase() ? 10_000 : 0;
     if (!normalized) return score;
     if (text === normalized) return score + 9_000 - text.length;
-    if (text.startsWith(normalized)) return score + 7_000 - text.length;
+    if (text.startsWith(normalized)) return score + 7_500 - text.length;
+    const segments = completionNameSegments(table.name);
+    if (segments.some((segment) => segment.startsWith(normalized))) return score + 7_200 - text.length;
+    const acronym = completionNameAcronym(table.name);
+    if (acronym === normalized) return score + 7_100 - text.length;
+    if (acronym.startsWith(normalized)) return score + 6_900 - text.length;
+    if (normalized.length <= segments.length && segments.every((segment, index) => segment.startsWith(normalized[index] ?? ""))) return score + 6_700 - text.length;
     if (text.includes(normalized)) return score + 4_000 - text.length;
-    let index = 0;
-    for (const ch of normalized) {
-      index = text.indexOf(ch, index);
-      if (index < 0) return -1;
-      index++;
-    }
-    return score + 1_000 - text.length;
+    const subsequenceScore = orderedSubsequenceScore(text, normalized);
+    return subsequenceScore < 0 ? -1 : score + subsequenceScore;
   }
 
   function objectMatchScore(object: SqlCompletionObject, filter: string, preferredSchema?: string): number {
@@ -1641,6 +1685,22 @@ export const useConnectionStore = defineStore("connection", () => {
     });
   }
 
+  function sqlCompletionForeignKeys(foreignKeys: ForeignKeyInfo[]): SqlCompletionForeignKey[] {
+    return foreignKeys.map((foreignKey) => ({
+      name: foreignKey.name,
+      column: foreignKey.column,
+      ref_schema: foreignKey.ref_schema,
+      ref_table: foreignKey.ref_table,
+      ref_column: foreignKey.ref_column,
+    }));
+  }
+
+  function indexCompletionForeignKeys(connectionId: string, database: string, table: string, schema: string | undefined, foreignKeys: SqlCompletionForeignKey[]) {
+    touchCompletionIndex(completionForeignKeyIndex, completionForeignKeysKey(connectionId, database, table, schema), {
+      foreignKeys,
+    });
+  }
+
   function lookupLocalCompletionTables(connectionId: string, database: string, filter = "", limit?: number, schema?: string): SqlCompletionTable[] {
     const allScopes = [...completionTableIndex.entries()].filter(([key]) => key.startsWith(`${connectionId}:${database}:`)).map(([, entry]) => entry);
     const preferred = schema ? completionTableIndex.get(completionScopeKey(connectionId, database, schema)) : undefined;
@@ -1685,6 +1745,10 @@ export const useConnectionStore = defineStore("connection", () => {
 
   function lookupLocalCompletionColumns(connectionId: string, database: string, table: string, schema?: string): SqlCompletionColumn[] {
     return completionColumnIndex.get(completionColumnsKey(connectionId, database, table, schema))?.columns ?? [];
+  }
+
+  function lookupLocalCompletionForeignKeys(connectionId: string, database: string, table: string, schema?: string): SqlCompletionForeignKey[] {
+    return completionForeignKeyIndex.get(completionForeignKeysKey(connectionId, database, table, schema))?.foreignKeys ?? [];
   }
 
   function databaseNamesFromTree(connectionId: string): string[] {
@@ -1907,7 +1971,7 @@ export const useConnectionStore = defineStore("connection", () => {
 
   function toSqlCompletionObject(object: ObjectInfo): SqlCompletionObject | null {
     const objectType = object.object_type.toUpperCase();
-    const type = objectType.includes("PROCEDURE") ? "procedure" : objectType.includes("FUNCTION") ? "function" : objectType.includes("TRIGGER") ? "trigger" : null;
+    const type = objectType.includes("PROCEDURE") ? "procedure" : objectType.includes("FUNCTION") ? "function" : objectType.includes("TRIGGER") ? "trigger" : objectType.includes("PACKAGE") ? "package" : null;
     if (!type) return null;
     return {
       name: object.name,
@@ -1919,7 +1983,7 @@ export const useConnectionStore = defineStore("connection", () => {
   }
 
   function fuzzyCompletionObjectMatch(object: SqlCompletionObject, filter: string): boolean {
-    return fuzzyTextMatch(object.name, filter) || (!!object.schema && fuzzyTextMatch(object.schema, filter));
+    return fuzzyTextMatch(object.name, filter) || (!!object.schema && fuzzyTextMatch(object.schema, filter)) || (!!object.parentName && fuzzyTextMatch(object.parentName, filter)) || (!!object.parentSchema && fuzzyTextMatch(`${object.parentSchema}.${object.parentName ?? ""}`, filter));
   }
 
   function fuzzyTextMatch(value: string, filter: string): boolean {
@@ -1973,6 +2037,28 @@ export const useConnectionStore = defineStore("connection", () => {
     return columns;
   }
 
+  async function listCompletionForeignKeys(connectionId: string, database: string, table: string, schema?: string): Promise<SqlCompletionForeignKey[]> {
+    if (isSchemaAwareDatabase(connectionId) && !connectionUsesDatabaseObjectTreeMode(getConfig(connectionId)) && !schema) {
+      return [];
+    }
+    const metadataCapabilities = getTableMetadataCapabilities(effectiveDatabaseTypeForConnection(getConfig(connectionId)));
+    if (!metadataCapabilities.foreignKeys) return [];
+
+    const cacheKey = `${connectionId}:${database}:${schema || ""}:${table}`;
+    if (!completionForeignKeysCache.value[cacheKey]) {
+      await withCompletionInFlight(`${cacheKey}:fkeys`, async () => {
+        await ensureConnected(connectionId);
+        const querySchema = metadataQuerySchema(connectionId, database, schema);
+        completionForeignKeysCache.value[cacheKey] = await api.listForeignKeys(connectionId, database, querySchema, table);
+        evictOldestCacheEntries(completionForeignKeysCache.value, COMPLETION_CACHE_MAX);
+      });
+    }
+
+    const foreignKeys = sqlCompletionForeignKeys(completionForeignKeysCache.value[cacheKey]);
+    indexCompletionForeignKeys(connectionId, database, table, schema, foreignKeys);
+    return foreignKeys;
+  }
+
   function refreshCompletionTables(connectionId: string, database: string, filter = "", limit?: number, schema?: string): Promise<SqlCompletionTable[]> {
     return listCompletionTables(connectionId, database, filter, limit, schema);
   }
@@ -1991,6 +2077,10 @@ export const useConnectionStore = defineStore("connection", () => {
 
   function refreshCompletionColumns(connectionId: string, database: string, table: string, schema?: string): Promise<SqlCompletionColumn[]> {
     return listCompletionColumns(connectionId, database, table, schema);
+  }
+
+  function refreshCompletionForeignKeys(connectionId: string, database: string, table: string, schema?: string): Promise<SqlCompletionForeignKey[]> {
+    return listCompletionForeignKeys(connectionId, database, table, schema);
   }
 
   function findNode(nodes: TreeNode[], id: string): TreeNode | null {
@@ -2318,14 +2408,22 @@ export const useConnectionStore = defineStore("connection", () => {
     }
 
     let count = 0;
+    const importedConnectionIdMap = new Map<string, string>();
     for (const config of imported) {
       const duplicate = connections.value.find((c) => c.name === config.name && c.host === config.host && c.port === config.port);
       if (!duplicate) {
+        const importedId = config.id;
         config.id = uuid();
+        if (typeof importedId === "string") importedConnectionIdMap.set(importedId, config.id);
         const normalized = normalizeConnection(config);
         await addConnection(normalized);
         count++;
+      } else if (typeof config.id === "string") {
+        importedConnectionIdMap.set(config.id, duplicate.id);
       }
+    }
+    if (importedLayout) {
+      importedLayout = remapSidebarLayoutConnectionIds(importedLayout, importedConnectionIdMap);
     }
     return { count, layout: importedLayout };
   }
@@ -2485,16 +2583,19 @@ export const useConnectionStore = defineStore("connection", () => {
     listCompletionTables,
     listCompletionObjects,
     listCompletionColumns,
+    listCompletionForeignKeys,
     listCompletionSchemas,
     listCompletionDatabases,
     lookupLocalCompletionTables,
     lookupLocalCompletionObjects,
     lookupLocalCompletionColumns,
+    lookupLocalCompletionForeignKeys,
     lookupLocalCompletionSchemas,
     lookupLocalCompletionDatabases,
     refreshCompletionTables,
     refreshCompletionObjects,
     refreshCompletionColumns,
+    refreshCompletionForeignKeys,
     refreshCompletionSchemas,
     refreshCompletionDatabases,
     listElasticsearchCompletionIndices,
