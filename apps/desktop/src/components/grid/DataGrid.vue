@@ -6946,6 +6946,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
               <table v-else class="w-full text-xs">
                 <thead class="sticky top-0 bg-muted text-muted-foreground">
                   <tr class="border-b">
+                    <th class="text-left font-medium px-3 py-2 w-8">#</th>
                     <th class="text-left font-medium px-3 py-2">{{ t("grid.columnName") }}</th>
                     <th class="text-left font-medium px-3 py-2">{{ t("grid.columnType") }}</th>
                     <th class="text-left font-medium px-3 py-2">{{ t("grid.tableInfoNullable") }}</th>
@@ -6953,7 +6954,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                 </thead>
                 <tbody>
                   <tr
-                    v-for="column in filteredColumns"
+                    v-for="(column, index) in filteredColumns"
                     :key="column.name"
                     class="border-b cursor-pointer hover:bg-muted/30"
                     role="button"
@@ -6963,6 +6964,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                     @keydown.enter.prevent="scrollToTableInfoColumn(column.name)"
                     @keydown.space.prevent="scrollToTableInfoColumn(column.name)"
                   >
+                    <td class="px-3 py-2 text-muted-foreground w-8">{{ index + 1 }}</td>
                     <td class="px-3 py-2 font-medium">
                       <span class="inline-flex items-center gap-1.5">
                         <KeyRound v-if="column.is_primary_key" class="h-3 w-3 text-amber-500" />
