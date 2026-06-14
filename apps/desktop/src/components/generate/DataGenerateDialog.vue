@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { useConnectionStore } from "@/stores/connectionStore";
 import * as api from "@/lib/api";
 import type { TableGenerateConfig } from "@/lib/dataGenerate";
-import { findGeneratorKey, generateTableData, GenerateResult } from "@/lib/dataGenerate";
+import { findGeneratorKey, generateTableData } from "@/lib/dataGenerate";
 import { quoteTableIdentifier } from "@/lib/tableSelectSql";
 import { effectiveDatabaseTypeForConnection } from "@/lib/jdbcDialect";
 import GeneratorParamsPanel from "./params/GeneratorParamsPanel.vue";
@@ -14,7 +14,6 @@ import { Dialog, DialogHeader, DialogTitle, DialogScrollContent, DialogContent, 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import LightTooltip from "@/components/ui/LightTooltip.vue";
 import { Database, Table, Columns, Loader2, Save, Upload, Settings, ChevronRight, X, AlertCircle, ArrowUp, ArrowDown } from "@lucide/vue";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -366,10 +365,6 @@ async function regenerate() {
 function copyAllSql() {
   const allSql = allSqlStatements().join("\n\n");
   void navigator.clipboard.writeText(allSql);
-}
-
-function copySql(sql: string) {
-  void navigator.clipboard.writeText(sql);
 }
 
 const executing = ref(false);
