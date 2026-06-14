@@ -37,6 +37,7 @@ import { buildExecutableObjectSourceStatements, objectSourceSaveExecutionMode } 
 import { resolveExecutableSql, resolveExecutableSqlWithBackend } from "@/lib/sqlExecutionTarget";
 import { uuid } from "@/lib/utils";
 import { isTauriRuntime } from "@/lib/tauriRuntime";
+import { openQueryResultArchiveFile } from "@/lib/queryResultArchiveFile";
 import { sqlFileTitleFromPath } from "@/lib/sqlFileOpen";
 import type { ConnectionConfig } from "@/types/database";
 import { parseConnectionDeepLink, type ConnectionDeepLinkDraft } from "@/lib/connectionDeepLink";
@@ -261,7 +262,10 @@ const saveSqlFolders = computed(() => {
     }
     return parts.join(" / ");
   };
-  return savedSqlStore.allFoldersTreeOrder.map((folder) => ({ ...folder, displayName: pathForFolder(folder.id) || folder.name }));
+  return savedSqlStore.allFoldersTreeOrder.map((folder) => ({
+    ...folder,
+    displayName: pathForFolder(folder.id) || folder.name,
+  }));
 });
 
 async function applyUiScale(scale: number) {
@@ -306,7 +310,11 @@ watch(
   () => queryStore.activeTabId,
   (id, previousId) => {
     if (previousId && previousId !== id && typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("dbx:before-tab-switch", { detail: { tabId: id, fromTabId: previousId } }));
+      window.dispatchEvent(
+        new CustomEvent("dbx:before-tab-switch", {
+          detail: { tabId: id, fromTabId: previousId },
+        }),
+      );
     }
     if (id) newQueryContextSource.value = "tab";
     selectedSql.value = "";
@@ -512,7 +520,10 @@ async function openSqlFile() {
   try {
     if (isTauriRuntime()) {
       const { open } = await import("@tauri-apps/plugin-dialog");
-      const path = await open({ filters: [{ name: "SQL", extensions: ["sql"] }], multiple: false });
+      const path = await open({
+        filters: [{ name: "SQL", extensions: ["sql"] }],
+        multiple: false,
+      });
       if (path) {
         const content = await api.readExternalSqlFile(path as string);
         queryStore.updateSql(tab.id, content);
@@ -536,6 +547,22 @@ async function openSqlFile() {
     }
   } catch (e: any) {
     toast(t("toolbar.sqlOpenFailed", { message: e?.message || String(e) }), 5000);
+  }
+}
+
+async function importResultArchive() {
+  try {
+    const bytes = await openQueryResultArchiveFile();
+    if (!bytes) return;
+    const tabId = await queryStore.importResultArchive(bytes);
+    if (!tabId) {
+      toast(t("tabs.resultArchiveImportInvalid"), 5000);
+      return;
+    }
+    activeOutputView.value = "result";
+    toast(t("tabs.resultArchiveImported"), 2500);
+  } catch (e: any) {
+    toast(t("tabs.resultArchiveImportFailed", { message: e?.message || String(e) }), 5000);
   }
 }
 
@@ -643,7 +670,12 @@ async function openConnectionDeepLink(url: string) {
     connectionDialogPrefill.value = draft;
     showConnectionDialog.value = true;
   } catch (e: any) {
-    toast(t("connection.parseConnectionUrlFailed", { message: e?.message || String(e) }), 5000);
+    toast(
+      t("connection.parseConnectionUrlFailed", {
+        message: e?.message || String(e),
+      }),
+      5000,
+    );
   }
 }
 
@@ -684,7 +716,12 @@ async function newQuery() {
       queryStore.updateDatabase(tabId, resolveDefaultDatabase(conn, options));
     }
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e?.message || String(e)) }), 5000);
+    toast(
+      t("connection.connectFailed", {
+        message: translateBackendError(t, e?.message || String(e)),
+      }),
+      5000,
+    );
   }
 }
 
@@ -698,7 +735,12 @@ async function openConnectionQuery(connectionId: string) {
     const options = await getDatabaseOptions(connectionId);
     queryStore.updateDatabase(tabId, resolveDefaultDatabase(connection, options));
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e?.message || String(e)) }), 5000);
+    toast(
+      t("connection.connectFailed", {
+        message: translateBackendError(t, e?.message || String(e)),
+      }),
+      5000,
+    );
   }
 }
 
@@ -744,7 +786,12 @@ async function changeActiveConnection(connectionId: string) {
     const options = await getDatabaseOptions(connectionId);
     queryStore.updateDatabase(tab.id, resolveDefaultDatabase(connection, options));
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e?.message || String(e)) }), 5000);
+    toast(
+      t("connection.connectFailed", {
+        message: translateBackendError(t, e?.message || String(e)),
+      }),
+      5000,
+    );
   }
 }
 
@@ -1141,6 +1188,7 @@ onUnmounted(() => {
                   @format-sql="formatActiveSql"
                   @save-sql="void openSaveSqlDialog()"
                   @open-sql="openSqlFile"
+                  @import-result-archive="importResultArchive"
                   @change-connection="changeActiveConnection"
                   @change-database="changeActiveDatabase"
                   @change-schema="changeActiveSchema"
@@ -1259,7 +1307,15 @@ onUnmounted(() => {
           @danger-confirm="onDangerConfirm"
           @connect-started="(name: string) => toast(t('connection.connecting', { name }), 30000)"
           @connect-succeeded="(name: string) => toast(t('connection.connectSuccess', { name }), 2000)"
-          @connect-failed="(msg: string) => toast(t('connection.connectFailed', { message: translateBackendError(t, msg) }), 5000)"
+          @connect-failed="
+            (msg: string) =>
+              toast(
+                t('connection.connectFailed', {
+                  message: translateBackendError(t, msg),
+                }),
+                5000,
+              )
+          "
           @open-driver-store="
             setConnectionDialogOpen(false);
             showDriverStore = true;
@@ -1279,12 +1335,14 @@ onUnmounted(() => {
           @download-and-install="downloadAndInstallUpdate"
           @restart="restartApp"
         />
+      </div>
+      <Teleport to="body">
         <Transition name="toast">
-          <div v-if="toastVisible" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-100 px-4 py-2 rounded-lg bg-foreground text-background text-sm shadow-lg">
+          <div v-if="toastVisible" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-99999 px-4 py-2 rounded-lg bg-foreground text-background text-sm shadow-lg pointer-events-none">
             {{ toastMessage }}
           </div>
         </Transition>
-      </div>
+      </Teleport>
 
       <Dialog
         :open="showSaveSqlDialog"
