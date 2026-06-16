@@ -1,4 +1,4 @@
-﻿export default {
+export default {
   app: {
     name: "DBX",
   },
@@ -1562,6 +1562,21 @@
       file_extension: "File Extension",
       url: "URL",
       hostname: "Hostname",
+      id_number: "Número de documento",
+    },
+    idTypes: {
+      title: "Tipo de documento",
+      customPattern: "Patrón personalizado",
+      customPatternPlaceholder: "p. ej. ([A-Z]{2})-([0-9]{8})",
+      customPatternHint: "Admite patrones simples como [A-Z] letras, [0-9] dígitos, {n} repeticiones, guiones",
+      id_card: "DNI chino",
+      passport: "Pasaporte",
+      hk_macau_pass: "Permiso HK/Macao",
+      taiwan_pass: "Permiso Taiwán",
+      uscc: "Código social unificado",
+      bank_card: "Tarjeta bancaria",
+      drivers_license: "Carnet de conducir",
+      custom: "Personalizado",
     },
   },
   tableToolbox: {
