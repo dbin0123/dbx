@@ -1996,6 +1996,8 @@ export default {
     sidebarHiddenTablePrefixes: "Prefixos de nome de tabela ocultos",
     sidebarHiddenTablePrefixesDescription: "Um prefixo por linha. Apenas os rótulos de tabela, view e coleção da barra lateral são encurtados; tooltips e ações ainda usam o nome completo.",
     sidebarHiddenTablePrefixesPlaceholder: "Exemplo:\nODS_\nT8Y2_LONG_",
+    sidebarTablePageSize: "Tamanho da página da barra lateral",
+    sidebarTablePageSizeDescription: "Número máximo de tabelas/objetos carregados por página na árvore lateral. Aumente se tiver muitas tabelas para reduzir páginas.",
     sidebarHideTableComments: "Ocultar comentários de tabela na barra lateral",
     sidebarHideTableCommentsDescription: "Ocultar os comentários inline de tabela/view exibidos ao lado dos nomes na árvore da barra lateral para economizar espaço horizontal.",
     sidebarAllowHorizontalScroll: "Permitir rolagem horizontal da barra lateral",

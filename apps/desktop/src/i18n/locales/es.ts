@@ -1912,6 +1912,8 @@ export default {
     sidebarHiddenTablePrefixes: "Prefijos ocultos de tablas",
     sidebarHiddenTablePrefixesDescription: "Un prefijo por linea. Solo acorta etiquetas de tablas, vistas y colecciones en la barra lateral; las acciones y ayudas usan el nombre completo.",
     sidebarHiddenTablePrefixesPlaceholder: "Ejemplo:\nODS_\nT8Y2_LONG_",
+    sidebarTablePageSize: "Tamaño de página de la barra lateral",
+    sidebarTablePageSizeDescription: "Número máximo de tablas/objetos cargados por página en el árbol lateral. Auméntalo si tienes muchas tablas para reducir páginas.",
     sidebarHideTableComments: "Ocultar comentarios de tablas en la barra lateral",
     sidebarHideTableCommentsDescription: "Oculta los comentarios de tablas/vistas junto a los nombres en el árbol de la barra lateral para ahorrar espacio horizontal.",
     sidebarAllowHorizontalScroll: "Permitir desplazamiento horizontal lateral",

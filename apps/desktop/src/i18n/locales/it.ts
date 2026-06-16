@@ -1985,6 +1985,8 @@ export default {
     sidebarHiddenTablePrefixes: "Prefissi dei nomi delle tabelle nascosti",
     sidebarHiddenTablePrefixesDescription: "Un prefisso per riga. Solo le etichette di tabelle, viste e collezioni della barra laterale vengono abbreviate; i suggerimenti e le azioni utilizzano ancora il nome completo.",
     sidebarHiddenTablePrefixesPlaceholder: "Esempio:\nODS_\nT8Y2_LONG_",
+    sidebarTablePageSize: "Dimensione pagina barra laterale",
+    sidebarTablePageSizeDescription: "Numero massimo di tabelle/oggetti caricati per pagina nell'albero laterale. Aumentalo se hai molte tabelle per ridurre le pagine.",
     sidebarHideTableComments: "Nascondi i commenti delle tabelle nella barra laterale",
     sidebarHideTableCommentsDescription: "Nascondi i commenti in linea delle tabelle/viste mostrati accanto ai nomi nell'albero della barra laterale per risparmiare spazio orizzontale.",
     sidebarAllowHorizontalScroll: "Consenti scorrimento orizzontale barra laterale",

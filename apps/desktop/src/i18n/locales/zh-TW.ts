@@ -2022,6 +2022,8 @@ export default {
     sidebarHiddenTablePrefixes: "隱藏資料表名稱字首",
     sidebarHiddenTablePrefixesDescription: "每行一個字首。只縮短側邊欄中的資料表、檢視和集合標籤；工具提示和實際操作仍使用完整名稱。",
     sidebarHiddenTablePrefixesPlaceholder: "範例：\nODS_\nT8Y2_LONG_",
+    sidebarTablePageSize: "側邊欄分頁大小",
+    sidebarTablePageSizeDescription: "側邊欄樹每頁最多載入的資料表/物件數量。資料表多時可調大減少翻頁次數。",
     sidebarHideTableComments: "隱藏側邊欄資料表註解",
     sidebarHideTableCommentsDescription: "隱藏側邊欄樹狀清單中名稱旁的資料表/檢視註解，以節省橫向空間。",
     sidebarAllowHorizontalScroll: "允許側邊欄水平捲動",

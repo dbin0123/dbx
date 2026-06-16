@@ -2215,6 +2215,8 @@ export default {
     sidebarHiddenTablePrefixes: "Hidden table name prefixes",
     sidebarHiddenTablePrefixesDescription: "One prefix per line. Only sidebar table, view, and collection labels are shortened; tooltips and actions still use the full name.",
     sidebarHiddenTablePrefixesPlaceholder: "Example:\nODS_\nT8Y2_LONG_",
+    sidebarTablePageSize: "Sidebar page size",
+    sidebarTablePageSizeDescription: "Maximum number of tables/objects loaded per page in the sidebar tree. Increase if you have many tables and want fewer pages.",
     sidebarHideTableComments: "Hide table comments in sidebar",
     sidebarHideTableCommentsDescription: "Hide the inline table/view comments shown next to names in the sidebar tree to save horizontal space.",
     sidebarAllowHorizontalScroll: "Allow sidebar horizontal scroll",

@@ -2200,6 +2200,8 @@ export default {
     sidebarHiddenTablePrefixes: "非表示テーブル名プレフィックス",
     sidebarHiddenTablePrefixesDescription: "1行に1つのプレフィックス。サイドバーのテーブル、ビュー、コレクションラベルのみ短縮されます。ツールチップと操作は完全な名前を使用します。",
     sidebarHiddenTablePrefixesPlaceholder: "Example:\nODS_\nT8Y2_LONG_",
+    sidebarTablePageSize: "サイドバーのページサイズ",
+    sidebarTablePageSizeDescription: "サイドバーツリーで1ページあたりに読み込むテーブル/オブジェクトの最大数です。テーブルが多い場合は増やすとページ切り替えが減ります。",
     sidebarHideTableComments: "サイドバーのテーブルコメントを非表示",
     sidebarHideTableCommentsDescription: "横のスペースを節約するため、サイドバーツリーで名前の横に表示されるテーブル/ビューコメントを非表示にします。",
     sidebarAllowHorizontalScroll: "サイドバーの横スクロールを許可",
