@@ -1495,6 +1495,7 @@ export default {
     title: "Operazione Pericolosa",
     message: "Questa istruzione SQL potrebbe modificare o eliminare i dati in modo irreversibile. Sei sicuro di volerla eseguire?",
     suppressFuturePrompts: "Non chiedere più per SQL pericolosi",
+    wrapLines: "Attiva/disattiva ritorno a capo",
     deleteMessage: "Questa operazione di eliminazione potrebbe essere irreversibile. Continuare?",
     deleteConfirm: "Conferma Eliminazione",
     deleteRowMessage: "Questa riga verrà contrassegnata per l'eliminazione e rimossa dal database dopo il salvataggio. Continuare?",

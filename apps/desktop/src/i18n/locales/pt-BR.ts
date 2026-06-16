@@ -1506,6 +1506,7 @@ export default {
     title: "Operação perigosa",
     message: "Esta instrução SQL pode modificar ou excluir dados de forma irreversível. Tem certeza de que deseja executá-la?",
     suppressFuturePrompts: "Não perguntar novamente para SQL perigoso",
+    wrapLines: "Alternar quebra de linha",
     deleteMessage: "Esta operação de exclusão pode ser irreversível. Continuar?",
     deleteConfirm: "Confirmar exclusão",
     deleteRowMessage: "Esta linha será marcada para exclusão e removida do banco de dados após salvar. Continuar?",

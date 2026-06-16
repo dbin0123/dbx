@@ -1624,6 +1624,7 @@ export default {
     title: "危険な操作",
     message: "このSQL文はデータを不可逆的に変更または削除する可能性があります。実行してもよろしいですか？",
     suppressFuturePrompts: "危険なSQLの確認を今後表示しない",
+    wrapLines: "折り返し表示を切り替え",
     deleteMessage: "この削除操作は元に戻せない可能性があります。続行しますか？",
     deleteConfirm: "削除を確認",
     deleteRowMessage: "この行は削除対象としてマークされ、保存後にデータベースから削除されます。続行しますか？",

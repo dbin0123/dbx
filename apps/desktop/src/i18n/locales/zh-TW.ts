@@ -1483,6 +1483,7 @@ export default {
     title: "危險操作",
     message: "此 SQL 語句可能不可逆地修改或刪除資料，確認要執行嗎？",
     suppressFuturePrompts: "之後執行危險 SQL 不再提示",
+    wrapLines: "切換自動換行",
     deleteMessage: "此刪除操作可能不可逆，確認要繼續嗎？",
     deleteConfirm: "確認刪除",
     deleteRowMessage: "此列將被標記為刪除，儲存後會從資料庫刪除，確認要繼續嗎？",
