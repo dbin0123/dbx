@@ -821,6 +821,7 @@ const POSTGRES_FUNCTION_SIGNATURES = new Map<string, string[]>([
   ["ARRAY_AGG", ["expression"]],
   ["STRING_AGG", ["expression", "delimiter"]],
   ["GEN_RANDOM_UUID", []],
+  ["NOW", []],
 ]);
 
 const MYSQL_FUNCTION_SIGNATURES = new Map<string, string[]>([
@@ -829,6 +830,7 @@ const MYSQL_FUNCTION_SIGNATURES = new Map<string, string[]>([
   ["JSON_UNQUOTE", ["json"]],
   ["GROUP_CONCAT", ["expression"]],
   ["UUID", []],
+  ["NOW", []],
 ]);
 
 const SQLITE_FUNCTION_SIGNATURES = new Map<string, string[]>([
@@ -836,6 +838,7 @@ const SQLITE_FUNCTION_SIGNATURES = new Map<string, string[]>([
   ["JSON_SET", ["json", "path", "value"]],
   ["STRFTIME", ["format", "time"]],
   ["IFNULL", ["expression", "fallback"]],
+  ["NOW", []],
 ]);
 
 const SQLSERVER_FUNCTION_SIGNATURES = new Map<string, string[]>([
@@ -844,6 +847,20 @@ const SQLSERVER_FUNCTION_SIGNATURES = new Map<string, string[]>([
   ["JSON_VALUE", ["expression", "path"]],
   ["JSON_QUERY", ["expression", "path"]],
   ["NEWID", []],
+  ["GETDATE", []],
+  ["GETUTCDATE", []],
+  ["SYSDATETIME", []],
+  ["SYSUTCDATETIME", []],
+  ["DATEADD", ["datepart", "number", "date"]],
+  ["DATEDIFF", ["datepart", "startdate", "enddate"]],
+  ["DATEPART", ["datepart", "date"]],
+  ["DATENAME", ["datepart", "date"]],
+  ["EOMONTH", ["start_date"]],
+  ["CHARINDEX", ["substring", "string"]],
+  ["PATINDEX", ["pattern", "string"]],
+  ["LEN", ["string"]],
+  ["STUFF", ["string", "start", "length", "replace"]],
+  ["ISNULL", ["expression", "replacement"]],
 ]);
 
 const MANTICORESEARCH_FUNCTION_SIGNATURES = new Map<string, string[]>([
@@ -907,7 +924,6 @@ const COMMON_SQL_FUNCTION_NAMES = new Set([
   "LOWER",
   "LENGTH",
   "EXTRACT",
-  "NOW",
   "ROUND",
   "FLOOR",
   "CEIL",
@@ -1047,6 +1063,7 @@ export type SqlStatementKind = "select" | "insert" | "update" | "delete" | "crea
 export interface SqlCompletionContext {
   prefix: string;
   qualifier?: string;
+  qualifierParts?: string[];
   suggestTables: boolean;
   suggestColumns: boolean;
   suggestKeywords: boolean;
@@ -1480,6 +1497,7 @@ export function getSqlCompletionContext(sql: string, cursor: number): SqlComplet
   const trailingIdentifier = parseTrailingIdentifierContext(beforeCursor);
   const prefix = trailingIdentifier?.prefix ?? "";
   const qualifier = trailingIdentifier?.qualifier;
+  const qualifierParts = trailingIdentifier?.qualifierParts;
   const bareStart = trailingIdentifier?.start ?? beforeCursor.length;
   const beforeToken = beforeCursor.slice(0, Math.max(0, bareStart)).trimEnd();
   const lastWord = /([A-Za-z_][\w$]*)$/.exec(beforeToken)?.[1]?.toLowerCase() ?? "";
@@ -1530,6 +1548,7 @@ export function getSqlCompletionContext(sql: string, cursor: number): SqlComplet
   return {
     prefix,
     qualifier: insertInfo ? undefined : qualifier,
+    qualifierParts: insertInfo ? undefined : qualifierParts,
     suggestTables: insertInfo ? false : afterTableTrigger,
     suggestColumns: !!qualifier || !!updateInfo?.inSetClause || (inColumnContext && referencedTables.length > 0),
     suggestKeywords: !exclusiveTableSuggestions && !exclusiveColumnSuggestions && !insertInfo && !inCallRoutineContext,
@@ -1556,7 +1575,7 @@ export function getSqlCompletionContext(sql: string, cursor: number): SqlComplet
   };
 }
 
-function parseTrailingIdentifierContext(input: string): { start: number; prefix: string; qualifier?: string } | null {
+function parseTrailingIdentifierContext(input: string): { start: number; prefix: string; qualifier?: string; qualifierParts?: string[] } | null {
   if (/\s$/.test(input)) return null;
   let i = input.length - 1;
   while (i >= 0 && /\s/.test(input[i] ?? "")) i--;
@@ -1590,6 +1609,7 @@ function parseTrailingIdentifierContext(input: string): { start: number; prefix:
       start,
       prefix: prefixPart,
       qualifier: qualifierValue || undefined,
+      qualifierParts: qualifierParts.length > 0 ? qualifierParts : undefined,
     };
   }
 
@@ -2573,16 +2593,9 @@ function buildColumnItems(context: SqlCompletionContext, columnsByTable: Map<str
   } else if (context.qualifier) {
     const q = context.qualifier;
     const qLower = q.toLowerCase();
-    const relatedTables = context.referencedTables.filter((table) => table.alias === q || table.alias?.toLowerCase() === qLower || table.name === q || table.name.toLowerCase() === qLower);
-    const tableNameSet = new Set(relatedTables.map((t) => t.name.toLowerCase()));
-    const tableKeys = new Set<string>();
-    for (const table of relatedTables) {
-      tableKeys.add(table.name);
-      if (table.schema) {
-        tableKeys.add(`${table.schema}.${table.name}`);
-      }
-    }
-    relevantCols = allColumns.filter((c) => tableNameSet.has(c.table.toLowerCase()) || tableKeys.has(c.key));
+    const qualifiedTarget = qualifiedTableTargetFromContext(context);
+    const relatedTables = context.referencedTables.filter((table) => referencedTableMatchesColumnQualifier(table, q, qLower, qualifiedTarget));
+    relevantCols = allColumns.filter((column) => relatedTables.some((table) => columnMatchesReferencedTable(column, table)) || (!!qualifiedTarget && columnMatchesQualifiedTable(column, qualifiedTarget)));
   }
 
   // Count name frequencies to detect duplicates across tables
@@ -2628,6 +2641,43 @@ function buildColumnItems(context: SqlCompletionContext, columnsByTable: Map<str
       };
     })
     .sort(compareCompletionItems);
+}
+
+function qualifiedTableTargetFromContext(context: SqlCompletionContext): { schema: string; table: string } | null {
+  const parts = context.qualifierParts ?? context.qualifier?.split(".").filter(Boolean) ?? [];
+  if (parts.length < 2) return null;
+  const table = parts[parts.length - 1];
+  const schema = parts[parts.length - 2];
+  if (!schema || !table) return null;
+  return { schema, table };
+}
+
+function referencedTableMatchesColumnQualifier(table: SqlCompletionReferencedTable, qualifier: string, qualifierLower: string, qualifiedTarget: { schema: string; table: string } | null): boolean {
+  if (table.alias === qualifier || table.alias?.toLowerCase() === qualifierLower) return true;
+  if (table.name === qualifier || table.name.toLowerCase() === qualifierLower) return true;
+  if (!qualifiedTarget) return false;
+  if (normalizeIdentifierPart(table.name) !== normalizeIdentifierPart(qualifiedTarget.table)) return false;
+  return !table.schema || normalizeIdentifierPart(table.schema) === normalizeIdentifierPart(qualifiedTarget.schema);
+}
+
+function columnMatchesReferencedTable(column: SqlCompletionColumn & { key: string }, table: SqlCompletionReferencedTable): boolean {
+  if (normalizeIdentifierPart(column.table) !== normalizeIdentifierPart(table.name)) return false;
+  if (!table.schema) return true;
+  return columnMatchesQualifiedTable(column, { schema: table.schema, table: table.name });
+}
+
+function columnMatchesQualifiedTable(column: SqlCompletionColumn & { key: string }, target: { schema: string; table: string }): boolean {
+  if (normalizeIdentifierPart(column.table) !== normalizeIdentifierPart(target.table)) return false;
+  if (column.schema && normalizeIdentifierPart(column.schema) === normalizeIdentifierPart(target.schema)) return true;
+  return normalizeCompletionKey(column.key) === normalizeCompletionKey(`${target.schema}.${target.table}`);
+}
+
+function normalizeCompletionKey(key: string): string {
+  return key
+    .split(".")
+    .filter(Boolean)
+    .map((part) => normalizeIdentifierPart(part))
+    .join(".");
 }
 
 function buildColumnApply(column: SqlCompletionColumn & { displayLabel: string }, context: SqlCompletionContext, dialect?: "mysql" | "postgres" | "sqlserver"): string {

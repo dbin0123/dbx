@@ -805,7 +805,7 @@ export async function aiAgentStream(sessionId: string, request: AiCompletionRequ
   const res = await fetch("/api/ai/agent-stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, request, connection_id: connectionId, database, db_type: dbType, mode: mode || "ask" }),
+    body: JSON.stringify({ sessionId, request, connectionId, database, dbType, mode: mode || "ask" }),
     signal,
   });
   if (!res.ok) throw new Error(await res.text());
@@ -1270,6 +1270,10 @@ export async function redisScanKeys(connectionId: string, db: number, cursor: nu
   return post("/api/redis/scan-keys", { connectionId, db, cursor, pattern, count });
 }
 
+export async function redisScanKeysBatch(connectionId: string, db: number, cursor: number, pattern: string, count: number, maxIterations: number): Promise<RedisScanResult> {
+  return post("/api/redis/scan-keys-batch", { connectionId, db, cursor, pattern, count, maxIterations });
+}
+
 export async function redisScanValues(connectionId: string, db: number, cursor: number, pattern: string, query: string, count: number, includeKeyMatches = false): Promise<RedisScanResult> {
   return post("/api/redis/scan-values", { connectionId, db, cursor, pattern, query, includeKeyMatches, count });
 }
@@ -1352,6 +1356,10 @@ export async function redisExecuteCommand(connectionId: string, db: number, comm
 
 export async function redisLoadMore(connectionId: string, db: number, keyRaw: string, keyType: string, cursor: number, count: number): Promise<RedisValue> {
   return post("/api/redis/load-more", { connectionId, db, keyRaw, keyType, cursor, count });
+}
+
+export async function redisPubSubPublish(connectionId: string, db: number, channel: string, message: string): Promise<{ subscribers: number }> {
+  return post("/api/redis/pubsub/publish", { connectionId, db, channel, message });
 }
 
 // ---------------------------------------------------------------------------

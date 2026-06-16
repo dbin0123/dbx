@@ -288,7 +288,8 @@ export type AgentEvent =
   | { type: "tool_call_start"; tool_call_id: string; tool_name: string; args: Record<string, unknown> }
   | { type: "tool_call_end"; tool_call_id: string; tool_name: string; result: unknown; is_error: boolean }
   | { type: "turn_end"; turn: number }
-  | { type: "agent_end"; total_tokens?: number }
+  | { type: "agent_end"; input_tokens?: number; output_tokens?: number }
+  | { type: "context_compacted"; summary: string; summary_tokens: number; compacted_messages: number; estimated_before: number; estimated_after: number }
   | { type: "error"; message: string };
 
 export async function aiAgentStream(sessionId: string, request: AiCompletionRequest, connectionId: string, database: string, dbType: string, onEvent: (event: AgentEvent) => void, mode?: string, _signal?: AbortSignal): Promise<string> {
@@ -424,6 +425,7 @@ export interface AiChatMessage {
   role: string;
   content: string;
   reasoning?: string;
+  kind?: "contextSummary";
 }
 
 export interface AiConversation {
@@ -1108,6 +1110,10 @@ export async function redisScanKeys(connectionId: string, db: number, cursor: nu
   return invoke("redis_scan_keys", { connectionId, db, cursor, pattern, count });
 }
 
+export async function redisScanKeysBatch(connectionId: string, db: number, cursor: number, pattern: string, count: number, maxIterations: number): Promise<RedisScanResult> {
+  return invoke("redis_scan_keys_batch", { connectionId, db, cursor, pattern, count, maxIterations });
+}
+
 export async function redisScanValues(connectionId: string, db: number, cursor: number, pattern: string, query: string, count: number, includeKeyMatches = false): Promise<RedisScanResult> {
   return invoke("redis_scan_values", { connectionId, db, cursor, pattern, query, includeKeyMatches, count });
 }
@@ -1190,6 +1196,10 @@ export async function redisExecuteCommand(connectionId: string, db: number, comm
 
 export async function redisLoadMore(connectionId: string, db: number, keyRaw: string, keyType: string, cursor: number, count: number): Promise<RedisValue> {
   return invoke("redis_load_more", { connectionId, db, keyRaw, keyType, cursor, count });
+}
+
+export async function redisPubSubPublish(connectionId: string, db: number, channel: string, message: string): Promise<{ subscribers: number }> {
+  return invoke("redis_pubsub_publish", { connectionId, db, channel, message });
 }
 
 // --- etcd ---

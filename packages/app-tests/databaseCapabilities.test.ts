@@ -64,7 +64,7 @@ test("treats Access as a local single-database agent driver", () => {
 });
 
 test("exposes the extended JDBC agent ecosystem through driver management", () => {
-  for (const dbType of ["databricks", "saphana", "teradata", "vertica", "firebird", "exasol", "opengauss", "oceanbase-oracle", "gbase"] as const) {
+  for (const dbType of ["databricks", "saphana", "teradata", "vertica", "firebird", "exasol", "opengauss", "oceanbase-oracle", "gbase", "questdb"] as const) {
     assert.equal(supportsDriverManagement(dbType), true, `${dbType} should be agent-managed`);
     assert.equal(supportsDatabaseSearch(dbType), true, `${dbType} should support database search`);
   }
@@ -201,6 +201,14 @@ test("uses Navicat-style table editing defaults for updateable SQL table engines
     requiresTransactionalTableForExistingRows: false,
     transaction: true,
   });
+  assert.deepEqual(getDatabaseCapability("databend").tableData, {
+    insert: true,
+    updateRequiresPrimaryKey: false,
+    deleteRequiresPrimaryKey: false,
+    keylessRowPredicate: true,
+    requiresTransactionalTableForExistingRows: false,
+    transaction: true,
+  });
 });
 
 test("keeps conservative table editing defaults for unknown database types", () => {
@@ -318,7 +326,7 @@ test("object browser entry follows database tree shape", () => {
 });
 
 test("sidebar object capability registry describes object groups by database type", () => {
-  assert.deepEqual(sidebarObjectKindsForDatabase("databend"), ["TABLE", "VIEW"]);
+  assert.deepEqual(sidebarObjectKindsForDatabase("databend"), ["TABLE", "VIEW", "PROCEDURE"]);
   assert.deepEqual(sidebarObjectKindsForDatabase("manticoresearch"), ["TABLE", "FUNCTION"]);
   assert.deepEqual(sidebarObjectKindsForDatabase("postgres"), ["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE"]);
   assert.deepEqual(sidebarObjectKindsForDatabase("oracle"), ["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "PACKAGE", "PACKAGE_BODY"]);

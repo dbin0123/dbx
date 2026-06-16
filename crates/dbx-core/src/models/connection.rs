@@ -32,6 +32,8 @@ pub struct ConnectionConfig {
     pub query_timeout_secs: u64,
     #[serde(default = "default_idle_timeout_secs")]
     pub idle_timeout_secs: u64,
+    #[serde(default = "default_keepalive_interval_secs")]
+    pub keepalive_interval_secs: u64,
     #[serde(default)]
     pub ssl: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -194,6 +196,10 @@ pub fn default_idle_timeout_secs() -> u64 {
     60
 }
 
+pub fn default_keepalive_interval_secs() -> u64 {
+    0
+}
+
 fn default_proxy_port() -> u16 {
     1080
 }
@@ -292,6 +298,8 @@ pub enum DatabaseType {
     Turso,
     #[serde(rename = "influxdb")]
     InfluxDb,
+    #[serde(rename = "questdb")]
+    Questdb,
     Jdbc,
 }
 
@@ -325,6 +333,8 @@ struct ConnectionConfigData {
     pub query_timeout_secs: u64,
     #[serde(default = "default_idle_timeout_secs")]
     pub idle_timeout_secs: u64,
+    #[serde(default = "default_keepalive_interval_secs")]
+    pub keepalive_interval_secs: u64,
     #[serde(default)]
     pub ssl: bool,
     #[serde(default)]
@@ -392,6 +402,7 @@ impl From<ConnectionConfigData> for ConnectionConfig {
             connect_timeout_secs: data.connect_timeout_secs,
             query_timeout_secs: data.query_timeout_secs,
             idle_timeout_secs: data.idle_timeout_secs,
+            keepalive_interval_secs: data.keepalive_interval_secs,
             ssl: data.ssl,
             ca_cert_path: data.ca_cert_path,
             client_cert_path: data.client_cert_path,
@@ -725,6 +736,7 @@ impl ConnectionConfig {
                     format!("{base}?{params}")
                 }
             }
+            DatabaseType::Questdb => format!("questdb://{host}:{port}{db_part}"),
             DatabaseType::Gbase => format!("gbase://{host}:{port}{db_part}"),
             DatabaseType::H2 => format!("h2://{host}:{port}{db_part}"),
             DatabaseType::Snowflake => format!("snowflake://{host}/{db_part}"),
@@ -886,6 +898,9 @@ impl ConnectionConfig {
                     format!("{base}?{params}")
                 }
             }
+            DatabaseType::Questdb => {
+                format!("questdb://{}:{}@{host}:{port}{db_part}", username, password)
+            }
             DatabaseType::Gbase => {
                 format!("gbase://{}:{}@{host}:{port}{db_part}", username, password)
             }
@@ -965,9 +980,15 @@ impl ConnectionConfig {
             DatabaseType::Mysql => {
                 normalize_mysql_url_params(value, self.mysql_uses_tls(), self.ca_cert_path.trim().is_empty())
             }
-            DatabaseType::Doris | DatabaseType::StarRocks | DatabaseType::ManticoreSearch | DatabaseType::Databend => {
-                normalize_bare_mysql_url_params(value)
+            DatabaseType::Doris | DatabaseType::StarRocks | DatabaseType::ManticoreSearch => {
+                let params = normalize_bare_mysql_url_params(value);
+                if params.is_empty() {
+                    "enable_cleartext_plugin=true".to_string()
+                } else {
+                    format!("{params}&enable_cleartext_plugin=true")
+                }
             }
+            DatabaseType::Databend => normalize_bare_mysql_url_params(value),
             DatabaseType::Postgres | DatabaseType::Redshift => normalize_postgres_url_params(value, self.ssl),
             DatabaseType::MongoDb => normalize_mongo_url_params(value, self.ssl),
             _ => value.trim_start_matches('?').to_string(),
@@ -1407,6 +1428,7 @@ mod tests {
             connect_timeout_secs: super::default_connect_timeout_secs(),
             query_timeout_secs: default_query_timeout_secs(),
             idle_timeout_secs: super::default_idle_timeout_secs(),
+            keepalive_interval_secs: super::default_keepalive_interval_secs(),
             ssl: false,
             ca_cert_path: String::new(),
             client_cert_path: String::new(),

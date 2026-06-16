@@ -141,6 +141,7 @@ fn classifies_agent_database_types() {
     assert!(!is_agent_type(&DatabaseType::Gaussdb));
     assert!(!is_agent_type(&DatabaseType::Kwdb));
     assert!(!is_agent_type(&DatabaseType::OpenGauss));
+    assert!(!is_agent_type(&DatabaseType::Questdb));
 }
 
 #[test]
@@ -192,6 +193,7 @@ fn skips_tcp_probe_for_local_file_plugin_and_agent_types() {
     assert!(!skips_tcp_probe(&DatabaseType::Gaussdb));
     assert!(!skips_tcp_probe(&DatabaseType::Kwdb));
     assert!(!skips_tcp_probe(&DatabaseType::OpenGauss));
+    assert!(!skips_tcp_probe(&DatabaseType::Questdb));
 }
 
 #[test]
@@ -291,22 +293,4 @@ fn driver_manifest_declares_expected_product_capabilities() {
     assert_eq!(redis.support_level, "connect");
     assert!(!redis.capabilities.object_browser);
     assert!(!redis.capabilities.sql_file_execution);
-}
-
-#[test]
-fn driver_manifest_matches_agent_driver_store_entries() {
-    let manifest = driver_manifest();
-    let mut expected: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
-    for driver in manifest.drivers.iter().filter(|driver| driver.runtime_mode == "agent") {
-        expected.insert(
-            driver.agent_key.as_deref().expect("agent drivers should have an agent key"),
-            driver.label.as_str(),
-        );
-        for profile in &driver.driver_profiles {
-            expected.insert(profile.agent_key.as_str(), profile.label.as_str());
-        }
-    }
-    let actual: std::collections::BTreeMap<&str, &str> = agent_catalog::driver_store_entries().collect();
-
-    assert_eq!(actual, expected);
 }

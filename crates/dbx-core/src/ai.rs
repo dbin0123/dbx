@@ -1,3 +1,4 @@
+use crate::token_usage::TokenUsage;
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
@@ -88,6 +89,8 @@ pub struct AiConfig {
     pub proxy_url: String,
     #[serde(default = "default_enable_thinking")]
     pub enable_thinking: bool,
+    #[serde(default)]
+    pub context_window: Option<u32>,
 }
 
 fn default_enable_thinking() -> bool {
@@ -147,6 +150,10 @@ pub struct AiChatMessage {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered_messages: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,7 +280,7 @@ pub fn resolve_model_list_endpoint(config: &AiConfig) -> Result<String, String> 
         .unwrap_or(ep)
         .trim_end_matches('/');
 
-    let base = ensure_openai_version_prefix(&base);
+    let base = ensure_openai_version_prefix(base);
 
     Ok(format!("{base}/models"))
 }
@@ -605,7 +612,7 @@ pub async fn call_claude(client: &reqwest::Client, request: AiCompletionRequest)
         "model": request.config.model,
         "max_tokens": request.max_tokens.unwrap_or(2048),
         "temperature": request.temperature.unwrap_or(0.2),
-        "system": request.system_prompt,
+        "system": claude_system_prompt(&request.system_prompt),
         "messages": request.messages,
     });
 
@@ -793,6 +800,23 @@ async fn measure_first_stream_chunk(
 
 const TEST_PROMPT: &str = "Who are you?";
 
+/// Fallback system prompt for the Anthropic (Claude) API.
+///
+/// Anthropic rejects requests whose `system` field is an empty string with
+/// `system: text content blocks must be non-empty`. When the caller has no
+/// system prompt we send this minimal placeholder so the request stays valid.
+const CLAUDE_DEFAULT_SYSTEM: &str = "You are a helpful assistant.";
+
+/// Returns a non-empty system prompt for Claude requests, substituting a
+/// default when the provided prompt is empty or whitespace-only.
+fn claude_system_prompt(system_prompt: &str) -> &str {
+    if system_prompt.trim().is_empty() {
+        CLAUDE_DEFAULT_SYSTEM
+    } else {
+        system_prompt
+    }
+}
+
 pub async fn test_connection_core(config: &AiConfig) -> Result<AiTestConnectionResult, String> {
     validate_config(config)?;
 
@@ -810,7 +834,7 @@ pub async fn test_connection_core(config: &AiConfig) -> Result<AiTestConnectionR
                 "model": &model,
                 "max_tokens": 16,
                 "temperature": 0.0,
-                "system": "",
+                "system": CLAUDE_DEFAULT_SYSTEM,
                 "messages": [{ "role": "user", "content": TEST_PROMPT }],
                 "stream": true,
             });
@@ -987,7 +1011,7 @@ async fn stream_claude(
         "model": request.config.model,
         "max_tokens": request.max_tokens.unwrap_or(2048),
         "temperature": request.temperature.unwrap_or(0.2),
-        "system": request.system_prompt,
+        "system": claude_system_prompt(&request.system_prompt),
         "messages": request.messages,
         "stream": true,
     });
@@ -1344,6 +1368,12 @@ pub struct StreamingToolCallAccumulator {
     ordered_indices: Vec<u32>,
 }
 
+impl Default for StreamingToolCallAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StreamingToolCallAccumulator {
     pub fn new() -> Self {
         Self { calls: std::collections::HashMap::new(), ordered_indices: Vec::new() }
@@ -1394,7 +1424,7 @@ async fn stream_claude_with_tools(
     tools: &[crate::agent_events::ToolDefinition],
     cancelled: &Notify,
     on_event: &impl Fn(StreamToolEvent),
-) -> Result<(), String> {
+) -> Result<Option<TokenUsage>, String> {
     let mut messages: Vec<serde_json::Value> = Vec::new();
     let mut pending_tool_results: Vec<serde_json::Value> = Vec::new();
     for m in &request.messages {
@@ -1410,7 +1440,7 @@ async fn stream_claude_with_tools(
             if !pending_tool_results.is_empty() {
                 messages.push(json!({
                     "role": "user",
-                    "content": pending_tool_results.drain(..).collect::<Vec<_>>()
+                    "content": std::mem::take(&mut pending_tool_results)
                 }));
             }
             if m.role == "assistant" && !m.tool_calls.is_empty() {
@@ -1432,7 +1462,7 @@ async fn stream_claude_with_tools(
     if !pending_tool_results.is_empty() {
         messages.push(json!({
             "role": "user",
-            "content": pending_tool_results.drain(..).collect::<Vec<_>>()
+            "content": std::mem::take(&mut pending_tool_results)
         }));
     }
 
@@ -1441,7 +1471,7 @@ async fn stream_claude_with_tools(
     let mut body = json!({
         "model": request.config.model,
         "max_tokens": request.max_tokens.unwrap_or(4096),
-        "system": request.system_prompt,
+        "system": claude_system_prompt(&request.system_prompt),
         "messages": messages,
         "tools": tool_json,
         "stream": true,
@@ -1466,6 +1496,7 @@ async fn stream_claude_with_tools(
     // Track the current content block index and type for tool_use blocks
     let mut current_block_index: Option<u32> = None;
     let mut current_block_type: Option<String> = None;
+    let mut token_usage: Option<TokenUsage> = None;
 
     loop {
         tokio::select! {
@@ -1489,6 +1520,20 @@ async fn stream_claude_with_tools(
                         let event_type = event["type"].as_str().unwrap_or("");
 
                         match event_type {
+                            // message_start carries input_tokens (prompt cost)
+                            "message_start" => {
+                                if let Some(i) = event["message"]["usage"]["input_tokens"].as_u64() {
+                                    let existing_output = token_usage.as_ref().map(|u| u.output_tokens).unwrap_or(0);
+                                    token_usage = Some(TokenUsage { input_tokens: i as u32, output_tokens: existing_output });
+                                }
+                            }
+                            // message_delta carries output_tokens (generation cost)
+                            "message_delta" => {
+                                if let Some(o) = event["usage"]["output_tokens"].as_u64() {
+                                    let existing_input = token_usage.as_ref().map(|u| u.input_tokens).unwrap_or(0);
+                                    token_usage = Some(TokenUsage { input_tokens: existing_input, output_tokens: o as u32 });
+                                }
+                            }
                             "content_block_start" => {
                                 let idx = event["index"].as_u64().unwrap_or(0) as u32;
                                 let block_type = event["content_block"]["type"].as_str().unwrap_or("");
@@ -1556,7 +1601,7 @@ async fn stream_claude_with_tools(
         }
     }
 
-    Ok(())
+    Ok(token_usage)
 }
 
 /// Streaming OpenAI-compatible call with tool support.
@@ -1567,7 +1612,7 @@ async fn stream_openai_with_tools(
     tools: &[crate::agent_events::ToolDefinition],
     cancelled: &Notify,
     on_event: &impl Fn(StreamToolEvent),
-) -> Result<(), String> {
+) -> Result<Option<TokenUsage>, String> {
     let headers = maybe_bearer_headers(&request.config)?;
 
     let mut messages = vec![json!({ "role": "system", "content": request.system_prompt })];
@@ -1606,6 +1651,7 @@ async fn stream_openai_with_tools(
         "tools": tool_json,
         "tool_choice": "auto",
         "stream": true,
+        "stream_options": { "include_usage": true },
     });
     add_temperature_if_supported(&mut body, request);
 
@@ -1624,6 +1670,7 @@ async fn stream_openai_with_tools(
 
     let mut byte_stream = res.bytes_stream();
     let mut buf = String::new();
+    let mut token_usage: Option<TokenUsage> = None;
 
     loop {
         tokio::select! {
@@ -1644,6 +1691,15 @@ async fn stream_openai_with_tools(
                     }
 
                     if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+                        // Token usage (final chunk from OpenAI with include_usage)
+                        if let Some(usage) = event.get("usage") {
+                            if let (Some(p), Some(c)) = (
+                                usage.get("prompt_tokens").and_then(|v| v.as_u64()),
+                                usage.get("completion_tokens").and_then(|v| v.as_u64()),
+                            ) {
+                                token_usage = Some(TokenUsage { input_tokens: p as u32, output_tokens: c as u32 });
+                            }
+                        }
                         // Reasoning
                         if let Some(reasoning) = openai_stream_reasoning(&event) {
                             on_event(StreamToolEvent::Chunk(AiStreamChunk {
@@ -1686,7 +1742,7 @@ async fn stream_openai_with_tools(
         }
     }
 
-    Ok(())
+    Ok(token_usage)
 }
 
 /// Streaming Gemini call with tool support.
@@ -1697,7 +1753,7 @@ async fn stream_gemini_with_tools(
     tools: &[crate::agent_events::ToolDefinition],
     cancelled: &Notify,
     on_event: &impl Fn(StreamToolEvent),
-) -> Result<(), String> {
+) -> Result<Option<TokenUsage>, String> {
     let mut contents: Vec<serde_json::Value> = Vec::new();
     let mut pending_function_responses: Vec<serde_json::Value> = Vec::new();
     for m in &request.messages {
@@ -1706,7 +1762,7 @@ async fn stream_gemini_with_tools(
                 .tool_call_id
                 .as_deref()
                 .and_then(|s| s.strip_prefix("gemini-tc-"))
-                .and_then(|s| s.rsplitn(2, '-').nth(1))
+                .and_then(|s| s.rsplit_once('-').map(|x| x.0))
                 .unwrap_or("unknown");
             pending_function_responses.push(json!({
                 "functionResponse": {
@@ -1719,7 +1775,7 @@ async fn stream_gemini_with_tools(
             if !pending_function_responses.is_empty() {
                 contents.push(json!({
                     "role": "user",
-                    "parts": pending_function_responses.drain(..).collect::<Vec<_>>()
+                    "parts": std::mem::take(&mut pending_function_responses)
                 }));
             }
             if m.role == "assistant" && !m.tool_calls.is_empty() {
@@ -1741,7 +1797,7 @@ async fn stream_gemini_with_tools(
     if !pending_function_responses.is_empty() {
         contents.push(json!({
             "role": "user",
-            "parts": pending_function_responses.drain(..).collect::<Vec<_>>()
+            "parts": std::mem::take(&mut pending_function_responses)
         }));
     }
 
@@ -1773,6 +1829,7 @@ async fn stream_gemini_with_tools(
     let mut byte_stream = res.bytes_stream();
     let mut buf = String::new();
     let mut tool_call_idx: u32 = 0;
+    let mut token_usage: Option<TokenUsage> = None;
 
     loop {
         tokio::select! {
@@ -1787,6 +1844,13 @@ async fn stream_gemini_with_tools(
 
                     let Some(data) = stream_data_payload(&line) else { continue };
                     if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+                        // Token usage (overwrite each chunk, keep last value)
+                        if let (Some(p), Some(c)) = (
+                            event["usageMetadata"]["promptTokenCount"].as_u64(),
+                            event["usageMetadata"]["candidatesTokenCount"].as_u64(),
+                        ) {
+                            token_usage = Some(TokenUsage { input_tokens: p as u32, output_tokens: c as u32 });
+                        }
                         if let Some(candidates) = event["candidates"].as_array() {
                             if let Some(parts) = candidates[0]["content"]["parts"].as_array() {
                                 for part in parts {
@@ -1827,11 +1891,11 @@ async fn stream_gemini_with_tools(
         }
     }
 
-    Ok(())
+    Ok(token_usage)
 }
 
 /// Public entry point: stream an LLM call with tool support, accumulating tool calls.
-/// Returns completed tool calls when the stream finishes.
+/// Returns completed tool calls and token usage when the stream finishes.
 pub async fn stream_with_tools(
     config: &AiConfig,
     request: &AiCompletionRequest,
@@ -1839,7 +1903,7 @@ pub async fn stream_with_tools(
     tools: &[crate::agent_events::ToolDefinition],
     cancelled: &Notify,
     on_chunk: impl Fn(AiStreamChunk),
-) -> Result<Vec<crate::agent_events::ToolCall>, String> {
+) -> Result<(Vec<crate::agent_events::ToolCall>, Option<TokenUsage>), String> {
     validate_config(config)?;
 
     let stream_timeout = if config.enable_thinking { 600 } else { 120 };
@@ -1847,7 +1911,7 @@ pub async fn stream_with_tools(
 
     let accumulator = Arc::new(std::sync::Mutex::new(StreamingToolCallAccumulator::new()));
 
-    match config.provider {
+    let token_usage = match config.provider {
         AiProvider::Claude => {
             stream_claude_with_tools(&client, session_id, request, tools, cancelled, &|event| {
                 accumulator.lock().unwrap().process(event, &on_chunk);
@@ -1866,13 +1930,15 @@ pub async fn stream_with_tools(
             })
             .await?
         }
-    }
+    };
 
-    Ok(Arc::try_unwrap(accumulator)
+    let tool_calls = Arc::try_unwrap(accumulator)
         .expect("stream_with_tools: accumulator Arc should have single owner")
         .into_inner()
         .expect("stream_with_tools: accumulator Mutex should not be poisoned")
-        .finalize())
+        .finalize();
+
+    Ok((tool_calls, token_usage))
 }
 
 // ---------------------------------------------------------------------------
@@ -1930,10 +1996,10 @@ pub fn load_config(path: &Path) -> Result<Option<AiConfig>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_ai_http_client, claude_headers, gemini_text, openai_response_text, openai_stream_text,
-        parse_model_list_response, resolve_endpoint, resolve_model_list_endpoint, responses_max_output_tokens,
-        responses_text, supports_temperature, validate_config, AiApiStyle, AiAuthMethod, AiConfig, AiModelInfo,
-        AiProvider, AUTHORIZATION,
+        build_ai_http_client, claude_headers, claude_system_prompt, gemini_text, openai_response_text,
+        openai_stream_text, parse_model_list_response, resolve_endpoint, resolve_model_list_endpoint,
+        responses_max_output_tokens, responses_text, supports_temperature, validate_config, AiApiStyle, AiAuthMethod,
+        AiConfig, AiModelInfo, AiProvider, AUTHORIZATION, CLAUDE_DEFAULT_SYSTEM,
     };
 
     #[test]
@@ -1965,6 +2031,7 @@ mod tests {
             proxy_enabled: true,
             proxy_url: "not a proxy url".to_string(),
             enable_thinking: true,
+            context_window: None,
         };
 
         let err = build_ai_http_client(&config, 1).unwrap_err();
@@ -1984,6 +2051,7 @@ mod tests {
             proxy_enabled: true,
             proxy_url: "127.0.0.1:7890".to_string(),
             enable_thinking: true,
+            context_window: None,
         };
 
         build_ai_http_client(&config, 1).unwrap();
@@ -2001,6 +2069,7 @@ mod tests {
             proxy_enabled: true,
             proxy_url: "not a proxy url".to_string(),
             enable_thinking: true,
+            context_window: None,
         };
 
         build_ai_http_client(&config, 1).unwrap();
@@ -2018,6 +2087,7 @@ mod tests {
             proxy_enabled: false,
             proxy_url: String::new(),
             enable_thinking: true,
+            context_window: None,
         };
 
         assert_eq!(
@@ -2035,6 +2105,7 @@ mod tests {
             proxy_enabled: false,
             proxy_url: String::new(),
             enable_thinking: true,
+            context_window: None,
         };
 
         assert_eq!(resolve_endpoint(&ollama), "http://localhost:11434/v1/chat/completions");
@@ -2053,6 +2124,7 @@ mod tests {
             proxy_enabled: false,
             proxy_url: String::new(),
             enable_thinking: true,
+            context_window: None,
         };
         assert_eq!(resolve_model_list_endpoint(&openai).unwrap(), "https://api.openai.com/v1/models");
 
@@ -2066,6 +2138,7 @@ mod tests {
             proxy_enabled: false,
             proxy_url: String::new(),
             enable_thinking: true,
+            context_window: None,
         };
         assert_eq!(resolve_model_list_endpoint(&claude).unwrap(), "https://api.anthropic.com/v1/models");
     }
@@ -2083,6 +2156,7 @@ mod tests {
             proxy_enabled: false,
             proxy_url: String::new(),
             enable_thinking: true,
+            context_window: None,
         };
         assert_eq!(resolve_endpoint(&config), "https://api.example.com/v1/chat/completions");
         assert_eq!(resolve_model_list_endpoint(&config).unwrap(), "https://api.example.com/v1/models");
@@ -2135,6 +2209,7 @@ mod tests {
             proxy_enabled: false,
             proxy_url: String::new(),
             enable_thinking: true,
+            context_window: None,
         };
 
         let api_key_headers = claude_headers(&config).unwrap();
@@ -2145,6 +2220,19 @@ mod tests {
         let bearer_headers = claude_headers(&config).unwrap();
         assert_eq!(bearer_headers.get(AUTHORIZATION).unwrap(), "Bearer secret");
         assert!(bearer_headers.get("x-api-key").is_none());
+    }
+
+    #[test]
+    fn claude_system_prompt_substitutes_default_when_empty() {
+        // Empty or whitespace-only prompts must fall back to a non-empty value,
+        // otherwise Anthropic rejects the request with
+        // "system: text content blocks must be non-empty".
+        assert_eq!(claude_system_prompt(""), CLAUDE_DEFAULT_SYSTEM);
+        assert_eq!(claude_system_prompt("   \n\t"), CLAUDE_DEFAULT_SYSTEM);
+        assert!(!CLAUDE_DEFAULT_SYSTEM.is_empty());
+
+        // Real prompts pass through unchanged.
+        assert_eq!(claude_system_prompt("Be concise."), "Be concise.");
     }
 
     #[test]
@@ -2190,6 +2278,7 @@ mod tests {
             proxy_enabled: false,
             proxy_url: String::new(),
             enable_thinking: true,
+            context_window: None,
         };
 
         assert!(!supports_temperature(&config));

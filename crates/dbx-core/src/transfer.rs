@@ -609,7 +609,7 @@ pub fn escape_value_typed(val: &serde_json::Value, db_type: &DatabaseType, colum
         serde_json::Value::Number(n) => match db_type {
             DatabaseType::Mysql | DatabaseType::Doris | DatabaseType::StarRocks => {
                 if column_type.is_some_and(is_mysql_bit_type) {
-                    format!("b'{}'", n.to_string())
+                    format!("b'{}'", n)
                 } else {
                     n.to_string()
                 }
@@ -842,8 +842,13 @@ fn is_timezone_suffix(value: &str) -> bool {
 }
 
 pub fn map_column_type(source_type: &str, _source_db: &DatabaseType, target_db: &DatabaseType) -> String {
+    if _source_db == target_db {
+        return source_type.to_string();
+    }
     let t = source_type.to_lowercase();
-    let base = t.split('(').next().unwrap_or(&t).trim();
+    let mut base = t.split('(').next().unwrap_or(&t).trim();
+    // Extract basic type, `bigint unsigned` -> `bigint`
+    base = base.split(' ').next().unwrap_or(base).trim();
 
     if matches!(target_db, DatabaseType::Hive) {
         return match base {
@@ -1471,6 +1476,10 @@ pub fn pagination_sql(
                 "SELECT {col_list} FROM {full_table} ORDER BY (SELECT NULL) OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
             )
         }
+        DatabaseType::Questdb => {
+            let upper_bound = offset + limit as u64;
+            format!("SELECT {col_list} FROM {full_table} LIMIT {offset}, {upper_bound}")
+        }
         _ => {
             format!("SELECT {col_list} FROM {full_table} LIMIT {limit} OFFSET {offset}")
         }
@@ -1496,6 +1505,11 @@ pub fn pagination_sql_with_order(
             format!(
                 "SELECT {col_list} FROM {full_table} ORDER BY {order_by} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
             )
+        }
+        DatabaseType::Questdb => {
+            let upper_bound = offset + limit as u64;
+            let order_by = order_expression.map(|value| format!(" ORDER BY {value}")).unwrap_or_default();
+            format!("SELECT {col_list} FROM {full_table}{order_by} LIMIT {offset}, {upper_bound}")
         }
         _ => {
             let order_by = order_expression.map(|value| format!(" ORDER BY {value}")).unwrap_or_default();
@@ -1532,6 +1546,11 @@ pub fn pagination_sql_with_filter_order(
             format!(
                 "SELECT {col_list} FROM {full_table}{where_clause} ORDER BY {order_by} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
             )
+        }
+        DatabaseType::Questdb => {
+            let upper_bound = offset + limit as u64;
+            let order_by = order_expression.map(|value| format!(" ORDER BY {value}")).unwrap_or_default();
+            format!("SELECT {col_list} FROM {full_table}{where_clause}{order_by} LIMIT {offset}, {upper_bound}")
         }
         _ => {
             let order_by = order_expression.map(|value| format!(" ORDER BY {value}")).unwrap_or_default();
@@ -2784,15 +2803,19 @@ where
                 .await
                 .map_err(|e| format!("Failed to ensure schema exists: {e}"))?;
         }
-        let ddl = generate_create_table_ddl(
-            &columns,
-            table,
-            &request.source_schema,
-            &request.target_schema,
-            target_db_type,
-            source_db_type,
-            table_comment.as_deref(),
-        );
+        let ddl = if is_mysql_family_target(source_db_type) && is_mysql_family_target(target_db_type) {
+            query_mysql_create_table_ddl(state, source_pool_key, &request.source_schema, table).await?
+        } else {
+            generate_create_table_ddl(
+                &columns,
+                table,
+                &request.source_schema,
+                &request.target_schema,
+                target_db_type,
+                source_db_type,
+                table_comment.as_deref(),
+            )
+        };
         log::info!("[transfer] creating target table: {}", ddl.chars().take(200).collect::<String>());
         let table_exists = match execute_on_pool(state, target_pool_key, &ddl).await {
             Ok(_) => true,
@@ -2950,6 +2973,17 @@ where
     }
 
     Ok(total_transferred)
+}
+
+async fn query_mysql_create_table_ddl(
+    state: &AppState,
+    source_pool_key: &str,
+    source_schema: &str,
+    table: &str,
+) -> Result<String, String> {
+    let sql = format!("SHOW CREATE TABLE {}", qualified_table(table, source_schema, &DatabaseType::Mysql));
+    let rows = execute_on_pool(state, source_pool_key, &sql).await?.rows;
+    rows.first().and_then(|row| json_string_cell(row, 1)).ok_or_else(|| format!("Failed to get MySQL DDL: {sql}"))
 }
 
 pub async fn transfer_postgres_schema_dependencies<F>(
@@ -3314,6 +3348,7 @@ mod tests {
             connect_timeout_secs: 5,
             query_timeout_secs: 30,
             idle_timeout_secs: 60,
+            keepalive_interval_secs: 0,
             ssl: false,
             ca_cert_path: String::new(),
             client_cert_path: String::new(),
@@ -3361,7 +3396,7 @@ mod tests {
             db::ColumnInfo {
                 comment: Some("用户姓名".to_string()),
                 is_nullable: false,
-                ..test_column("name", "varchar(100)")
+                ..test_column("name", "VARCHAR(100)")
             },
             db::ColumnInfo { comment: None, ..test_column("age", "int") },
         ];
@@ -3599,6 +3634,21 @@ mod tests {
         );
 
         assert_eq!(sql, "SELECT \"id\", \"name\" FROM \"public\".\"users\" ORDER BY \"id\" LIMIT 100 OFFSET 200");
+    }
+
+    #[test]
+    fn questdb_pagination_uses_stable_primary_key_order() {
+        let sql = pagination_sql_with_order(
+            &[String::from("id"), String::from("name")],
+            "users",
+            "public",
+            &DatabaseType::Questdb,
+            200,
+            100,
+            &[String::from("id")],
+        );
+
+        assert_eq!(sql, "SELECT `id`, `name` FROM `users` ORDER BY `id` LIMIT 200, 300");
     }
 
     #[test]
@@ -3932,22 +3982,47 @@ mod tests {
 
     #[test]
     fn map_column_type_preserves_longtext_for_mysql_target() {
-        assert_eq!(map_column_type("longtext", &DatabaseType::Mysql, &DatabaseType::Mysql), "LONGTEXT");
+        assert_eq!(map_column_type("longtext", &DatabaseType::Mysql, &DatabaseType::Mysql), "longtext");
     }
 
     #[test]
     fn map_column_type_preserves_mediumtext_for_mysql_target() {
-        assert_eq!(map_column_type("mediumtext", &DatabaseType::Mysql, &DatabaseType::Mysql), "MEDIUMTEXT");
+        assert_eq!(map_column_type("mediumtext", &DatabaseType::Mysql, &DatabaseType::Mysql), "mediumtext");
     }
 
     #[test]
     fn map_column_type_preserves_longblob_for_mysql_target() {
-        assert_eq!(map_column_type("longblob", &DatabaseType::Mysql, &DatabaseType::Mysql), "LONGBLOB");
+        assert_eq!(map_column_type("longblob", &DatabaseType::Mysql, &DatabaseType::Mysql), "longblob");
     }
 
     #[test]
     fn map_column_type_preserves_mediumblob_for_mysql_target() {
-        assert_eq!(map_column_type("mediumblob", &DatabaseType::Mysql, &DatabaseType::Mysql), "MEDIUMBLOB");
+        assert_eq!(map_column_type("mediumblob", &DatabaseType::Mysql, &DatabaseType::Mysql), "mediumblob");
+    }
+
+    #[test]
+    fn map_column_type_preserves_same_database_type() {
+        assert_eq!(map_column_type("int unsigned", &DatabaseType::Mysql, &DatabaseType::Mysql), "int unsigned");
+        assert_eq!(
+            map_column_type("int unsigned zerofill", &DatabaseType::Mysql, &DatabaseType::Mysql),
+            "int unsigned zerofill"
+        );
+        assert_eq!(map_column_type("bigint unsigned", &DatabaseType::Mysql, &DatabaseType::Mysql), "bigint unsigned");
+        assert_eq!(
+            map_column_type("bigint unsigned zerofill", &DatabaseType::Mysql, &DatabaseType::Mysql),
+            "bigint unsigned zerofill"
+        );
+    }
+
+    #[test]
+    fn map_column_type_preserves_numeric_type_from_mysql_to_postgres() {
+        assert_eq!(map_column_type("int unsigned", &DatabaseType::Mysql, &DatabaseType::Postgres), "INTEGER");
+        assert_eq!(map_column_type("int unsigned zerofill", &DatabaseType::Mysql, &DatabaseType::Postgres), "INTEGER");
+        assert_eq!(map_column_type("bigint unsigned", &DatabaseType::Mysql, &DatabaseType::Postgres), "BIGINT");
+        assert_eq!(
+            map_column_type("bigint unsigned zerofill", &DatabaseType::Mysql, &DatabaseType::Postgres),
+            "BIGINT"
+        );
     }
 
     #[test]
@@ -3978,7 +4053,7 @@ mod tests {
                 is_primary_key: true,
                 is_nullable: false,
                 extra: Some("auto_increment".to_string()),
-                ..test_column("id", "int")
+                ..test_column("id", "INT")
             },
             db::ColumnInfo { is_nullable: false, ..test_column("name", "varchar(64)") },
         ];

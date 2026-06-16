@@ -76,6 +76,7 @@ const gbaseCapabilities = capabilities({
   addColumn: true,
   dropColumn: true,
   renameColumn: true,
+  reorderColumn: true,
 });
 
 const postgresCapabilities = capabilities({
@@ -244,6 +245,27 @@ const manticoreSearchCapabilities = capabilities({
   dropColumn: true,
 });
 
+const questdbCapabilities = capabilities({
+  dialect: "postgres",
+  createTable: true,
+  addColumn: true,
+  dropColumn: true,
+  renameColumn: true,
+  alterExistingColumn: true,
+  alterType: true,
+  alterNullability: false,
+  alterDefault: false,
+  comment: false,
+  createIndex: false,
+  dropIndex: false,
+  rebuildIndex: false,
+  indexType: false,
+  indexInclude: false,
+  indexFilter: false,
+  indexComment: false,
+  alterPrimaryKey: false,
+});
+
 const capabilityByType: Partial<Record<DatabaseType, TableStructureCapabilities>> = {
   mysql: mysqlCapabilities,
   doris: mysqlCapabilities,
@@ -256,6 +278,7 @@ const capabilityByType: Partial<Record<DatabaseType, TableStructureCapabilities>
   gaussdb: postgresCapabilities,
   kwdb: postgresCapabilities,
   opengauss: postgresCapabilities,
+  questdb: questdbCapabilities,
   redshift: redshiftCapabilities,
   vertica: redshiftCapabilities,
   highgo: postgresCapabilities,

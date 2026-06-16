@@ -1,8 +1,8 @@
 use super::column_alter::{
     build_clickhouse_existing_column_sql, build_h2_existing_column_sql, build_informix_existing_column_sql,
     build_mysql_existing_column_sql, build_oracle_like_existing_column_sql, build_postgres_existing_column_sql,
-    build_sqlite_existing_column_sql, build_sqlserver_existing_column_sql, has_column_extra_change,
-    has_existing_column_attribute_change,
+    build_questdb_existing_column_sql, build_sqlite_existing_column_sql, build_sqlserver_existing_column_sql,
+    has_column_extra_change, has_existing_column_attribute_change,
 };
 use super::column_format::column_definition;
 use super::comments::build_sqlserver_column_comment_sql;
@@ -120,6 +120,7 @@ pub(super) fn build_column_sql(options: &TableStructureSqlOptions, warnings: &mu
                 &options.table_name,
             )),
             StructureDialect::Sqlite => statements.extend(build_sqlite_existing_column_sql(&table, column, warnings)),
+            StructureDialect::Questdb => statements.extend(build_questdb_existing_column_sql(&table, column)),
             _ => warnings.push(format!("Editing existing columns is not supported for {database_label} yet.")),
         }
     }
@@ -193,9 +194,7 @@ pub(super) fn build_add_column_sql(
     table_name: &str,
 ) -> Vec<String> {
     let definition = column_definition(dialect, column);
-    let mut statements = if dialect == StructureDialect::Oracle {
-        vec![format!("ALTER TABLE {table} ADD ({definition});")]
-    } else if dialect == StructureDialect::Informix {
+    let mut statements = if dialect == StructureDialect::Oracle || dialect == StructureDialect::Informix {
         vec![format!("ALTER TABLE {table} ADD ({definition});")]
     } else {
         let add_keyword = if dialect == StructureDialect::SqlServer { "ADD" } else { "ADD COLUMN" };

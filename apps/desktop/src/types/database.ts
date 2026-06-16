@@ -32,6 +32,7 @@ export type DatabaseType =
   | "exasol"
   | "opengauss"
   | "oceanbase-oracle"
+  | "questdb"
   | "gbase"
   | "access"
   | "h2"
@@ -79,6 +80,7 @@ export interface ConnectionConfig {
   connect_timeout_secs?: number;
   query_timeout_secs?: number;
   idle_timeout_secs?: number;
+  keepalive_interval_secs?: number;
   ssl?: boolean;
   ca_cert_path?: string;
   client_cert_path?: string;
@@ -460,6 +462,8 @@ export interface TreeNode {
   };
 }
 
+export type TableInfoTab = "columns" | "indexes" | "foreignKeys" | "triggers" | "ddl";
+
 export interface QueryTab {
   id: string;
   title: string;
@@ -529,6 +533,7 @@ export interface QueryTab {
     columns: ColumnInfo[];
     primaryKeys: string[];
   };
+  tableInfoTab?: TableInfoTab;
   queryAnalysis?: {
     schema?: string;
     schemaQuoted?: boolean;

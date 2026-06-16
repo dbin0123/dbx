@@ -9,6 +9,8 @@ const MCP_PACKAGE_NAME: &str = "@dbx-app/mcp-server";
 const MCP_LATEST_URL: &str = "https://registry.npmjs.org/@dbx-app%2fmcp-server/latest";
 const MCP_INSTALL_COMMAND: &str = "npm install -g @dbx-app/mcp-server@latest --registry=https://registry.npmjs.org";
 const SHELL_COMMAND_MARKER: &str = "__DBX_MCP_COMMAND_OUTPUT_START__";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Serialize)]
 pub struct McpServerStatus {
@@ -171,7 +173,14 @@ fn command_output(command: &str, args: &[&str]) -> Result<CommandOutput, String>
 }
 
 fn run_command(command: &str, args: &[&str]) -> Result<CommandOutput, String> {
-    let output = Command::new(command).args(args).output().map_err(|e| e.to_string())?;
+    let mut cmd = Command::new(command);
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd.output().map_err(|e| e.to_string())?;
     Ok(CommandOutput {
         success: output.status.success(),
         stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
