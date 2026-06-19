@@ -8,7 +8,6 @@ use commands::connection::AppState;
 use dbx_core::storage::{DesktopIconTheme, DesktopSettings, Storage};
 use std::sync::Arc;
 use std::time::Instant;
-#[cfg(target_os = "macos")]
 use tauri::RunEvent;
 use tauri::{
     menu::MenuBuilder,
@@ -693,6 +692,15 @@ pub fn run() {
                 if !has_visible_windows {
                     show_main_window(app_handle);
                 }
+                let app_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        state.refresh_connections().await;
+                    }
+                });
+            }
+
+            if let RunEvent::Resumed = &event {
                 let app_handle = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Some(state) = app_handle.try_state::<AppState>() {

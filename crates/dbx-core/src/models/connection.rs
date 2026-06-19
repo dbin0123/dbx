@@ -206,7 +206,7 @@ pub fn default_idle_timeout_secs() -> u64 {
 }
 
 pub fn default_keepalive_interval_secs() -> u64 {
-    0
+    60
 }
 
 fn default_proxy_port() -> u16 {

@@ -1590,9 +1590,9 @@ fn skip_mysql_quoted(sql: &str, start: usize, quote: u8) -> usize {
 /// (e.g. after app was backgrounded), it tries again with a fresh connection.
 pub async fn get_conn_with_health_check(pool: &MySqlPool) -> Result<mysql_async::Conn, String> {
     let mut conn = pool.get_conn().await.map_err(|e| e.to_string())?;
-    match conn.ping().await {
-        Ok(()) => Ok(conn),
-        Err(_) => {
+    match tokio::time::timeout(crate::db::connection_timeout(), conn.ping()).await {
+        Ok(Ok(())) => Ok(conn),
+        _ => {
             let _ = conn.disconnect().await;
             pool.get_conn().await.map_err(|e| e.to_string())
         }

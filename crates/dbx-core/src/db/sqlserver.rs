@@ -580,9 +580,12 @@ pub async fn list_databases(client: &mut SqlServerClient) -> Result<Vec<Database
 }
 
 pub async fn test_connection(client: &mut SqlServerClient) -> Result<(), String> {
-    let stream = client.simple_query("SELECT 1").await.map_err(|e| e.to_string())?;
-    let _ = stream.into_first_result().await.map_err(|e| e.to_string())?;
-    Ok(())
+    crate::db::with_connection_timeout("SQL Server", crate::db::connection_timeout(), async {
+        let stream = client.simple_query("SELECT 1").await.map_err(|e| e.to_string())?;
+        let _ = stream.into_first_result().await.map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
 }
 
 pub async fn list_linked_servers(client: &mut SqlServerClient) -> Result<Vec<LinkedServerInfo>, String> {
