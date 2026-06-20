@@ -38,6 +38,20 @@ fn should_show_main_window_after_setup() -> bool {
     true
 }
 
+fn should_disable_native_window_decorations(target_os: &str) -> bool {
+    matches!(target_os, "windows")
+}
+
+#[cfg(target_os = "linux")]
+fn apply_linux_webkit_rendering_workarounds() {
+    const DISABLE_DMABUF_RENDERER: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+    if std::env::var_os(DISABLE_DMABUF_RENDERER).is_none() {
+        // WebKitGTK's DMABUF renderer can produce a blank AppImage window on
+        // Fedora/Wayland/NVIDIA systems. This must be set before WebKit starts.
+        std::env::set_var(DISABLE_DMABUF_RENDERER, "1");
+    }
+}
+
 fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -172,7 +186,10 @@ pub(crate) fn apply_desktop_settings(app: &tauri::AppHandle, desktop_settings: &
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::{should_hide_window_on_close, should_setup_desktop_tray, should_show_main_window_after_setup};
+    use super::{
+        should_disable_native_window_decorations, should_hide_window_on_close, should_setup_desktop_tray,
+        should_show_main_window_after_setup,
+    };
 
     #[test]
     fn hides_window_on_close_for_windows_and_macos() {
@@ -198,11 +215,20 @@ mod tests {
     fn shows_main_window_after_regular_startup_setup() {
         assert!(should_show_main_window_after_setup());
     }
+
+    #[test]
+    fn disables_native_window_decorations_only_on_windows() {
+        assert!(should_disable_native_window_decorations("windows"));
+        assert!(!should_disable_native_window_decorations("linux"));
+        assert!(!should_disable_native_window_decorations("macos"));
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     rustls::crypto::aws_lc_rs::default_provider().install_default().expect("Failed to install rustls crypto provider");
+    #[cfg(target_os = "linux")]
+    apply_linux_webkit_rendering_workarounds();
 
     let startup_begin = Instant::now();
 
@@ -297,8 +323,7 @@ pub fn run() {
             commands::mcp_bridge::start(app_handle, state);
             eprintln!("[STARTUP] setup complete in {:?} (total {:?})", setup_start.elapsed(), startup_begin.elapsed());
 
-            #[cfg(not(target_os = "macos"))]
-            {
+            if should_disable_native_window_decorations(std::env::consts::OS) {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_decorations(false);
                 }
@@ -492,6 +517,8 @@ pub fn run() {
             commands::redis_cmd::redis_execute_command,
             commands::redis_cmd::redis_load_more,
             commands::redis_cmd::redis_pubsub_publish,
+            commands::redis_cmd::redis_slowlog_get,
+            commands::redis_cmd::redis_cluster_master_nodes,
             commands::etcd_cmd::etcd_list_prefix,
             commands::etcd_cmd::etcd_get,
             commands::etcd_cmd::etcd_put,
@@ -508,6 +535,9 @@ pub fn run() {
             commands::sqlite_backup::backup_sqlite_database,
             commands::mongo_cmd::mongo_list_databases,
             commands::mongo_cmd::mongo_list_collections,
+            commands::mongo_cmd::mongo_create_database,
+            commands::mongo_cmd::mongo_drop_database,
+            commands::mongo_cmd::mongo_drop_collection,
             commands::mongo_cmd::document_find_documents,
             commands::mongo_cmd::mongo_find_documents,
             commands::mongo_cmd::mongo_aggregate_documents,

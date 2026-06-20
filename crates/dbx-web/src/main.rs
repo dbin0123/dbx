@@ -324,6 +324,9 @@ async fn main() {
         .route("/redis/execute-command", post(routes::redis::execute_command))
         .route("/redis/pubsub/publish", post(routes::redis::publish_message))
         .route("/redis/pubsub/ws", get(routes::redis_pubsub_ws::ws_handler))
+        // Redis Slowlog
+        .route("/redis/slowlog-get", post(routes::redis::slowlog_get))
+        .route("/redis/cluster-master-nodes", post(routes::redis::cluster_master_nodes))
         // etcd
         .route("/etcd/list-prefix", post(routes::etcd::list_prefix))
         .route("/etcd/get", post(routes::etcd::get))
@@ -332,6 +335,9 @@ async fn main() {
         // MongoDB
         .route("/mongo/list-databases", post(routes::mongo::list_databases))
         .route("/mongo/list-collections", post(routes::mongo::list_collections))
+        .route("/mongo/create-database", post(routes::mongo::create_database))
+        .route("/mongo/drop-database", post(routes::mongo::drop_database))
+        .route("/mongo/drop-collection", post(routes::mongo::drop_collection))
         .route("/document-store/find-documents", post(routes::mongo::document_find_documents))
         .route("/mongo/find-documents", post(routes::mongo::find_documents))
         .route("/mongo/aggregate-documents", post(routes::mongo::aggregate_documents))

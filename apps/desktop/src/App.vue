@@ -205,6 +205,11 @@ const { dangerSql, pendingDangerSql, showDangerDialog, suppressDangerConfirm, tr
   blockDangerousRedisCommands,
 });
 
+function requestActiveEditorExecute() {
+  if (contentAreaRef.value?.requestQueryEditorExecute?.()) return;
+  void tryExecute();
+}
+
 const dialogs = useDialogSources();
 const { getDatabaseOptions } = useDatabaseOptions();
 const { openLineageTarget, openDatabaseSearchTarget, onStructureEditorSaved, openTableTarget } = useNavigationTargets(dialogs);
@@ -1117,7 +1122,7 @@ function handleKeydown(e: KeyboardEvent) {
   if (activeTab.value?.mode === "query" && isExecuteSqlShortcut(e, shortcuts) && e.target instanceof Element && e.target.closest("[data-query-editor-root]")) {
     e.preventDefault();
     e.stopPropagation();
-    tryExecute();
+    requestActiveEditorExecute();
     return;
   }
   if (isModRShortcut(e) && e.target instanceof Element && contentAreaRef.value?.handleModRTarget(e.target)) {
@@ -1378,7 +1383,7 @@ onUnmounted(() => {
                   :sql-keyword-case="settingsStore.editorSettings.sqlFormatter.keywordCase"
                   @update:explain-mode="(m: 'explain' | 'autotrace') => (explainMode = m)"
                   @update:block-dangerous-redis-commands="(v: boolean) => (blockDangerousRedisCommands = v)"
-                  @execute="tryExecute($event)"
+                  @execute="requestActiveEditorExecute()"
                   @cancel="cancelActiveExecution()"
                   @explain="tryExplain()"
                   @format-sql="formatActiveSql"
@@ -1485,7 +1490,7 @@ onUnmounted(() => {
           <div v-if="showSqlLibraryPanel" :class="isClassicLayout ? 'h-full shrink-0 relative z-30 isolate bg-background' : 'h-full shrink-0 relative z-30 isolate rounded-md border border-border/80 bg-background'" :style="{ width: sqlLibraryWidth + 'px' }">
             <div class="panel-resize-handle panel-resize-handle--left" @mousedown="startSqlLibraryResize" />
             <div class="h-full min-h-0 overflow-hidden">
-              <SqlLibraryPanel @close="showSqlLibraryPanel = false" />
+              <SqlLibraryPanel @close="toggleSqlLibrary" />
             </div>
           </div>
         </div>

@@ -747,6 +747,14 @@ function requestDeleteSelectedNode(): boolean {
     dropDatabase();
     return true;
   }
+  if (canDropMongoDatabase.value) {
+    dropDatabase();
+    return true;
+  }
+  if (canDropMongoCollection.value) {
+    dropMongoCollection();
+    return true;
+  }
   if (canDropSchema.value) {
     dropSchema();
     return true;
@@ -1276,6 +1284,8 @@ const createDatabaseCharset = ref("utf8mb4");
 const createDatabaseCollation = ref("utf8mb4_unicode_ci");
 const showDropDatabaseConfirm = ref(false);
 const dropDatabaseLoading = ref(false);
+const showDropMongoCollectionConfirm = ref(false);
+const dropMongoCollectionLoading = ref(false);
 const showFlushRedisDbConfirm = ref(false);
 const showCreateSchemaDialog = ref(false);
 const createSchemaName = ref("");
@@ -1745,7 +1755,7 @@ const canCreateTable = computed(() => {
 
 const canCreateDatabase = computed(() => {
   const config = props.node.connectionId ? connectionStore.getConfig(props.node.connectionId) : undefined;
-  return props.node.type === "connection" && (supportsDatabaseCreation(config?.db_type) || config?.db_type === "duckdb");
+  return props.node.type === "connection" && (supportsDatabaseCreation(config?.db_type) || config?.db_type === "duckdb" || (config?.db_type === "mongodb" && config.driver_profile !== "mongodb-legacy"));
 });
 
 const isDuckDbConnection = computed(() => {
@@ -1761,6 +1771,16 @@ const canSetCreateDatabaseCharset = computed(() => {
 const canDropDatabase = computed(() => {
   const config = props.node.connectionId ? connectionStore.getConfig(props.node.connectionId) : undefined;
   return props.node.type === "database" && !isSqlServerLinkedNode(props.node) && supportsDatabaseCreation(config?.db_type);
+});
+
+const canDropMongoDatabase = computed(() => {
+  const config = props.node.connectionId ? connectionStore.getConfig(props.node.connectionId) : undefined;
+  return props.node.type === "mongo-db" && !!props.node.database && config?.driver_profile !== "mongodb-legacy";
+});
+
+const canDropMongoCollection = computed(() => {
+  const config = props.node.connectionId ? connectionStore.getConfig(props.node.connectionId) : undefined;
+  return props.node.type === "mongo-collection" && !!props.node.database && config?.driver_profile !== "mongodb-legacy";
 });
 
 const canCreateSchema = computed(() => {
@@ -1857,6 +1877,10 @@ async function confirmTruncateTable() {
 }
 
 async function refreshDropDatabasePreviewSql() {
+  if (props.node.type === "mongo-db") {
+    dropDatabasePreviewSql.value = `db.getSiblingDB(${JSON.stringify(props.node.label)}).dropDatabase();`;
+    return;
+  }
   dropDatabasePreviewSql.value = "";
   dropDatabasePreviewSql.value = await buildDropDatabaseSql({
     databaseType: currentDatabaseType(),
@@ -1939,6 +1963,12 @@ async function confirmCreateDatabase() {
   try {
     await connectionStore.ensureConnected(node.connectionId);
     const config = connectionStore.getConfig(node.connectionId);
+    if (config?.db_type === "mongodb") {
+      await api.mongoCreateDatabase(node.connectionId, name);
+      toast(t("contextMenu.createDatabaseSuccess", { name }), 3000);
+      await connectionStore.loadMongoDatabases(node.connectionId);
+      return;
+    }
     const sql = await buildCreateDatabaseSql({
       databaseType: config?.db_type,
       driverProfile: config?.driver_profile,
@@ -1958,6 +1988,11 @@ function dropDatabase() {
   void refreshDropDatabasePreviewSql();
   dropDatabaseLoading.value = false;
   showDropDatabaseConfirm.value = true;
+}
+
+function dropMongoCollection() {
+  dropMongoCollectionLoading.value = false;
+  showDropMongoCollectionConfirm.value = true;
 }
 
 function flushRedisDb() {
@@ -1988,6 +2023,13 @@ async function confirmDropDatabase() {
   dropDatabaseLoading.value = true;
   try {
     await connectionStore.ensureConnected(node.connectionId);
+    if (node.type === "mongo-db" && node.database) {
+      await api.mongoDropDatabase(node.connectionId, node.database);
+      toast(t("contextMenu.dropDatabaseSuccess", { name: node.label }), 3000);
+      await connectionStore.loadMongoDatabases(node.connectionId);
+      showDropDatabaseConfirm.value = false;
+      return;
+    }
     const sql =
       dropDatabasePreviewSql.value ||
       (await buildDropDatabaseSql({
@@ -2002,6 +2044,23 @@ async function confirmDropDatabase() {
     toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
   } finally {
     dropDatabaseLoading.value = false;
+  }
+}
+
+async function confirmDropMongoCollection() {
+  const node = props.node;
+  if (node.type !== "mongo-collection" || !node.connectionId || !node.database || dropMongoCollectionLoading.value) return;
+  dropMongoCollectionLoading.value = true;
+  try {
+    await connectionStore.ensureConnected(node.connectionId);
+    await api.mongoDropCollection(node.connectionId, node.database, node.label);
+    toast(t("contextMenu.dropCollectionSuccess", { name: node.label }), 3000);
+    await connectionStore.loadMongoCollections(node.connectionId, node.database);
+    showDropMongoCollectionConfirm.value = false;
+  } catch (e: any) {
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+  } finally {
+    dropMongoCollectionLoading.value = false;
   }
 }
 
@@ -3263,6 +3322,22 @@ function treeItemMenuItems(): ContextMenuItem[] {
       items.push({ label: "", separator: true });
       items.push({ label: t("redis.flushDb"), action: flushRedisDb, icon: Eraser, variant: "destructive" as const });
     }
+    if (canDropMongoDatabase.value) {
+      items.push({ label: "", separator: true });
+      items.push({ label: t("contextMenu.dropDatabase"), action: dropDatabase, icon: Trash2, shortcut: shortcutDelete, variant: "destructive" as const });
+    }
+    return items;
+  }
+
+  if (node.type === "mongo-collection") {
+    items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
+    items.push({ label: "", separator: true });
+    items.push({ label: t("contextMenu.viewData"), action: toggle, icon: TableProperties });
+    items.push({ label: t("contextMenu.newQuery"), action: newQuery, icon: TerminalSquare });
+    if (canDropMongoCollection.value) {
+      items.push({ label: "", separator: true });
+      items.push({ label: t("contextMenu.dropCollection"), action: dropMongoCollection, icon: Trash2, shortcut: shortcutDelete, variant: "destructive" as const });
+    }
     return items;
   }
 
@@ -3777,6 +3852,16 @@ function treeItemMenuItems(): ContextMenuItem[] {
     :loading="dropDatabaseLoading"
     :close-on-confirm="false"
     @confirm="confirmDropDatabase"
+  />
+
+  <DangerConfirmDialog
+    v-model:open="showDropMongoCollectionConfirm"
+    :title="t('contextMenu.confirmDropCollectionTitle')"
+    :message="t('contextMenu.confirmDropCollectionMessage', { name: node.label })"
+    :confirm-label="t('contextMenu.dropCollection')"
+    :loading="dropMongoCollectionLoading"
+    :close-on-confirm="false"
+    @confirm="confirmDropMongoCollection"
   />
 
   <DangerConfirmDialog v-model:open="showFlushRedisDbConfirm" :title="t('redis.flushDb')" :message="t('redis.flushDbMessage')" :details="t('redis.flushDbDetails', { db: node.database })" :confirm-label="t('redis.flushDbConfirm')" @confirm="confirmFlushRedisDb" />

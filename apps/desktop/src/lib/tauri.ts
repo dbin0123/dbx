@@ -1129,6 +1129,20 @@ export interface RedisCommandResult {
   value: any;
 }
 
+export interface RedisSlowlogEntry {
+  id: number;
+  timestamp: number;
+  duration_micros: number;
+  command: string;
+  client_addr: string | null;
+  client_name: string | null;
+}
+
+export interface RedisNodeEndpoint {
+  host: string;
+  port: number;
+}
+
 export async function redisListDatabases(connectionId: string): Promise<RedisDatabaseInfo[]> {
   return invoke("redis_list_databases", { connectionId });
 }
@@ -1229,6 +1243,14 @@ export async function redisPubSubPublish(connectionId: string, db: number, chann
   return invoke("redis_pubsub_publish", { connectionId, db, channel, message });
 }
 
+export async function redisSlowlogGet(connectionId: string, count: number, nodeHost?: string, nodePort?: number): Promise<RedisSlowlogEntry[]> {
+  return invoke("redis_slowlog_get", { connectionId, count, nodeHost, nodePort });
+}
+
+export async function redisClusterMasterNodes(connectionId: string): Promise<RedisNodeEndpoint[]> {
+  return invoke("redis_cluster_master_nodes", { connectionId });
+}
+
 // --- etcd ---
 export type KvValueEncoding = "utf8" | "base64";
 
@@ -1299,6 +1321,18 @@ export async function mongoListDatabases(connectionId: string): Promise<string[]
 
 export async function mongoListCollections(connectionId: string, database: string): Promise<string[]> {
   return invoke("mongo_list_collections", { connectionId, database });
+}
+
+export async function mongoCreateDatabase(connectionId: string, database: string): Promise<void> {
+  return invoke("mongo_create_database", { connectionId, database });
+}
+
+export async function mongoDropDatabase(connectionId: string, database: string): Promise<void> {
+  return invoke("mongo_drop_database", { connectionId, database });
+}
+
+export async function mongoDropCollection(connectionId: string, database: string, collection: string): Promise<void> {
+  return invoke("mongo_drop_collection", { connectionId, database, collection });
 }
 
 export async function elasticsearchListIndices(connectionId: string): Promise<string[]> {

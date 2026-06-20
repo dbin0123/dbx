@@ -82,6 +82,34 @@ pub async fn list_collections(client: &Client, database: &str) -> Result<Vec<Str
     client.database(database).list_collection_names().await.map_err(|e| e.to_string())
 }
 
+pub async fn create_database(client: &Client, database: &str) -> Result<(), String> {
+    let database = database.trim();
+    if database.is_empty() {
+        return Err("Database name is required".to_string());
+    }
+    client.database(database).create_collection("dbx_init").await.map_err(|e| e.to_string())
+}
+
+pub async fn drop_database(client: &Client, database: &str) -> Result<(), String> {
+    let database = database.trim();
+    if database.is_empty() {
+        return Err("Database name is required".to_string());
+    }
+    client.database(database).drop().await.map_err(|e| e.to_string())
+}
+
+pub async fn drop_collection(client: &Client, database: &str, collection: &str) -> Result<(), String> {
+    let database = database.trim();
+    let collection = collection.trim();
+    if database.is_empty() {
+        return Err("Database name is required".to_string());
+    }
+    if collection.is_empty() {
+        return Err("Collection name is required".to_string());
+    }
+    client.database(database).collection::<Document>(collection).drop().await.map_err(|e| e.to_string())
+}
+
 pub async fn list_indexes(client: &Client, database: &str, collection: &str) -> Result<Vec<IndexInfo>, String> {
     let col = client.database(database).collection::<Document>(collection);
     let mut cursor = col.list_indexes().await.map_err(|e| e.to_string())?;

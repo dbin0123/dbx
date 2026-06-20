@@ -49,6 +49,8 @@ import type {
   RedisValue,
   RedisScanResult,
   RedisCommandResult,
+  RedisSlowlogEntry,
+  RedisNodeEndpoint,
   KvValue,
   KvListPrefixResponse,
   KvGetResponse,
@@ -1444,6 +1446,14 @@ export async function redisPubSubPublish(connectionId: string, db: number, chann
   return post("/api/redis/pubsub/publish", { connectionId, db, channel, message });
 }
 
+export async function redisSlowlogGet(connectionId: string, count: number, nodeHost?: string, nodePort?: number): Promise<RedisSlowlogEntry[]> {
+  return post("/api/redis/slowlog-get", { connectionId, count, nodeHost, nodePort });
+}
+
+export async function redisClusterMasterNodes(connectionId: string): Promise<RedisNodeEndpoint[]> {
+  return post("/api/redis/cluster-master-nodes", { connectionId });
+}
+
 // ---------------------------------------------------------------------------
 // etcd
 // ---------------------------------------------------------------------------
@@ -1474,6 +1484,18 @@ export async function mongoListDatabases(connectionId: string): Promise<string[]
 
 export async function mongoListCollections(connectionId: string, database: string): Promise<string[]> {
   return post("/api/mongo/list-collections", { connectionId, database });
+}
+
+export async function mongoCreateDatabase(connectionId: string, database: string): Promise<void> {
+  await post("/api/mongo/create-database", { connectionId, database });
+}
+
+export async function mongoDropDatabase(connectionId: string, database: string): Promise<void> {
+  await post("/api/mongo/drop-database", { connectionId, database });
+}
+
+export async function mongoDropCollection(connectionId: string, database: string, collection: string): Promise<void> {
+  await post("/api/mongo/drop-collection", { connectionId, database, collection });
 }
 
 export async function elasticsearchListIndices(connectionId: string): Promise<string[]> {

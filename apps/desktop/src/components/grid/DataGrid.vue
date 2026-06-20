@@ -123,6 +123,8 @@ import { appendColumnValueFilterCondition, buildColumnValueFilterCondition, comb
 import { clampSearchSplitWidth } from "@/lib/dataGridSearchSplit";
 import { MAX_RESULT_PAGE_SIZE, MIN_RESULT_PAGE_SIZE, normalizeResultPageSize, resultPageSizeMenuOptions } from "@/lib/paginationPageSize";
 import { allNullColumnIndexes, filterColumnVisibilityOptions, hiddenColumnIndexesWithAllNullColumns, invertedHiddenColumnIndexes, nextHiddenColumnIndexes, removeAutoHiddenColumnIndexes, visibleColumnIndexesForFilter } from "@/lib/dataGridColumnVisibility";
+import { columnOrderKeysForIndexes, isDefaultColumnOrder, moveVisibleColumnIndex, orderedColumnIndexes, uniqueDataGridColumnOrderKeys } from "@/lib/dataGridColumnOrder";
+import { dataGridColumnLayoutScopeKey, loadDataGridColumnOrder, removeDataGridColumnOrder, saveDataGridColumnOrder } from "@/lib/dataGridColumnLayoutStorage";
 import { parseClipboardTable } from "@/lib/gridSelection";
 
 import { useToast } from "@/composables/useToast";
@@ -229,7 +231,6 @@ const transposeRowIndex = ref<number | null>(null);
 const showTranspose = ref(false);
 const multiRowTranspose = ref(false);
 const preserveTransposeOnNextResult = ref(false);
-const autoTransposedForResult = ref(false);
 
 watch(
   () => props.result,
@@ -244,16 +245,6 @@ watch(
       loading: props.loading,
       elapsedSinceSetup: dataGridElapsed(),
     });
-    // Auto-transpose when a new result has exactly 1 row with multiple columns.
-    if (result.rows.length === 1 && result.columns.length > 1 && !preserveTransposeOnNextResult.value) {
-      autoTransposedForResult.value = true;
-      nextTick(() => {
-        showTranspose.value = true;
-        transposeRowIndex.value = 0;
-      });
-    } else {
-      autoTransposedForResult.value = false;
-    }
 
     nextTick(() => {
       console.info("[DBX][DataGrid:result:nextTick]", {
@@ -1569,13 +1560,35 @@ const nullColumnsHidden = ref(false);
 const autoHiddenNullColumnIndexes = ref<Set<number>>(new Set());
 const highlightedColumnIndex = ref<number | null>(null);
 let highlightedColumnTimer = 0;
+const columnOrderKeys = computed(() => uniqueDataGridColumnOrderKeys(props.result.columns, props.sourceColumns));
+const columnLayoutScopeKey = computed(() =>
+  dataGridColumnLayoutScopeKey({
+    connectionId: props.connectionId,
+    database: props.database,
+    schema: props.schema,
+    context: props.context,
+    tableSchema: props.tableMeta?.schema,
+    tableName: props.tableMeta?.tableName,
+    sql: props.sql,
+    columns: props.result.columns,
+    sourceColumns: props.sourceColumns,
+  }),
+);
+const persistedColumnOrderKeys = ref<string[]>([]);
 const displayableColumnIndexes = computed(() =>
   props.result.columns
     .map((column, index) => ({ column, index }))
     .filter(({ column }) => !isHiddenGridColumn(props.databaseType, column, props.tableMeta?.primaryKeys ?? []))
     .map(({ index }) => index),
 );
-const visibleColumnIndexes = computed(() => visibleColumnIndexesForFilter(displayableColumnIndexes.value, hiddenColumnIndexes.value));
+const orderedDisplayableColumnIndexes = computed(() =>
+  orderedColumnIndexes({
+    availableIndexes: displayableColumnIndexes.value,
+    columnKeys: columnOrderKeys.value,
+    orderedKeys: persistedColumnOrderKeys.value,
+  }),
+);
+const visibleColumnIndexes = computed(() => visibleColumnIndexesForFilter(orderedDisplayableColumnIndexes.value, hiddenColumnIndexes.value));
 const visibleColumns = computed(() => visibleColumnIndexes.value.map((index) => props.result.columns[index]));
 const visibleSourceColumns = computed(() => {
   if (!props.sourceColumns || props.sourceColumns.length !== props.result.columns.length) return undefined;
@@ -1604,6 +1617,7 @@ const previewActions = computed(() => {
 });
 const displayableColumnCount = computed(() => displayableColumnIndexes.value.length);
 const hiddenColumnCount = computed(() => displayableColumnCount.value - visibleColumnCount.value);
+const hasCustomColumnOrder = computed(() => !isDefaultColumnOrder(displayableColumnIndexes.value, orderedDisplayableColumnIndexes.value));
 const allNullColumnIndexesForResult = computed(() => allNullColumnIndexes(props.result.rows, displayableColumnIndexes.value));
 const allNullColumnCount = computed(() => allNullColumnIndexesForResult.value.length);
 const canToggleAllNullColumns = computed(() => nullColumnsHidden.value || (allNullColumnCount.value > 0 && displayableColumnCount.value > 1));
@@ -1626,6 +1640,24 @@ function showAllColumns() {
 }
 function invertColumnVisibility() {
   hiddenColumnIndexes.value = invertedHiddenColumnIndexes(displayableColumnIndexes.value, hiddenColumnIndexes.value);
+}
+function loadColumnOrder() {
+  persistedColumnOrderKeys.value = loadDataGridColumnOrder(columnLayoutScopeKey.value, columnOrderKeys.value);
+}
+function persistColumnOrder(indexes: number[]) {
+  if (isDefaultColumnOrder(displayableColumnIndexes.value, indexes)) {
+    removeDataGridColumnOrder(columnLayoutScopeKey.value);
+    persistedColumnOrderKeys.value = [];
+    return;
+  }
+  const keys = columnOrderKeysForIndexes(indexes, columnOrderKeys.value);
+  persistedColumnOrderKeys.value = keys;
+  saveDataGridColumnOrder(columnLayoutScopeKey.value, columnOrderKeys.value, keys);
+}
+function resetColumnOrder() {
+  removeDataGridColumnOrder(columnLayoutScopeKey.value);
+  persistedColumnOrderKeys.value = [];
+  nextTick(refreshGridScrollerMetrics);
 }
 function showAllNullColumns() {
   hiddenColumnIndexes.value = removeAutoHiddenColumnIndexes(hiddenColumnIndexes.value, autoHiddenNullColumnIndexes.value);
@@ -1655,6 +1687,7 @@ watch(allNullColumnIndexesForResult, () => {
   autoHiddenNullColumnIndexes.value = new Set();
   hideAllNullColumns();
 });
+watch(() => columnLayoutScopeKey.value, loadColumnOrder, { immediate: true });
 const firstVisibleColumnIndex = computed(() => visibleColumnIndexes.value[0] ?? 0);
 function actualColumnIndex(visibleColumnIndex: number): number {
   return visibleColumnIndexes.value[visibleColumnIndex] ?? visibleColumnIndex;
@@ -2011,6 +2044,144 @@ const renderedGridColumns = computed<RenderedGridColumn[]>(() => {
 
 function renderedColumnStyle(visibleColIdx: number) {
   return { width: `var(--col-w-${visibleColIdx})` };
+}
+
+type ColumnHeaderDragState = {
+  sourceVisibleIndex: number;
+  targetVisibleIndex: number;
+  startX: number;
+  startY: number;
+  currentX: number;
+  columnRects: { visibleIndex: number; left: number; width: number }[];
+  dragging: boolean;
+};
+const columnHeaderDragState = ref<ColumnHeaderDragState | null>(null);
+let columnHeaderDragClickGuardUntil = 0;
+
+function columnHeaderInteractiveTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && !!target.closest("button, input, textarea, select, [contenteditable='true'], [role='button'], [data-column-resize-handle]");
+}
+
+function columnHeaderDropTargetVisibleIndex(clientX: number): number {
+  const state = columnHeaderDragState.value;
+  if (!state || state.columnRects.length === 0) return state?.sourceVisibleIndex ?? 0;
+  for (const rect of state.columnRects) {
+    const visibleIndex = rect.visibleIndex;
+    if (!Number.isFinite(visibleIndex)) continue;
+    if (clientX < rect.left + rect.width / 2) return visibleIndex;
+  }
+  return visibleColumnIndexes.value.length;
+}
+
+function columnHeaderLayoutRects(): { visibleIndex: number; left: number; width: number }[] {
+  const header = headerRef.value;
+  return Array.from(header?.querySelectorAll<HTMLElement>("[data-visible-col-index]") ?? [])
+    .map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        visibleIndex: Number(element.dataset.visibleColIndex),
+        left: rect.left,
+        width: rect.width,
+      };
+    })
+    .filter((rect) => Number.isFinite(rect.visibleIndex));
+}
+
+function stopColumnHeaderDrag(commit: boolean) {
+  const state = columnHeaderDragState.value;
+  if (!state) return;
+  window.removeEventListener("pointermove", onColumnHeaderPointerMove, true);
+  window.removeEventListener("pointerup", onColumnHeaderPointerUp, true);
+  window.removeEventListener("pointercancel", onColumnHeaderPointerCancel, true);
+  document.body.style.userSelect = "";
+  columnHeaderDragState.value = null;
+  if (state.dragging) columnHeaderDragClickGuardUntil = Date.now() + 250;
+  if (!commit || !state.dragging || state.sourceVisibleIndex === state.targetVisibleIndex) return;
+  const next = moveVisibleColumnIndex({
+    orderedIndexes: orderedDisplayableColumnIndexes.value,
+    hiddenIndexes: hiddenColumnIndexes.value,
+    fromVisibleIndex: state.sourceVisibleIndex,
+    toVisibleIndex: state.targetVisibleIndex,
+  });
+  persistColumnOrder(next);
+  nextTick(refreshGridScrollerMetrics);
+}
+
+function onColumnHeaderPointerMove(event: PointerEvent) {
+  const state = columnHeaderDragState.value;
+  if (!state) return;
+  const moved = Math.abs(event.clientX - state.startX) > 5 || Math.abs(event.clientY - state.startY) > 5;
+  if (!state.dragging && moved) {
+    state.dragging = true;
+    document.body.style.userSelect = "none";
+  }
+  if (!state.dragging) return;
+  event.preventDefault();
+  state.currentX = event.clientX;
+  state.targetVisibleIndex = columnHeaderDropTargetVisibleIndex(event.clientX);
+}
+
+function onColumnHeaderPointerUp() {
+  stopColumnHeaderDrag(true);
+}
+
+function onColumnHeaderPointerCancel() {
+  stopColumnHeaderDrag(false);
+}
+
+function startColumnHeaderDrag(visibleColIdx: number, event: PointerEvent) {
+  if (event.button !== 0 || getIsResizing() || columnHeaderInteractiveTarget(event.target)) return;
+  columnHeaderDragState.value = {
+    sourceVisibleIndex: visibleColIdx,
+    targetVisibleIndex: visibleColIdx,
+    startX: event.clientX,
+    startY: event.clientY,
+    currentX: event.clientX,
+    columnRects: columnHeaderLayoutRects(),
+    dragging: false,
+  };
+  window.addEventListener("pointermove", onColumnHeaderPointerMove, true);
+  window.addEventListener("pointerup", onColumnHeaderPointerUp, true);
+  window.addEventListener("pointercancel", onColumnHeaderPointerCancel, true);
+}
+
+function onHeaderClick(visibleColIdx: number, event: MouseEvent) {
+  if (Date.now() < columnHeaderDragClickGuardUntil) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  selectColumn(visibleColIdx, event);
+}
+
+function columnHeaderDragClass(visibleColIdx: number) {
+  const state = columnHeaderDragState.value;
+  return {
+    "z-30 shadow-lg ring-1 ring-primary/40 bg-background dark:bg-muted pointer-events-none": state?.dragging && state.sourceVisibleIndex === visibleColIdx,
+  };
+}
+
+function columnHeaderPreviewOffset(visibleColIdx: number): number {
+  const state = columnHeaderDragState.value;
+  if (!state?.dragging) return 0;
+  const sourceIndex = state.sourceVisibleIndex;
+  if (visibleColIdx === sourceIndex) return state.currentX - state.startX;
+  const targetIndex = state.targetVisibleIndex;
+  const sourceWidth = renderedColumnWidths.value[sourceIndex] ?? 0;
+  if (targetIndex < sourceIndex && visibleColIdx >= targetIndex && visibleColIdx < sourceIndex) return sourceWidth;
+  if (targetIndex > sourceIndex && visibleColIdx > sourceIndex && visibleColIdx <= targetIndex) return -sourceWidth;
+  return 0;
+}
+
+function columnHeaderStyle(visibleColIdx: number) {
+  const style = renderedColumnStyle(visibleColIdx);
+  const offset = columnHeaderPreviewOffset(visibleColIdx);
+  if (!offset) return style;
+  return {
+    ...style,
+    transform: `translateX(${offset}px)`,
+    transition: columnHeaderDragState.value?.sourceVisibleIndex === visibleColIdx ? undefined : "transform 120ms ease-out",
+  };
 }
 
 function columnContentOffsetLeft(visibleColIdx: number): number {
@@ -4276,6 +4447,7 @@ onDeactivated(pauseCanvasGridWork);
 onUnmounted(() => {
   pauseCanvasGridWork();
   gridHorizontalScrollbarResizeObserver?.disconnect();
+  stopColumnHeaderDrag(false);
   stopGridHorizontalScrollbarDrag();
   stopGridVerticalScrollbarDrag();
   if (gridHorizontalScrollbarFrame && typeof cancelAnimationFrame === "function") {
@@ -4319,10 +4491,12 @@ const {
   canCopyRowAsUpdate,
   copyAll,
   copySelectionTsv,
+  copySelectionTsvWithHeaders,
   copySelectionCsv,
   copySelectionJson,
   copySelectionSqlInList,
   copySelectedRowsTsv,
+  copyColumnNames,
   exportCsv,
   exportCurrentPageCsv,
   exportJson,
@@ -5353,7 +5527,6 @@ function currentTransposeViewportRowIndex(): number {
 }
 
 function closeTranspose(scrollToCurrentRecord = true) {
-  autoTransposedForResult.value = false;
   const rowIndex = currentTransposeViewportRowIndex();
   showTranspose.value = false;
   transposeRowIndex.value = null;
@@ -5384,7 +5557,6 @@ function openContextTranspose() {
 }
 
 function toggleTranspose(rowIndex: number) {
-  autoTransposedForResult.value = false;
   const next = nextTransposeState(showTranspose.value, transposeRowIndex.value, rowIndex);
   transposeRowIndex.value = next.transposeRowIndex;
   showTranspose.value = next.showTranspose;
@@ -6029,6 +6201,8 @@ defineExpose({
   toggleColumnVisibility,
   showAllColumns,
   invertColumnVisibility,
+  hasCustomColumnOrder,
+  resetColumnOrder,
   nullColumnsHidden,
   allNullColumnCount,
   canToggleAllNullColumns,
@@ -6099,6 +6273,7 @@ function copySubmenu(): ContextMenuItem {
     items.push({ label: labels.update, action: copyRowAsUpdate, disabled: !canCopyPreparedUpdate() });
   }
   items.push({ label: t("grid.copyAll"), action: copyAll });
+  items.push({ label: t("grid.copyColumnNames"), action: copyColumnNames });
   return { label: t("grid.copy"), icon: Copy, children: items };
 }
 
@@ -6108,6 +6283,7 @@ function selectionSubmenu(): ContextMenuItem {
     icon: SquareDashed,
     children: [
       { label: t("grid.copySelectionTsv"), action: copySelectionTsv },
+      { label: t("grid.copySelectionTsvWithHeaders"), action: copySelectionTsvWithHeaders },
       { label: t("grid.copySelectionCsv"), action: copySelectionCsv },
       { label: t("grid.copySelectionJson"), action: copySelectionJson },
       { label: t("grid.copySelectionSql"), action: copySelectionSqlInList },
@@ -6144,6 +6320,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
   // 1. Copy column name
   if (contextHeaderColumn.value) {
     items.push({ label: t("grid.copyColumnName"), action: copyHeaderColumn, icon: Copy });
+    items.push({ label: t("grid.copyColumnNames"), action: copyColumnNames, icon: Copy });
     items.push({
       label: t("grid.openColumnDetailsDialog"),
       action: openContextColumnDetailDialog,
@@ -6821,10 +6998,13 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                       :class="{
                         '!bg-gray-300 dark:!bg-gray-900 outline outline-primary -outline-offset-1': highlightedColumnIndex === col.actualColIdx || columnIsSelected(col.visibleColIdx),
                         'bg-amber-500/20 ring-1 ring-inset ring-amber-500/40': currentSearchMatch?.kind === 'column' && currentSearchMatch.col === col.actualColIdx,
+                        ...columnHeaderDragClass(col.visibleColIdx),
                       }"
-                      :style="renderedColumnStyle(col.visibleColIdx)"
+                      :style="columnHeaderStyle(col.visibleColIdx)"
                       :data-grid-column-index="col.actualColIdx"
-                      @click="selectColumn(col.visibleColIdx, $event)"
+                      :data-visible-col-index="col.visibleColIdx"
+                      @pointerdown="startColumnHeaderDrag(col.visibleColIdx, $event)"
+                      @click="onHeaderClick(col.visibleColIdx, $event)"
                       @contextmenu="onHeaderContext(col.name, col.actualColIdx)"
                     >
                       <span class="flex min-w-0 items-center gap-1 overflow-hidden">
@@ -7110,7 +7290,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                           </PopoverContent>
                         </Popover>
                       </span>
-                      <div class="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-primary/30" @mousedown.stop="onResizeStart(col.visibleColIdx, $event)" @dblclick.stop="autoFitColumn(col.visibleColIdx)" />
+                      <div data-column-resize-handle class="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-primary/30" @mousedown.stop="onResizeStart(col.visibleColIdx, $event)" @dblclick.stop="autoFitColumn(col.visibleColIdx)" />
                     </div>
                     <template #content>
                       <div class="grid min-w-56 grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 px-3 py-2">

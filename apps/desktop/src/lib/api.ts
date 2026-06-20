@@ -271,6 +271,8 @@ export const redisFlushDb = forward("redisFlushDb");
 export const redisExecuteCommand = forward("redisExecuteCommand");
 export const redisLoadMore = forward("redisLoadMore");
 export const redisPubSubPublish = forward("redisPubSubPublish");
+export const redisSlowlogGet = forward("redisSlowlogGet");
+export const redisClusterMasterNodes = forward("redisClusterMasterNodes");
 
 export function redisPubSubConnect(connectionId: string): WebSocket {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -328,6 +330,9 @@ export const mqRawRequest = forward("mqRawRequest");
 // MongoDB
 export const mongoListDatabases = forward("mongoListDatabases");
 export const mongoListCollections = forward("mongoListCollections");
+export const mongoCreateDatabase = forward("mongoCreateDatabase");
+export const mongoDropDatabase = forward("mongoDropDatabase");
+export const mongoDropCollection = forward("mongoDropCollection");
 export const documentFindDocuments = forward("documentFindDocuments");
 export const mongoFindDocuments = forward("mongoFindDocuments");
 export const mongoAggregateDocuments = forward("mongoAggregateDocuments");
@@ -396,6 +401,8 @@ export type {
   RedisScanResult,
   RedisCommandSafety,
   RedisCommandResult,
+  RedisSlowlogEntry,
+  RedisNodeEndpoint,
   KvValueEncoding,
   KvValue,
   KvKeyMetadata,
