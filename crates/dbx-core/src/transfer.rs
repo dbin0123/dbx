@@ -666,7 +666,12 @@ pub fn escape_value_typed(val: &serde_json::Value, db_type: &DatabaseType, colum
             _ => n.to_string(),
         },
         serde_json::Value::String(s) => {
-            let escaped = format_literal_string(s, db_type, column_type).replace('\\', "\\\\").replace('\'', "''");
+            let literal = format_literal_string(s, db_type, column_type);
+            let escaped = if is_postgres_family_target(db_type) {
+                literal.replace('\'', "''")
+            } else {
+                literal.replace('\\', "\\\\").replace('\'', "''")
+            };
             match db_type {
                 DatabaseType::Mysql | DatabaseType::Doris | DatabaseType::StarRocks
                     if column_type.is_some_and(is_mysql_bit_type) =>
@@ -4216,6 +4221,60 @@ mod tests {
         );
 
         assert_eq!(sql, "INSERT INTO [dbo].[customers] ([name], [note]) VALUES\n(N'Tiếng Việt', N'O''Brien')");
+    }
+
+    #[test]
+    fn postgres_insert_preserves_json_escape_sequences() {
+        let sql = generate_insert_typed(
+            &[String::from("payload")],
+            &[Some(String::from("jsonb"))],
+            &[vec![json!(r#"{"message":"hello\nworld"}"#)]],
+            "events",
+            "public",
+            &DatabaseType::Postgres,
+        );
+
+        assert_eq!(
+            sql,
+            r#"INSERT INTO "public"."events" ("payload") VALUES
+('{"message":"hello\nworld"}')"#
+        );
+    }
+
+    #[test]
+    fn postgres_insert_preserves_text_backslashes() {
+        let sql = generate_insert_typed(
+            &[String::from("path")],
+            &[Some(String::from("text"))],
+            &[vec![json!(r#"C:\tmp\file.txt"#)]],
+            "files",
+            "public",
+            &DatabaseType::Postgres,
+        );
+
+        assert_eq!(
+            sql,
+            r#"INSERT INTO "public"."files" ("path") VALUES
+('C:\tmp\file.txt')"#
+        );
+    }
+
+    #[test]
+    fn mysql_insert_keeps_backslash_escape_style() {
+        let sql = generate_insert_typed(
+            &[String::from("path")],
+            &[Some(String::from("varchar(255)"))],
+            &[vec![json!(r#"C:\tmp\file.txt"#)]],
+            "files",
+            "",
+            &DatabaseType::Mysql,
+        );
+
+        assert_eq!(
+            sql,
+            r#"INSERT INTO `files` (`path`) VALUES
+('C:\\tmp\\file.txt')"#
+        );
     }
 
     #[test]

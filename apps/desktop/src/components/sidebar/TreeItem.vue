@@ -967,6 +967,7 @@ async function newQuery() {
   }
 }
 
+// SQL template helpers have been extracted to @/lib/tableSqlTemplates.ts
 // ---- Template actions ----
 
 async function loadTemplateContext(allowView = false) {
@@ -989,7 +990,19 @@ async function loadTemplateContext(allowView = false) {
     console.warn("[DBX][tableSqlTemplate:getColumns:error]", e);
   }
 
-  return { node, dbType, tableSchema, columns };
+  let tableType = node.tableType;
+  if (dbType === "tdengine") {
+    try {
+      const querySchema = connectionObjectTreeQuerySchema(config, node.database, tableSchema);
+      const tables = await api.listTables(node.connectionId, node.database, querySchema, node.label, 200);
+      const matched = tables.find((table) => table.name.toLowerCase() === node.label.toLowerCase());
+      if (matched?.table_type) tableType = matched.table_type;
+    } catch (e) {
+      console.warn("[DBX][tableSqlTemplate:listTables:error]", e);
+    }
+  }
+
+  return { node, dbType, tableSchema, columns, tableType };
 }
 
 function openSqlTemplateTab(connectionId: string, database: string, schema: string | undefined, sql: string, title?: string) {
@@ -1022,6 +1035,7 @@ async function newInsertTemplate() {
       schema: context.tableSchema,
       tableName: context.node.label,
       columns: context.columns,
+      tableType: context.tableType,
     });
     openSqlTemplateTab(context.node.connectionId!, context.node.database!, context.node.schema, sql);
   } catch (e: any) {

@@ -479,6 +479,7 @@ export interface TreeNode {
   mqTenant?: string;
   schema?: string;
   tableName?: string;
+  tableType?: string;
   comment?: string | null;
   objectCount?: number;
   loadedKeyCount?: number;

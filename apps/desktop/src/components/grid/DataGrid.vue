@@ -105,7 +105,8 @@ import { matchesRowStatusFilter, type RowStatus, type RowStatusFilter } from "@/
 import { displayCellValue, type CellValue } from "@/lib/cellValue";
 import { getApplicablePreviewActions } from "@/lib/resultPreviewRegistry";
 import "@/lib/previewHandlers/geometryMapPreview";
-import { BINARY_CELL_DOWNLOAD_MODES, binaryCellDisplayText, binaryCellDownloadFileName, binaryCellDownloadPayload, canDownloadBinaryCellValue, downloadBinaryCellPayload, type BinaryCellDownloadMode } from "@/lib/binaryCellDownload";
+import { BINARY_CELL_DOWNLOAD_MODES, binaryCellDisplayText, binaryCellDownloadFileName, binaryCellDownloadPayload, canDownloadBinaryCellValue, downloadBinaryCellPayload, isBinaryCellColumnType, parseBinaryCellBytes, type BinaryCellDownloadMode } from "@/lib/binaryCellDownload";
+import { buildBinaryHexViewRows } from "@/lib/binaryHexViewer";
 import { canFormatCellDetailJson, cellDetailEditorText, defaultCellDetailTab, formatJsonText, isGeometryColumnType, linkedCellDetailTarget, valueEditorActions, visibleCellDetailTabs, type CellDetailTab } from "@/lib/cellDetailPresentation";
 import { renderWktOnCanvas, isHexGeometry } from "@/lib/geometryPreview";
 import { buildDataGridCellDetail, buildDataGridColumnDetail, buildDataGridRowDetail, dataGridColumnDetailJson, dataGridColumnDetailTsv, dataGridRowDetailJson, dataGridRowDetailTsv, filterDataGridDetailFields, type DataGridCellDetail } from "@/lib/dataGridDetail";
@@ -135,7 +136,7 @@ import { useSqlHighlighter } from "@/composables/useSqlHighlighter";
 import { useCellDetailEditor, type UseCellDetailEditorReturn } from "@/composables/useCellDetailEditor";
 import { useTheme } from "@/composables/useTheme";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { nextDataGridSortState, type DataGridSortDirection } from "@/lib/dataGridSort";
+import type { DataGridSortDirection } from "@/lib/dataGridSort";
 import { getTableMetadataCapabilities } from "@/lib/tableMetadataCapabilities";
 import { forgetDataGridConditionHistory, loadDataGridConditionHistory, rememberDataGridConditionHistory } from "@/lib/dataGridConditionHistory";
 
@@ -165,6 +166,8 @@ type ConditionSuggestion = {
   value: string;
   kind: "column" | "history";
 };
+
+type SortMenuValue = "asc" | "desc" | "clear";
 
 const props = defineProps<{
   result: QueryResult;
@@ -348,6 +351,38 @@ function headerColumnSortable(actualColIdx: number): boolean {
   return resolved !== undefined ? resolved : true;
 }
 
+function columnIsSorted(column: string, columnIndex: number): boolean {
+  return sortCol.value === column && sortColIndex.value === columnIndex;
+}
+
+function sortMenuItems(column: string, columnIndex: number) {
+  return [
+    {
+      label: t("grid.sortAscending"),
+      value: "asc",
+      icon: ArrowUp,
+      checked: columnIsSorted(column, columnIndex) && sortDir.value === "asc",
+    },
+    {
+      label: t("grid.sortDescending"),
+      value: "desc",
+      icon: ArrowDown,
+      checked: columnIsSorted(column, columnIndex) && sortDir.value === "desc",
+    },
+    {
+      label: t("grid.clearSort"),
+      value: "clear",
+      icon: ArrowUpDown,
+      disabled: !columnIsSorted(column, columnIndex),
+      separatorBefore: true,
+    },
+  ];
+}
+
+function selectedSortMenuValue(column: string, columnIndex: number): SortMenuValue | undefined {
+  return columnIsSorted(column, columnIndex) ? sortDir.value : undefined;
+}
+
 function typeColorClass(t: string): string {
   // Strip precision/scale suffix like (20,6)
   const base = t.replace(/\(.*\)$/, "").toLowerCase();
@@ -475,6 +510,7 @@ type StructuredFilterRule = {
 const localColumnFilters = ref<Record<number, Set<string>>>({});
 const localFilterOpenColumn = ref<number | null>(null);
 const headerActionMenuOpenColumn = ref<number | null>(null);
+const headerSortMenuOpenColumn = ref<number | null>(null);
 const headerPanelDismissGuardUntil = ref(0);
 const localFilterSearch = ref("");
 const localFilterDraft = ref<LocalColumnFilterDraft | null>(null);
@@ -3134,7 +3170,26 @@ watch(dialogGeometryPreviewOpen, async (open) => {
 
 const activeCellDetailTabs = computed(() => {
   const detail = activeCellDetail.value;
-  return visibleCellDetailTabs({ isEditable: !!detail?.isEditable });
+  return visibleCellDetailTabs({
+    isEditable: !!detail?.isEditable,
+    hasBinaryHexViewer: isBinaryCellColumnType(detail?.type),
+  });
+});
+
+const activeBinaryHexBytes = computed(() => {
+  if (activeCellDetailTab.value !== "hexViewer") return null;
+  const detail = activeCellDetail.value;
+  return detail ? parseBinaryCellBytes(detail.value, detail.type) : null;
+});
+
+const activeBinaryHexRows = computed(() => (activeBinaryHexBytes.value ? buildBinaryHexViewRows(activeBinaryHexBytes.value) : []));
+const activeBinaryHexByteCount = computed(() => activeBinaryHexBytes.value?.length ?? 0);
+
+const activeCellDetailTabsGridClass = computed(() => {
+  const count = activeCellDetailTabs.value.length;
+  if (count >= 3) return "grid-cols-3";
+  if (count === 2) return "grid-cols-2";
+  return "grid-cols-1";
 });
 
 watch(activeCellDetailTabs, (tabs) => {
@@ -3465,23 +3520,10 @@ function setDetailNull() {
   detailCell.value = { ...detailCell.value! };
 }
 
-function toggleSort(colName: string, colIdx: number) {
+function applyColumnSort(column: string, columnIndex: number, direction: "asc" | "desc" | null) {
   if (getIsResizing()) return;
   currentPage.value = 1;
   resetGridVerticalScroll(true);
-  const next = nextDataGridSortState({ column: sortCol.value, columnIndex: sortColIndex.value, direction: sortDir.value }, colName, colIdx);
-  sortCol.value = next.column;
-  sortColIndex.value = next.columnIndex;
-  sortDir.value = next.direction;
-  syncOrderByInputWithSort(next.column, next.column ? next.direction : null);
-  emit("sort", colName, colIdx, next.column ? next.direction : null, currentWhereInput());
-}
-
-function applyContextSort(direction: "asc" | "desc" | null) {
-  if (!contextColumn.value || !contextCell.value) return;
-  const column = contextColumn.value;
-  const columnIndex = contextCell.value.col;
-  currentPage.value = 1;
   if (direction) {
     sortCol.value = column;
     sortColIndex.value = columnIndex;
@@ -3494,6 +3536,15 @@ function applyContextSort(direction: "asc" | "desc" | null) {
     syncOrderByInputWithSort(null, null);
   }
   emit("sort", column, columnIndex, direction, currentWhereInput());
+}
+
+function selectHeaderSort(value: string, column: string, columnIndex: number) {
+  applyColumnSort(column, columnIndex, value === "clear" ? null : (value as DataGridSortDirection));
+}
+
+function applyContextSort(direction: "asc" | "desc" | null) {
+  if (!contextColumn.value || !contextCell.value) return;
+  applyColumnSort(contextColumn.value, contextCell.value.col, direction);
 }
 
 async function contextFilterCondition(mode: FilterMode): Promise<string | null> {
@@ -6788,18 +6839,35 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                             {{ headerColumnComment(col.name) }}
                           </span>
                         </span>
-                        <button
+                        <LightDropdownMenu
                           v-if="headerColumnSortable(col.actualColIdx)"
-                          type="button"
-                          class="flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-gray-200 dark:hover:bg-gray-800 hover:text-foreground"
-                          :class="sortCol === col.name && sortColIndex === col.actualColIdx ? 'text-primary opacity-100' : 'opacity-80'"
-                          :title="t('grid.sort')"
-                          @click.stop="toggleSort(col.name, col.actualColIdx)"
+                          :items="sortMenuItems(col.name, col.actualColIdx)"
+                          :open="headerSortMenuOpenColumn === col.actualColIdx"
+                          :selected-value="selectedSortMenuValue(col.name, col.actualColIdx)"
+                          align="end"
+                          content-class="w-max min-w-28 p-0.5"
+                          item-class="gap-1 px-1.5 py-0.5 text-xs"
+                          item-icon-class="h-3 w-3"
+                          :match-trigger-width="false"
+                          @update:open="(value: boolean) => (headerSortMenuOpenColumn = value ? col.actualColIdx : null)"
+                          @select="(value: string) => selectHeaderSort(value, col.name, col.actualColIdx)"
                         >
-                          <ArrowUp v-if="sortCol === col.name && sortColIndex === col.actualColIdx && sortDir === 'asc'" class="h-3 w-3 shrink-0" />
-                          <ArrowDown v-else-if="sortCol === col.name && sortColIndex === col.actualColIdx && sortDir === 'desc'" class="h-3 w-3 shrink-0" />
-                          <ArrowUpDown v-else class="h-3 w-3 shrink-0" />
-                        </button>
+                          <template #trigger="{ open, toggle }">
+                            <button
+                              type="button"
+                              class="flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-gray-200 dark:hover:bg-gray-800 hover:text-foreground"
+                              :class="columnIsSorted(col.name, col.actualColIdx) ? 'text-primary opacity-100' : 'opacity-80'"
+                              :title="t('grid.sort')"
+                              :aria-expanded="open"
+                              @mousedown.stop
+                              @click.stop="toggle"
+                            >
+                              <ArrowUp v-if="columnIsSorted(col.name, col.actualColIdx) && sortDir === 'asc'" class="h-3 w-3 shrink-0" />
+                              <ArrowDown v-else-if="columnIsSorted(col.name, col.actualColIdx) && sortDir === 'desc'" class="h-3 w-3 shrink-0" />
+                              <ArrowUpDown v-else class="h-3 w-3 shrink-0" />
+                            </button>
+                          </template>
+                        </LightDropdownMenu>
                         <LightDropdownMenu
                           v-if="compactColumnHeaderActions"
                           :items="compactColumnActionMenuItems(col.name)"
@@ -7466,8 +7534,11 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
 
             <Tabs v-model="activeCellDetailTab" class="flex-1 min-h-0 gap-0">
               <div class="shrink-0 border-b px-3 py-2">
-                <TabsList class="grid h-7 w-full p-0.5" :class="activeCellDetailTabs.length > 1 ? 'grid-cols-2' : 'grid-cols-1'">
+                <TabsList class="grid h-7 w-full p-0.5" :class="activeCellDetailTabsGridClass">
                   <TabsTrigger value="details" class="h-6 text-xs">{{ t("grid.cellDetails") }}</TabsTrigger>
+                  <TabsTrigger v-if="activeCellDetailTabs.includes('hexViewer')" value="hexViewer" class="h-6 text-xs">
+                    {{ t("grid.hexViewer") }}
+                  </TabsTrigger>
                   <TabsTrigger v-if="activeCellDetailTabs.includes('valueEditor')" value="valueEditor" class="h-6 text-xs">
                     {{ t("grid.valueEditor") }}
                   </TabsTrigger>
@@ -7614,6 +7685,28 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                   <Button v-if="activeCellDetail.isEditable && activeCellDetail.value !== null" variant="ghost" size="sm" class="h-7 justify-start text-xs" @click="setDetailNull"> <X class="w-3 h-3 mr-2" /> {{ t("grid.setNull") }} </Button>
                   <Button variant="ghost" size="sm" class="h-7 justify-start text-xs" @click="copyDetailColumnName"> <Copy class="w-3 h-3 mr-2" /> {{ t("grid.copyColumnName") }} </Button>
                   <Button variant="ghost" size="sm" class="h-7 justify-start text-xs" :disabled="!canCopyPreparedDetailSqlCondition()" @click="copyDetailSqlCondition"> <Code2 class="w-3 h-3 mr-2" /> {{ t("grid.copySqlCondition") }} </Button>
+                </div>
+              </TabsContent>
+
+              <TabsContent v-if="activeCellDetailTabs.includes('hexViewer')" value="hexViewer" class="m-0 min-h-0 flex-1 flex flex-col p-3 text-xs">
+                <div class="mb-2 min-w-0 shrink-0">
+                  <div class="font-medium">{{ t("grid.hexViewer") }}</div>
+                  <div class="text-[11px] text-muted-foreground">{{ t("grid.hexViewerByteCount", { count: activeBinaryHexByteCount }) }}</div>
+                </div>
+                <div class="min-h-0 flex-1 overflow-auto rounded border bg-muted/20 font-mono text-[11px]">
+                  <div class="sticky top-0 grid grid-cols-[5.5rem_minmax(24rem,1fr)_8rem] gap-3 border-b bg-muted px-2 py-1 font-semibold text-muted-foreground">
+                    <div>{{ t("grid.hexViewerOffset") }}</div>
+                    <div>{{ t("grid.hexViewerHex") }}</div>
+                    <div>{{ t("grid.hexViewerAscii") }}</div>
+                  </div>
+                  <div v-for="row in activeBinaryHexRows" :key="row.offset" class="grid grid-cols-[5.5rem_minmax(24rem,1fr)_8rem] gap-3 border-b border-border/50 px-2 py-1 last:border-b-0">
+                    <div class="select-all text-muted-foreground">{{ row.offset }}</div>
+                    <div class="select-all whitespace-pre">{{ row.hex }}</div>
+                    <div class="select-all whitespace-pre">{{ row.ascii }}</div>
+                  </div>
+                  <div v-if="activeBinaryHexRows.length === 0" class="px-2 py-6 text-center font-sans text-muted-foreground">
+                    {{ t("grid.hexViewerEmpty") }}
+                  </div>
                 </div>
               </TabsContent>
 
