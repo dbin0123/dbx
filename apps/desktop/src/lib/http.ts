@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   ConnectionConfig,
   DatabaseInfo,
   LinkedServerInfo,
@@ -104,6 +104,8 @@ const DESKTOP_SETTINGS_STORAGE_KEY = "dbx-desktop-settings";
 const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   show_tray_icon: true,
   icon_theme: "default",
+  quit_on_close: false,
+  close_action_prompted: false,
   debug_logging_enabled: false,
   saved_sql_sync_dir: null,
   driver_store_dir: null,
@@ -913,6 +915,8 @@ export interface DriverStoreMigrationResult {
   driver_store_dir: string | null;
   plugin_store_dir: string | null;
   agent_store_dir: string | null;
+  plugins_dir: string;
+  agents_dir: string;
   migrated_plugins: boolean;
   migrated_agents: boolean;
 }

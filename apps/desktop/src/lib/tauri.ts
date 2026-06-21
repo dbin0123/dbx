@@ -1,4 +1,4 @@
-﻿import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ConnectionConfig,
@@ -126,6 +126,8 @@ export interface DriverRuntimeSummary {
 export interface DesktopSettings {
   show_tray_icon: boolean;
   icon_theme: "default" | "black";
+  quit_on_close: boolean;
+  close_action_prompted: boolean;
   debug_logging_enabled: boolean;
   saved_sql_sync_dir?: string | null;
   driver_store_dir?: string | null;
@@ -342,6 +344,8 @@ export interface DriverStoreMigrationResult {
   driver_store_dir: string | null;
   plugin_store_dir: string | null;
   agent_store_dir: string | null;
+  plugins_dir: string;
+  agents_dir: string;
   migrated_plugins: boolean;
   migrated_agents: boolean;
 }

@@ -6,6 +6,7 @@ mod window_state_guard;
 
 use commands::connection::AppState;
 use dbx_core::storage::{DesktopIconTheme, DesktopSettings, Storage};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::RunEvent;
@@ -18,6 +19,33 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 const DESKTOP_TRAY_ID: &str = "main-tray";
+
+pub struct CloseBehaviorState {
+    quit_on_close: AtomicBool,
+    prompted: AtomicBool,
+}
+
+impl CloseBehaviorState {
+    fn new(settings: &DesktopSettings) -> Self {
+        Self {
+            quit_on_close: AtomicBool::new(settings.quit_on_close),
+            prompted: AtomicBool::new(settings.close_action_prompted),
+        }
+    }
+
+    fn apply(&self, settings: &DesktopSettings) {
+        self.quit_on_close.store(settings.quit_on_close, Ordering::Relaxed);
+        self.prompted.store(settings.close_action_prompted, Ordering::Relaxed);
+    }
+
+    fn quit_on_close(&self) -> bool {
+        self.quit_on_close.load(Ordering::Relaxed)
+    }
+
+    fn prompted(&self) -> bool {
+        self.prompted.load(Ordering::Relaxed)
+    }
+}
 #[cfg(target_os = "macos")]
 const MACOS_TRAY_ICON: tauri::image::Image<'_> = tauri::include_image!("icons/tray-macos-template.png");
 const BLACK_APP_ICON: tauri::image::Image<'_> = tauri::include_image!("icons/icon-black.png");
@@ -171,6 +199,9 @@ fn apply_desktop_tray_icon_theme(app: &tauri::AppHandle, icon_theme: DesktopIcon
 
 pub(crate) fn apply_desktop_settings(app: &tauri::AppHandle, desktop_settings: &DesktopSettings) -> tauri::Result<()> {
     apply_debug_log_level(desktop_settings.debug_logging_enabled);
+    if let Some(state) = app.try_state::<CloseBehaviorState>() {
+        state.apply(desktop_settings);
+    }
     apply_desktop_icon_theme(app, desktop_settings.icon_theme)?;
     if matches!(std::env::consts::OS, "macos" | "windows") {
         if let Some(tray) = app.tray_by_id(DESKTOP_TRAY_ID) {
@@ -286,19 +317,12 @@ pub fn run() {
             apply_debug_log_level(desktop_settings.debug_logging_enabled);
             eprintln!("[STARTUP] storage ready in {:?}", t.elapsed());
 
-            let legacy_driver_base = desktop_settings.driver_store_dir.as_ref().map(std::path::PathBuf::from);
-            let plugin_dir = desktop_settings
-                .plugin_store_dir
-                .as_ref()
-                .map(std::path::PathBuf::from)
-                .or_else(|| legacy_driver_base.as_ref().map(|base| base.join("plugins")))
-                .unwrap_or_else(|| data_dir.join("plugins"));
-            let agent_dir = desktop_settings
-                .agent_store_dir
-                .as_ref()
-                .map(std::path::PathBuf::from)
-                .or_else(|| legacy_driver_base.as_ref().map(|base| base.join("agents")))
-                .or_else(|| data_dir::uses_custom_data_dir().then(|| data_dir.join("agents")));
+            let default_agent_dir = data_dir::uses_custom_data_dir().then(|| data_dir.join("agents"));
+            let (plugin_dir, agent_dir) = commands::app_settings::resolve_driver_store_dirs_from_settings(
+                &desktop_settings,
+                &data_dir,
+                default_agent_dir,
+            );
 
             let state = if let Some(agent_dir) = agent_dir {
                 Arc::new(AppState::new_with_plugin_and_agent_dir_and_app_version(
@@ -316,6 +340,7 @@ pub fn run() {
             app.manage(commands::external_sql::ExternalSqlOpenState::default());
             app.manage(commands::external_db::ExternalDbOpenState::default());
             app.manage(commands::deep_link::DeepLinkOpenState::default());
+            app.manage(CloseBehaviorState::new(&desktop_settings));
             let startup_links = commands::deep_link::connection_deep_links_from_args(std::env::args().skip(1));
             open_connection_deep_links(app.handle(), startup_links);
 
@@ -343,10 +368,26 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if should_hide_window_on_close(std::env::consts::OS) {
+                if !should_hide_window_on_close(std::env::consts::OS) {
+                    return;
+                }
+                let app = window.app_handle();
+                let Some(state) = app.try_state::<CloseBehaviorState>() else {
                     let _ = window.hide();
                     api.prevent_close();
+                    return;
+                };
+                if !state.prompted() {
+                    api.prevent_close();
+                    let _ = app.emit("dbx-close-action-prompt", ());
+                    return;
                 }
+                if state.quit_on_close() {
+                    app.exit(0);
+                    return;
+                }
+                let _ = window.hide();
+                api.prevent_close();
             }
         })
         .invoke_handler(tauri::generate_handler![

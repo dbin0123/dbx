@@ -42,6 +42,8 @@ export interface AiTestConnectionResult {
 export interface DesktopSettings {
   show_tray_icon: boolean;
   icon_theme: DesktopIconTheme;
+  quit_on_close: boolean;
+  close_action_prompted: boolean;
   debug_logging_enabled: boolean;
   saved_sql_sync_dir?: string | null;
   driver_store_dir?: string | null;
@@ -59,6 +61,8 @@ export const DEFAULT_SIDEBAR_TABLE_PAGE_SIZE = 1000;
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   show_tray_icon: true,
   icon_theme: "default",
+  quit_on_close: false,
+  close_action_prompted: false,
   debug_logging_enabled: false,
   saved_sql_sync_dir: null,
   driver_store_dir: null,
@@ -73,6 +77,8 @@ function normalizeDesktopSettings(settings: Partial<DesktopSettings> | null | un
   return {
     show_tray_icon: settings?.show_tray_icon ?? DEFAULT_DESKTOP_SETTINGS.show_tray_icon,
     icon_theme: iconTheme,
+    quit_on_close: settings?.quit_on_close ?? DEFAULT_DESKTOP_SETTINGS.quit_on_close,
+    close_action_prompted: settings?.close_action_prompted ?? DEFAULT_DESKTOP_SETTINGS.close_action_prompted,
     debug_logging_enabled: settings?.debug_logging_enabled ?? DEFAULT_DESKTOP_SETTINGS.debug_logging_enabled,
     saved_sql_sync_dir: settings?.saved_sql_sync_dir?.trim() || DEFAULT_DESKTOP_SETTINGS.saved_sql_sync_dir,
     driver_store_dir: settings?.driver_store_dir?.trim() || DEFAULT_DESKTOP_SETTINGS.driver_store_dir,

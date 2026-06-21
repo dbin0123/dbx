@@ -26,6 +26,7 @@ import { useDialogSources } from "@/composables/useDialogSources";
 import { useNavigationTargets } from "@/composables/useNavigationTargets";
 import { useDataGridActions } from "@/composables/useDataGridActions";
 import { useTauriEvents } from "@/composables/useTauriEvents";
+import { useCloseActionPrompt } from "@/composables/useCloseActionPrompt";
 import { useVisibilityChange } from "@/composables/useVisibilityChange";
 import "@/i18n";
 import { translateBackendError } from "@/i18n/backend-errors";
@@ -80,6 +81,7 @@ const QueryHistory = defineAsyncComponent(() => import("@/components/editor/Quer
 const SqlLibraryPanel = defineAsyncComponent(() => import("@/components/layout/SqlLibraryPanel.vue"));
 const DriverStorePage = defineAsyncComponent(() => import("@/components/config/DriverStoreDialog.vue"));
 const UpdateDialog = defineAsyncComponent(() => import("@/components/layout/UpdateDialog.vue"));
+const CloseActionPromptDialog = defineAsyncComponent(() => import("@/components/layout/CloseActionPromptDialog.vue"));
 const LoginPage = defineAsyncComponent(() => import("@/components/auth/LoginPage.vue"));
 const QuickOpenDialog = defineAsyncComponent(() => import("@/components/quick-open/QuickOpenDialog.vue"));
 
@@ -220,6 +222,7 @@ const { setupTauriListeners, cleanupTauriListeners } = useTauriEvents({
   openDbFilePath,
   openConnectionDeepLink,
 });
+const { showCloseActionPrompt, chooseQuit, chooseMinimize, setupCloseActionPromptListener, cleanupCloseActionPromptListener } = useCloseActionPrompt();
 useVisibilityChange();
 
 const appVersion = ref("");
@@ -1310,6 +1313,7 @@ onMounted(async () => {
     })
     .catch(() => {});
   setupTauriListeners();
+  setupCloseActionPromptListener();
   void openPendingSqlFiles();
   void openPendingDbFiles();
   void openPendingConnectionLinks();
@@ -1318,6 +1322,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   cleanupTauriListeners();
+  cleanupCloseActionPromptListener();
   if (updateCheckTimer) {
     clearInterval(updateCheckTimer);
   }
@@ -1538,6 +1543,7 @@ onUnmounted(() => {
           @download-and-install="downloadAndInstallUpdate"
           @restart="restartApp"
         />
+        <CloseActionPromptDialog v-if="isDesktop" v-model:open="showCloseActionPrompt" @quit="chooseQuit" @minimize="chooseMinimize" />
         <QuickOpenDialog :open="showQuickOpen" @update:open="showQuickOpen = $event" @select="handleQuickOpenSelect" />
       </div>
       <Teleport to="body">
