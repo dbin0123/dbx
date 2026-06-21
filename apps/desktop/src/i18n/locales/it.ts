@@ -2130,6 +2130,7 @@ export default {
     applyAndClose: "Applica e Chiudi",
     reset: "Reimposta",
     resetDefaults: "Ripristina Predefiniti",
+    resetAllDefaults: "Ripristina Tutti i Predefiniti",
     save: "Salva",
     cancel: "Annulla",
     executeMode: "Modalità Esecuzione (Cmd+Enter)",

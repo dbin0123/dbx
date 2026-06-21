@@ -2177,6 +2177,7 @@ export default {
     applyAndClose: "套用並關閉",
     reset: "重設",
     resetDefaults: "還原預設",
+    resetAllDefaults: "還原所有預設設定",
     save: "儲存",
     cancel: "取消",
     executeMode: "執行模式 (Cmd+Enter)",

@@ -2057,6 +2057,7 @@ export default {
     applyAndClose: "Aplicar y cerrar",
     reset: "Restablecer",
     resetDefaults: "Restablecer valores por defecto",
+    resetAllDefaults: "Restablecer todos los valores por defecto",
     executeMode: "Modo de ejecución (Cmd+Enter)",
     executeModeAll: "Ejecutar todo el SQL",
     executeModeCurrent: "Ejecutar sentencia en el cursor",

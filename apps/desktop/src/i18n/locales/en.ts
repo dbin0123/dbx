@@ -2395,6 +2395,7 @@ export default {
     applyAndClose: "Apply and Close",
     reset: "Reset",
     resetDefaults: "Reset Defaults",
+    resetAllDefaults: "Reset All Defaults",
     save: "Save",
     cancel: "Cancel",
     executeMode: "Execute Mode (Cmd+Enter)",

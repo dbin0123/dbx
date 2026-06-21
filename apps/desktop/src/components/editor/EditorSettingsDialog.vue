@@ -509,7 +509,56 @@ async function applySettingsAndClose() {
   emit("update:open", false);
 }
 
-function resetDefaults() {
+function resetDefaultsForTab(tab: SettingsCategory) {
+  if (tab === "editor") {
+    editFontFamily.value = DEFAULT_EDITOR_SETTINGS.fontFamily;
+    editFontSize.value = DEFAULT_EDITOR_SETTINGS.fontSize;
+    editExecuteMode.value = DEFAULT_EDITOR_SETTINGS.executeMode;
+    editWordWrap.value = DEFAULT_EDITOR_SETTINGS.wordWrap;
+    editConfirmDangerousSqlExecution.value = DEFAULT_EDITOR_SETTINGS.confirmDangerousSqlExecution;
+  } else if (tab === "formatter") {
+    editSqlFormatter.value = normalizeSqlFormatterSettings(DEFAULT_EDITOR_SETTINGS.sqlFormatter);
+    sqlFormatterConfigValid.value = true;
+  } else if (tab === "appearance") {
+    editUiScale.value = DEFAULT_EDITOR_SETTINGS.uiScale;
+    editTheme.value = DEFAULT_EDITOR_SETTINGS.theme;
+    editCustomThemes.value = [...DEFAULT_EDITOR_SETTINGS.customThemes];
+    editActiveCustomThemeId.value = DEFAULT_EDITOR_SETTINGS.activeCustomThemeId;
+    editAppLayout.value = DEFAULT_EDITOR_SETTINGS.appLayout;
+    editShowTrayIcon.value = DEFAULT_DESKTOP_SETTINGS.show_tray_icon;
+    editQuitOnClose.value = DEFAULT_DESKTOP_SETTINGS.quit_on_close;
+    desktopCloseBehaviorResetPending.value = true;
+    editIconTheme.value = DEFAULT_DESKTOP_SETTINGS.icon_theme;
+    editDebugLoggingEnabled.value = DEFAULT_DESKTOP_SETTINGS.debug_logging_enabled;
+  } else if (tab === "navigation") {
+    editSidebarTablePageSize.value = DEFAULT_SIDEBAR_TABLE_PAGE_SIZE;
+    editSidebarActivation.value = DEFAULT_EDITOR_SETTINGS.sidebarActivation;
+    editSidebarObjectDisplay.value = DEFAULT_EDITOR_SETTINGS.sidebarObjectDisplay;
+    editAutoSelectActiveSidebarNode.value = DEFAULT_EDITOR_SETTINGS.autoSelectActiveSidebarNode;
+    editDisconnectTabHandlingMode.value = DEFAULT_EDITOR_SETTINGS.disconnectTabHandlingMode;
+    editReuseDataTab.value = DEFAULT_EDITOR_SETTINGS.reuseDataTab;
+    editUpdateNotificationsEnabled.value = DEFAULT_EDITOR_SETTINGS.updateNotificationsEnabled;
+    editSidebarHideTableComments.value = DEFAULT_EDITOR_SETTINGS.sidebarHideTableComments;
+    editSidebarAllowHorizontalScroll.value = DEFAULT_EDITOR_SETTINGS.sidebarAllowHorizontalScroll;
+    editSidebarHiddenTablePrefixes.value = DEFAULT_EDITOR_SETTINGS.sidebarHiddenTablePrefixes.join("\n");
+    editToolbarItems.value = { ...DEFAULT_EDITOR_SETTINGS.toolbarItems };
+  } else if (tab === "data") {
+    editShowColumnCommentsInHeader.value = DEFAULT_EDITOR_SETTINGS.showColumnCommentsInHeader;
+    editShowColumnTypesInHeader.value = DEFAULT_EDITOR_SETTINGS.showColumnTypesInHeader;
+    editCompactColumnHeaderActions.value = DEFAULT_EDITOR_SETTINGS.compactColumnHeaderActions;
+    editInfiniteScroll.value = DEFAULT_EDITOR_SETTINGS.infiniteScroll;
+    editInfiniteScrollMaxRows.value = DEFAULT_EDITOR_SETTINGS.infiniteScrollMaxRows;
+    editExportBatchSize.value = DEFAULT_EDITOR_SETTINGS.exportBatchSize;
+  } else if (tab === "redis") {
+    editRedisScanPageSize.value = DEFAULT_EDITOR_SETTINGS.redisScanPageSize;
+  } else if (tab === "shortcuts") {
+    editShortcuts.value = normalizeShortcutSettings(DEFAULT_EDITOR_SETTINGS.shortcuts);
+  } else if (tab === "snippets") {
+    editSnippets.value = DEFAULT_SQL_SNIPPETS.map((s) => ({ ...s }));
+  }
+}
+
+function resetAllDefaults() {
   editFontFamily.value = DEFAULT_EDITOR_SETTINGS.fontFamily;
   editFontSize.value = DEFAULT_EDITOR_SETTINGS.fontSize;
   editUiScale.value = DEFAULT_EDITOR_SETTINGS.uiScale;
@@ -2917,7 +2966,7 @@ watch(
           </div>
 
           <DialogFooter v-if="hasSettingsApplyFooter(activeSettingsTab as SettingsCategory)" class="mx-0 mb-0 flex-row flex-wrap items-center justify-end gap-2 rounded-none border-t border-border/60 bg-transparent px-0 pb-0 pt-3 sm:flex-row sm:gap-2 [&>button]:w-auto [&>button]:shrink-0">
-            <Button variant="outline" @click="resetDefaults">
+            <Button variant="outline" @click="resetDefaultsForTab(activeSettingsTab as SettingsCategory)">
               {{ t("settings.resetDefaults") }}
             </Button>
             <div class="flex-1" />
@@ -3012,6 +3061,10 @@ watch(
           </DialogFooter>
 
           <DialogFooter v-else-if="activeSettingsTab === 'about'" class="mx-0 mb-0 flex-row flex-wrap items-center justify-end gap-2 rounded-none border-t border-border/60 bg-transparent px-0 pb-0 pt-3 sm:flex-row sm:gap-2 [&>button]:w-auto [&>button]:shrink-0">
+            <Button variant="outline" @click="resetAllDefaults">
+              {{ t("settings.resetAllDefaults") }}
+            </Button>
+            <div class="flex-1" />
             <Button variant="outline" @click="emit('update:open', false)">
               {{ t("common.close") }}
             </Button>

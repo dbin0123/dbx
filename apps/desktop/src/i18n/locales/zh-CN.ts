@@ -2419,6 +2419,7 @@ export default {
     applyAndClose: "应用并关闭",
     reset: "重置",
     resetDefaults: "恢复默认",
+    resetAllDefaults: "恢复所有默认设置",
     save: "保存",
     cancel: "取消",
     executeMode: "执行模式 (Cmd+Enter)",

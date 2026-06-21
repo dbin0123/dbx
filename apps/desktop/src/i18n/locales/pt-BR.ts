@@ -2141,6 +2141,7 @@ export default {
     applyAndClose: "Aplicar e fechar",
     reset: "Redefinir",
     resetDefaults: "Redefinir padrões",
+    resetAllDefaults: "Redefinir todos os padrões",
     save: "Salvar",
     cancel: "Cancelar",
     executeMode: "Modo de execução (Cmd+Enter)",

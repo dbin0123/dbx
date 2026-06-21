@@ -2349,6 +2349,7 @@ export default {
     applyAndClose: "適用して閉じる",
     reset: "リセット",
     resetDefaults: "デフォルトにリセット",
+    resetAllDefaults: "すべての設定をリセット",
     save: "保存",
     cancel: "キャンセル",
     executeMode: "実行モード (Cmd+Enter)",
