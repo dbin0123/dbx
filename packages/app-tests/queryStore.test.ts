@@ -35,6 +35,7 @@ function conn(id: string): ConnectionConfig {
     port: 5432,
     username: "postgres",
     password: "",
+    query_timeout_secs: 30,
   };
 }
 
