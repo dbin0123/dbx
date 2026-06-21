@@ -355,7 +355,7 @@ export const useConnectionStore = defineStore("connection", () => {
       attached_databases: Array.isArray(config.attached_databases) ? config.attached_databases.filter((database) => database.name?.trim() && database.path?.trim()) : [],
       transport_layers: Array.isArray(config.transport_layers) ? config.transport_layers : [],
       connect_timeout_secs: config.connect_timeout_secs || 5,
-      query_timeout_secs: config.query_timeout_secs ?? 30,
+      query_timeout_secs: config.query_timeout_secs ?? 0,
       idle_timeout_secs: config.idle_timeout_secs ?? 60,
       keepalive_interval_secs: config.keepalive_interval_secs ?? 0,
     };
@@ -899,6 +899,7 @@ export const useConnectionStore = defineStore("connection", () => {
       clearLoadedChildrenCache(node.id);
     }
     invalidateCompletionCache(connectionId, database);
+    connectedIds.value.delete(connectionId);
   }
 
   async function ensureConnected(connectionId: string) {

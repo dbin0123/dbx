@@ -500,11 +500,12 @@ async function saveActiveObjectSource(tab: QueryTab): Promise<boolean> {
       name: source.name,
       source: tab.sql,
     });
+    const executionId = uuid();
     for (const sql of statements) {
       if (objectSourceSaveExecutionMode(connection.db_type) === "single") {
-        await api.executeQuery(tab.connectionId, tab.database, sql, source.schema || tab.schema);
+        await api.executeQuery(tab.connectionId, tab.database, sql, source.schema || tab.schema, executionId);
       } else {
-        await api.executeScript(tab.connectionId, tab.database, sql, source.schema || tab.schema);
+        await api.executeScript(tab.connectionId, tab.database, sql, source.schema || tab.schema, executionId);
       }
     }
     queryStore.markTabClean(tab);

@@ -340,6 +340,14 @@ impl PluginDriverSession {
     }
 }
 
+impl Drop for PluginDriverSession {
+    fn drop(&mut self) {
+        if let Ok(mut process) = self.process.try_lock() {
+            let _ = process.child.start_kill();
+        }
+    }
+}
+
 async fn invoke_plugin<T>(
     plugin: &InstalledPlugin,
     driver_id: &str,

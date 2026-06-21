@@ -16,6 +16,7 @@ import { hasHistoryDateRange, historyDateRangeIsValid, historyEntryMatchesDateRa
 import { HISTORY_ROW_HEIGHT, HISTORY_SCROLL_BUFFER, shouldVirtualizeHistory } from "@/lib/historyVirtualList";
 import type { HistoryEntry } from "@/lib/api";
 import { copyToClipboard } from "@/lib/clipboard";
+import { uuid } from "@/lib/utils";
 import * as api from "@/lib/api";
 
 const { t } = useI18n();
@@ -212,8 +213,9 @@ async function rollback(entry: HistoryEntry) {
   const rollbackSql = entry.rollback_sql!;
   isRollingBack.value = true;
   const start = Date.now();
+  const executionId = uuid();
   try {
-    const result = await api.executeScript(connectionId, entry.database, rollbackSql);
+    const result = await api.executeScript(connectionId, entry.database, rollbackSql, undefined, executionId);
     await store.add({
       connection_id: connectionId,
       connection_name: entry.connection_name,

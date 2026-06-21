@@ -1420,6 +1420,40 @@ async fn execute_query_with_max_rows_inner(
     }
 }
 
+pub async fn execute_query_on_client(
+    client: &deadpool_postgres::Client,
+    sql: &str,
+    max_rows: Option<usize>,
+) -> Result<QueryResult, String> {
+    execute_query_with_max_rows_inner(client, sql, max_rows).await
+}
+
+pub async fn execute_query_with_schema_on_client(
+    pool: &Pool,
+    client: &deadpool_postgres::Client,
+    schema: &str,
+    sql: &str,
+    max_rows: Option<usize>,
+) -> Result<QueryResult, String> {
+    if is_transaction_recovery_statement(sql) {
+        return execute_query_with_max_rows_inner(client, sql, max_rows).await;
+    }
+
+    client.execute(&format!("SET search_path TO {}", pg_quote_ident(schema)), &[]).await.map_err(pg_error_to_string)?;
+
+    let result = execute_query_with_max_rows_inner(client, sql, max_rows).await;
+    if result.is_ok() {
+        clear_postgres_caches_after_ddl(pool, Some(client), sql);
+    }
+
+    let _ = client.execute("RESET search_path", &[]).await;
+    result
+}
+
+pub fn drop_postgres_client(client: deadpool_postgres::Client) {
+    let _ = deadpool_postgres::Object::take(client);
+}
+
 const POSTGRES_INDEXES_SQL: &str = "SELECT i.relname AS index_name, \
              array_agg(COALESCE(a.attname, pg_get_indexdef(ix.indexrelid, k.n::int, true)) ORDER BY k.n) AS columns, \
              ix.indisunique AS is_unique, \

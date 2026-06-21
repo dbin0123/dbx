@@ -1527,7 +1527,7 @@ export const useQueryStore = defineStore("query", () => {
             : { maxRows: pageLimit, fetchSize: pageLimit }
           : {}),
         ...(clientSessionId ? { clientSessionId } : {}),
-        timeoutSecs: queryTimeoutSecs,
+        ...(queryTimeoutSecs > 0 ? { timeoutSecs: queryTimeoutSecs } : {}),
       };
       const executionSchema = connectionUsesSchemaExecutionContext(conn) ? tab.schema || tab.database : tab.mode === "data" || connectionUsesDatabaseObjectTreeMode(conn) ? undefined : tab.schema;
       const executionPromise = api.executeMulti(tab.connectionId, tab.database, sqlToExecute, executionSchema, executionId, executionOptions);

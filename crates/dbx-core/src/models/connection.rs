@@ -198,7 +198,7 @@ pub fn default_connect_timeout_secs() -> u64 {
 }
 
 pub fn default_query_timeout_secs() -> u64 {
-    30
+    0
 }
 
 pub fn default_idle_timeout_secs() -> u64 {

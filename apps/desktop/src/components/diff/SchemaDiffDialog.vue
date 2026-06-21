@@ -7,6 +7,7 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { useToast } from "@/composables/useToast";
 import { GitCompareArrows, ArrowLeft, Play, Loader2, Maximize2, Minimize2, AlertTriangle, CircleCheck } from "@lucide/vue";
 import * as api from "@/lib/api";
+import { uuid } from "@/lib/utils";
 import { useSchemaDiffConfig } from "@/composables/useSchemaDiffConfig";
 import SchemaDiffConfigStep from "@/components/diff/SchemaDiffConfigStep.vue";
 import SchemaDiffObjectTree from "@/components/diff/SchemaDiffObjectTree.vue";
@@ -516,8 +517,9 @@ async function handleExecuteScript() {
   }
 
   executing.value = true;
+  const executionId = uuid();
   try {
-    await api.executeScript(targetConnectionId.value, targetDatabase.value, deploySql.value, targetSchema.value);
+    await api.executeScript(targetConnectionId.value, targetDatabase.value, deploySql.value, targetSchema.value, executionId);
     toast(t("diff.executeSuccess"), 3000);
   } catch (e: any) {
     toast(e?.message || String(e), 5000);
@@ -641,8 +643,9 @@ async function handleDeploy() {
 async function onConfirmDeploy() {
   showConfirmDialog.value = false;
   executing.value = true;
+  const executionId = uuid();
   try {
-    const result = await api.executeScript(targetConnectionId.value, targetDatabase.value, deploySql.value, targetSchema.value);
+    const result = await api.executeScript(targetConnectionId.value, targetDatabase.value, deploySql.value, targetSchema.value, executionId);
     deployResult.value = {
       success: true,
       message: t("diff.deploySuccess"),

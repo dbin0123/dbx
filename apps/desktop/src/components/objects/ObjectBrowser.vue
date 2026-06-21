@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { RecycleScroller } from "vue-virtual-scroller";
 import { useSqlHighlighter } from "@/composables/useSqlHighlighter";
+import { uuid } from "@/lib/utils";
 import {
   ArrowDown,
   ArrowRightLeft,
@@ -998,11 +999,12 @@ async function saveSource() {
       name: row.name,
       source: sourceDraft.value,
     });
+    const executionId = uuid();
     for (const sql of statements) {
       if (objectSourceSaveExecutionMode(effectiveDatabaseType.value) === "single") {
-        await api.executeQuery(props.connection.id, props.database, sql, schema);
+        await api.executeQuery(props.connection.id, props.database, sql, schema, executionId);
       } else {
-        await api.executeScript(props.connection.id, props.database, sql, schema);
+        await api.executeScript(props.connection.id, props.database, sql, schema, executionId);
       }
     }
     toast(t("objects.sourceSaved"));

@@ -9,6 +9,7 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import type { ColumnInfo, DatabaseType } from "@/types/database";
 import { DBX_NEO4J_ELEMENT_ID_COLUMN, DBX_ROWID_COLUMN } from "@/lib/tableEditing";
+import { uuid } from "@/lib/utils";
 
 interface RowItem {
   id: number;
@@ -758,16 +759,18 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     const rollbackStmts = preparedSave?.rollbackStatements ?? [];
     const start = Date.now();
     let apiResult: { affected_rows?: number } | undefined;
+    const saveExecutionId = uuid();
     console.info("[DBX][dataGrid:save-statements]", {
       databaseType: databaseType.value,
       table: tableMeta.value ? [tableMeta.value.schema, tableMeta.value.tableName].filter(Boolean).join(".") : undefined,
       statements: stmts,
       rollbackStatements: rollbackStmts,
+      executionId: saveExecutionId,
     });
 
     if (useTransaction.value && hasBackendSaveTarget.value) {
       try {
-        apiResult = await api.executeInTransaction(connectionId.value!, database.value ?? "", stmts, preparedSave?.executionSchema);
+        apiResult = await api.executeInTransaction(connectionId.value!, database.value ?? "", stmts, preparedSave?.executionSchema, saveExecutionId);
       } catch (e: any) {
         saveError.value = await recordFailedDataGridHistory(stmts, rollbackStmts, start, e);
         isSaving.value = false;
@@ -775,7 +778,7 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
       }
     } else if (hasBackendSaveTarget.value) {
       try {
-        apiResult = await api.executeBatch(connectionId.value!, database.value ?? "", stmts, preparedSave?.executionSchema);
+        apiResult = await api.executeBatch(connectionId.value!, database.value ?? "", stmts, preparedSave?.executionSchema, undefined, saveExecutionId);
       } catch (e: any) {
         saveError.value = await recordFailedDataGridHistory(stmts, rollbackStmts, start, e);
         isSaving.value = false;

@@ -54,6 +54,7 @@ pub struct ExecuteBatchRequest {
     pub statements: Vec<String>,
     pub schema: Option<String>,
     pub timeout_secs: Option<u64>,
+    pub execution_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -333,6 +334,13 @@ pub async fn execute_batch(
     State(state): State<Arc<WebState>>,
     Json(req): Json<ExecuteBatchRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let registered_query = req
+        .execution_id
+        .as_ref()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| state.app.running_queries.register(id.clone()));
+    let cancel_token = registered_query.as_ref().map(|query| query.token());
+
     let result = dbx_core::query::execute_statements(
         &state.app,
         &req.connection_id,
@@ -340,6 +348,7 @@ pub async fn execute_batch(
         &req.statements,
         req.schema.as_deref(),
         req.timeout_secs,
+        cancel_token,
     )
     .await
     .map_err(AppError)?;
@@ -390,6 +399,13 @@ pub async fn execute_script(
     State(state): State<Arc<WebState>>,
     Json(req): Json<ExecuteQueryRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let registered_query = req
+        .execution_id
+        .as_ref()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| state.app.running_queries.register(id.clone()));
+    let cancel_token = registered_query.as_ref().map(|query| query.token());
+
     let db_type = {
         let configs = state.app.configs.read().await;
         configs.get(&req.connection_id).map(|config| config.db_type)
@@ -404,6 +420,7 @@ pub async fn execute_script(
         &statements,
         req.schema.as_deref(),
         None,
+        cancel_token,
     )
     .await
     .map_err(AppError)?;
@@ -415,12 +432,20 @@ pub async fn execute_in_transaction(
     State(state): State<Arc<WebState>>,
     Json(req): Json<ExecuteBatchRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let registered_query = req
+        .execution_id
+        .as_ref()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| state.app.running_queries.register(id.clone()));
+    let cancel_token = registered_query.as_ref().map(|query| query.token());
+
     let result = dbx_core::query::execute_statements_in_transaction(
         &state.app,
         &req.connection_id,
         &req.database,
         &req.statements,
         req.schema.as_deref(),
+        cancel_token,
     )
     .await
     .map_err(AppError)?;

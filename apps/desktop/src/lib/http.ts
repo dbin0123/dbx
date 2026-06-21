@@ -571,16 +571,16 @@ export async function closeClientConnectionSession(connectionId: string, databas
   return post("/api/query/close-client-session", { connectionId, database, clientSessionId });
 }
 
-export async function executeBatch(connectionId: string, database: string, statements: string[], schema?: string): Promise<QueryResult> {
-  return post("/api/query/execute-batch", { connectionId, database, statements, schema });
+export async function executeBatch(connectionId: string, database: string, statements: string[], schema?: string, timeoutSecs?: number, executionId?: string): Promise<QueryResult> {
+  return post("/api/query/execute-batch", { connectionId, database, statements, schema, timeoutSecs, executionId });
 }
 
-export async function executeScript(connectionId: string, database: string, sql: string, schema?: string): Promise<QueryResult> {
-  return post("/api/query/execute-script", { connectionId, database, sql, schema });
+export async function executeScript(connectionId: string, database: string, sql: string, schema?: string, executionId?: string): Promise<QueryResult> {
+  return post("/api/query/execute-script", { connectionId, database, sql, schema, executionId });
 }
 
-export async function executeInTransaction(connectionId: string, database: string, statements: string[], schema?: string): Promise<QueryResult> {
-  return post("/api/query/execute-in-transaction", { connectionId, database, statements, schema });
+export async function executeInTransaction(connectionId: string, database: string, statements: string[], schema?: string, executionId?: string): Promise<QueryResult> {
+  return post("/api/query/execute-in-transaction", { connectionId, database, statements, schema, executionId });
 }
 
 export async function cancelQuery(executionId: string): Promise<boolean> {

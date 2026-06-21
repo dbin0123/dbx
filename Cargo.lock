@@ -1901,6 +1901,7 @@ dependencies = [
  "calamine",
  "chrono",
  "csv",
+ "deadpool",
  "deadpool-postgres",
  "duckdb",
  "encoding_rs",

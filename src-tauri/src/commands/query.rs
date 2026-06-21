@@ -150,9 +150,22 @@ pub async fn execute_batch(
     statements: Vec<String>,
     schema: Option<String>,
     timeout_secs: Option<u64>,
+    execution_id: Option<String>,
 ) -> Result<db::QueryResult, String> {
-    dbx_core::query::execute_statements(&state, &connection_id, &database, &statements, schema.as_deref(), timeout_secs)
-        .await
+    let registered_query =
+        execution_id.as_ref().filter(|id| !id.trim().is_empty()).map(|id| state.running_queries.register(id.clone()));
+    let cancel_token = registered_query.as_ref().map(|query| query.token());
+
+    dbx_core::query::execute_statements(
+        &state,
+        &connection_id,
+        &database,
+        &statements,
+        schema.as_deref(),
+        timeout_secs,
+        cancel_token,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -162,7 +175,12 @@ pub async fn execute_script(
     database: String,
     sql: String,
     schema: Option<String>,
+    execution_id: Option<String>,
 ) -> Result<db::QueryResult, String> {
+    let registered_query =
+        execution_id.as_ref().filter(|id| !id.trim().is_empty()).map(|id| state.running_queries.register(id.clone()));
+    let cancel_token = registered_query.as_ref().map(|query| query.token());
+
     let db_type = {
         let configs = state.configs.read().await;
         configs.get(&connection_id).map(|config| config.db_type)
@@ -178,6 +196,7 @@ pub async fn execute_script(
         ),
         schema.as_deref(),
         None,
+        cancel_token,
     )
     .await
 }
@@ -189,13 +208,19 @@ pub async fn execute_in_transaction(
     database: String,
     statements: Vec<String>,
     schema: Option<String>,
+    execution_id: Option<String>,
 ) -> Result<db::QueryResult, String> {
+    let registered_query =
+        execution_id.as_ref().filter(|id| !id.trim().is_empty()).map(|id| state.running_queries.register(id.clone()));
+    let cancel_token = registered_query.as_ref().map(|query| query.token());
+
     dbx_core::query::execute_statements_in_transaction(
         &state,
         &connection_id,
         &database,
         &statements,
         schema.as_deref(),
+        cancel_token,
     )
     .await
 }

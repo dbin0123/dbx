@@ -25,7 +25,6 @@ use crate::models::connection::DatabaseType;
 use crate::sql::starts_with_duckdb_result_sql_keyword;
 use crate::sql::{split_sql_batches, split_sql_statements};
 
-pub const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 pub const MAX_ROWS: usize = 10000;
 pub const QUERY_CANCELED: &str = "Query canceled";
 #[cfg(feature = "duckdb-bundled")]
@@ -507,7 +506,7 @@ async fn wait_for_duckdb_task_with_interrupt(
                 _ = sleep(duration) => {
                     interrupt_handle.interrupt();
                     drain_interrupted_duckdb_task(&mut task).await;
-                    Err(timeout_error())
+                    Err(timeout_error(duration))
                 }
             }
         }
@@ -528,7 +527,7 @@ async fn wait_for_duckdb_task_with_interrupt(
                 _ = sleep(duration) => {
                     interrupt_handle.interrupt();
                     drain_interrupted_duckdb_task(&mut task).await;
-                    Err(timeout_error())
+                    Err(timeout_error(duration))
                 }
             }
         }
@@ -723,8 +722,8 @@ fn is_os_connection_error(lower: &str) -> bool {
     false
 }
 
-pub fn timeout_error() -> String {
-    format!("Query timed out after {} seconds", QUERY_TIMEOUT.as_secs())
+pub fn timeout_error(duration: Duration) -> String {
+    format!("Query timed out after {} seconds", duration.as_secs())
 }
 
 pub fn canceled_error() -> String {
@@ -733,13 +732,6 @@ pub fn canceled_error() -> String {
 
 pub fn is_canceled(cancel_token: &Option<CancellationToken>) -> bool {
     cancel_token.as_ref().map(|token| token.is_cancelled()).unwrap_or(false)
-}
-
-pub async fn wait_for_query<F>(cancel_token: Option<CancellationToken>, future: F) -> Result<db::QueryResult, String>
-where
-    F: Future<Output = Result<db::QueryResult, String>>,
-{
-    wait_for_query_with_timeout(cancel_token, QUERY_TIMEOUT, future).await
 }
 
 pub async fn wait_for_query_with_timeout<F>(
@@ -754,10 +746,10 @@ where
         tokio::select! {
             biased;
             _ = token.cancelled() => Err(canceled_error()),
-            result = timeout(timeout_duration, future) => result.map_err(|_| timeout_error())?,
+            result = timeout(timeout_duration, future) => result.map_err(|_| timeout_error(timeout_duration))?,
         }
     } else {
-        timeout(timeout_duration, future).await.map_err(|_| timeout_error())?
+        timeout(timeout_duration, future).await.map_err(|_| timeout_error(timeout_duration))?
     }
 }
 
@@ -790,7 +782,7 @@ fn resolve_query_timeout(timeout_secs: Option<u64>) -> Option<Duration> {
     match timeout_secs {
         Some(0) => None,
         Some(n) => Some(Duration::from_secs(n)),
-        None => Some(QUERY_TIMEOUT),
+        None => None,
     }
 }
 
@@ -852,47 +844,63 @@ pub async fn do_execute(
             let p = p.clone();
             let bare = *mode == crate::connection::MysqlMode::Bare;
             let max_rows = options.max_rows;
-            drop(connections);
             let mut conn = db::mysql::get_conn_with_health_check(&p).await?;
             let connection_id = conn.id();
             if let Some(ref execution_id) = options.execution_id {
                 let kill_opts = conn.opts().clone();
+                let kill_connection_id = connection_id;
                 state.running_queries.register_interrupt(execution_id, move || {
                     let kill_opts = kill_opts.clone();
                     tokio::spawn(async move {
-                        if let Err(error) = db::mysql::kill_query_with_opts(kill_opts, connection_id).await {
-                            log::warn!("Failed to cancel MySQL query {connection_id}: {error}");
+                        if let Err(error) = db::mysql::kill_query_with_opts(kill_opts, kill_connection_id).await {
+                            log::warn!("Failed to cancel MySQL query {kill_connection_id}: {error}");
                         }
                     });
                 });
             }
-            wait_for_query_opt(
-                cancel_token,
+            let sql = sql.to_string();
+            drop(connections);
+            let result = wait_for_query_opt(
+                cancel_token.clone(),
                 query_timeout,
-                db::mysql::execute_query_on_conn_with_max_rows(&mut conn, sql, bare, max_rows, mysql_dialect),
+                db::mysql::execute_query_on_conn_with_max_rows(&mut conn, &sql, bare, max_rows, mysql_dialect),
             )
-            .await
+            .await;
+            if is_canceled(&cancel_token) {
+                drop(conn);
+                let p2 = p.clone();
+                tokio::spawn(async move {
+                    kill_mysql_connection(&p2, connection_id).await;
+                });
+            }
+            result
         }
         PoolKind::Postgres(p) => {
             let p = p.clone();
             let schema = schema.map(|s| s.to_string());
             let max_rows = options.max_rows;
             drop(connections);
-            if let Some(schema) = schema {
+            let cancel_token_clone = cancel_token.clone();
+            let client = p.get().await.map_err(|e| e.to_string())?;
+            let result = if let Some(ref schema) = schema {
                 wait_for_query_opt(
                     cancel_token,
                     query_timeout,
-                    db::postgres::execute_query_with_schema_and_max_rows(&p, &schema, sql, max_rows),
+                    db::postgres::execute_query_with_schema_on_client(&p, &client, schema, sql, max_rows),
                 )
                 .await
             } else {
                 wait_for_query_opt(
                     cancel_token,
                     query_timeout,
-                    db::postgres::execute_query_with_max_rows(&p, sql, max_rows),
+                    db::postgres::execute_query_on_client(&client, sql, max_rows),
                 )
                 .await
+            };
+            if is_canceled(&cancel_token_clone) {
+                db::postgres::drop_postgres_client(client);
             }
+            result
         }
         PoolKind::Sqlite(p) => {
             let p = p.clone();
@@ -904,29 +912,44 @@ pub async fn do_execute(
         PoolKind::Rqlite(client) => {
             let client = client.clone();
             let max_rows = options.max_rows;
+            let cancel_token_clone = cancel_token.clone();
             drop(connections);
-            wait_for_query_opt(
+            let result = wait_for_query_opt(
                 cancel_token,
                 query_timeout,
                 db::rqlite_driver::execute_query_with_max_rows(&client, sql, max_rows),
             )
-            .await
+            .await;
+            if is_canceled(&cancel_token_clone)
+                || matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err))
+            {
+                state.remove_pool_by_key(pool_key).await;
+            }
+            result
         }
         PoolKind::Turso(client) => {
             let client = client.clone();
             let max_rows = options.max_rows;
+            let cancel_token_clone = cancel_token.clone();
             drop(connections);
-            wait_for_query_opt(
+            let result = wait_for_query_opt(
                 cancel_token,
                 query_timeout,
                 db::turso_driver::execute_query_with_max_rows(&client, sql, max_rows),
             )
-            .await
+            .await;
+            if is_canceled(&cancel_token_clone)
+                || matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err))
+            {
+                state.remove_pool_by_key(pool_key).await;
+            }
+            result
         }
         PoolKind::ClickHouse(client) => {
             let client = client.clone();
             let database = pool_key.split(':').nth(1).unwrap_or("default").to_string();
             let max_rows = options.max_rows;
+            let cancel_token_clone = cancel_token.clone();
             drop(connections);
             let result = wait_for_query_opt(
                 cancel_token,
@@ -935,7 +958,9 @@ pub async fn do_execute(
             )
             .await
             .map(|result| truncate_result_with_max_rows(result, max_rows));
-            if matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err)) {
+            if is_canceled(&cancel_token_clone)
+                || matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err))
+            {
                 state.remove_pool_by_key(pool_key).await;
             }
             result
@@ -947,11 +972,15 @@ pub async fn do_execute(
             let mut client = match cancel_token.as_ref() {
                 Some(token) => tokio::select! {
                     biased;
-                    _ = token.cancelled() => return Err(canceled_error()),
+                    _ = token.cancelled() => {
+                        state.remove_pool_by_key(pool_key).await;
+                        return Err(canceled_error());
+                    },
                     guard = client.lock() => guard,
                 },
                 None => client.lock().await,
             };
+            let cancel_token_clone = cancel_token.clone();
             let result = wait_for_query_opt(
                 cancel_token,
                 query_timeout,
@@ -960,7 +989,9 @@ pub async fn do_execute(
             .await
             .map(|result| truncate_result_with_max_rows(result, max_rows));
             drop(client);
-            if matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err)) {
+            if is_canceled(&cancel_token_clone)
+                || matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err))
+            {
                 state.remove_pool_by_key(pool_key).await;
             }
             result
@@ -969,6 +1000,7 @@ pub async fn do_execute(
             let client = client.clone();
             let sql = sql.to_string();
             let max_rows = options.max_rows;
+            let cancel_token_clone = cancel_token.clone();
             drop(connections);
             let result = wait_for_query_opt(
                 cancel_token,
@@ -977,7 +1009,9 @@ pub async fn do_execute(
             )
             .await
             .map(|result| truncate_result_with_max_rows(result, max_rows));
-            if matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err)) {
+            if is_canceled(&cancel_token_clone)
+                || matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err))
+            {
                 state.remove_pool_by_key(pool_key).await;
             }
             result
@@ -986,12 +1020,15 @@ pub async fn do_execute(
             let client = client.clone();
             let sql = sql.to_string();
             let max_rows = options.max_rows;
+            let cancel_token_clone = cancel_token.clone();
             drop(connections);
             let result =
                 wait_for_query_opt(cancel_token, query_timeout, db::vector_driver::execute_rest_query(&client, &sql))
                     .await
                     .map(|result| truncate_result_with_max_rows(result, max_rows));
-            if matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err)) {
+            if is_canceled(&cancel_token_clone)
+                || matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err))
+            {
                 state.remove_pool_by_key(pool_key).await;
             }
             result
@@ -1003,6 +1040,7 @@ pub async fn do_execute(
             let client = client.clone();
             let database = pool_key.split(':').nth(1).unwrap_or("default").to_string();
             let max_rows = options.max_rows;
+            let cancel_token_clone = cancel_token.clone();
             drop(connections);
             let result = wait_for_query_opt(
                 cancel_token,
@@ -1011,7 +1049,9 @@ pub async fn do_execute(
             )
             .await
             .map(|result| truncate_result_with_max_rows(result, max_rows));
-            if matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err)) {
+            if is_canceled(&cancel_token_clone)
+                || matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err))
+            {
                 state.remove_pool_by_key(pool_key).await;
             }
             result
@@ -1024,6 +1064,7 @@ pub async fn do_execute(
             let max_rows = options.max_rows;
             let rpc_timeout = query_timeout;
             drop(connections);
+            let cancel_token_clone = cancel_token.clone();
             let result = wait_for_query_opt(cancel_token, query_timeout, async move {
                 let mut client = client.lock().await;
                 if let Some(session_id) = options.result_session_id.as_deref() {
@@ -1039,7 +1080,9 @@ pub async fn do_execute(
             })
             .await
             .map(|result| normalize_query_result_for_js(truncate_result_with_max_rows(result, max_rows)));
-            if matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err)) {
+            if is_canceled(&cancel_token_clone)
+                || matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err))
+            {
                 state.remove_pool_by_key(pool_key).await;
             }
             result
@@ -1079,7 +1122,8 @@ pub async fn do_execute(
             let max_rows = options.max_rows;
             let plugin_timeout = query_timeout;
             drop(connections);
-            wait_for_query_opt(cancel_token, query_timeout, async move {
+            let cancel_token_clone = cancel_token.clone();
+            let result = wait_for_query_opt(cancel_token, query_timeout, async move {
                 if let Some(session_id) = options.result_session_id.as_deref() {
                     let params = external_driver_fetch_query_page_params(
                         config.as_ref(),
@@ -1098,7 +1142,13 @@ pub async fn do_execute(
                 }
             })
             .await
-            .map(|result| normalize_query_result_for_js(truncate_result_with_max_rows(result, max_rows)))
+            .map(|result| normalize_query_result_for_js(truncate_result_with_max_rows(result, max_rows)));
+            if is_canceled(&cancel_token_clone)
+                || matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err))
+            {
+                state.remove_pool_by_key(pool_key).await;
+            }
+            result
         }
     }
 }
@@ -1476,11 +1526,17 @@ async fn execute_multi_mysql(
         Ok(conn) => conn,
         Err(err) => return Ok(vec![error_query_result(err)]),
     };
+    let conn_id = conn.id();
     let mut results = Vec::with_capacity(statements.len());
 
     for stmt in statements {
         if is_canceled(&cancel_token) {
             results.push(error_query_result(canceled_error()));
+            drop(conn);
+            let pool2 = pool.clone();
+            tokio::spawn(async move {
+                kill_mysql_connection(&pool2, conn_id).await;
+            });
             break;
         }
 
@@ -1492,11 +1548,30 @@ async fn execute_multi_mysql(
         .await
         {
             Ok(result) => results.push(result),
-            Err(err) => results.push(error_query_result(err)),
+            Err(err) => {
+                let was_canceled = is_canceled(&cancel_token);
+                results.push(error_query_result(err));
+                if was_canceled {
+                    drop(conn);
+                    let pool2 = pool.clone();
+                    tokio::spawn(async move {
+                        kill_mysql_connection(&pool2, conn_id).await;
+                    });
+                    break;
+                }
+            }
         }
     }
 
     Ok(results)
+}
+
+async fn kill_mysql_connection(pool: &db::mysql::MySqlPool, conn_id: u32) {
+    if let Ok(Ok(mut kill_conn)) = tokio::time::timeout(Duration::from_secs(5), pool.get_conn()).await {
+        let _ =
+            tokio::time::timeout(Duration::from_secs(3), kill_conn.query_drop(format!("KILL CONNECTION {}", conn_id)))
+                .await;
+    }
 }
 
 fn error_query_result(message: String) -> db::QueryResult {
@@ -1543,6 +1618,7 @@ async fn execute_multi_sqlserver(
 
     for batch in &batches {
         if is_canceled(&cancel_token) {
+            state.remove_pool_by_key(pool_key).await;
             all_results.push(db::QueryResult {
                 columns: vec!["Error".to_string()],
                 column_types: Vec::new(),
@@ -1565,22 +1641,37 @@ async fn execute_multi_sqlserver(
         };
         drop(connections);
 
+        let cancel_token_clone = cancel_token.clone();
         let mut client = match cancel_token.as_ref() {
             Some(token) => tokio::select! {
                 biased;
-                _ = token.cancelled() => return Err(canceled_error()),
+                _ = token.cancelled() => {
+                    state.remove_pool_by_key(pool_key).await;
+                    return Err(canceled_error());
+                },
                 guard = client.lock() => guard,
             },
             None => client.lock().await,
         };
 
-        let result = db::sqlserver::execute_batch_with_max_rows(&mut client, batch, max_rows).await;
+        let batch_result = match cancel_token_clone {
+            Some(ref token) => tokio::select! {
+                biased;
+                _ = token.cancelled() => Err(canceled_error()),
+                result = db::sqlserver::execute_batch_with_max_rows(&mut client, batch, max_rows) => result,
+            },
+            None => db::sqlserver::execute_batch_with_max_rows(&mut client, batch, max_rows).await,
+        };
         drop(client);
 
-        match result {
+        match batch_result {
             Ok(results) => all_results.extend(results),
             Err(e) => {
+                let is_cancel = is_canceled(&cancel_token_clone);
                 let action = pool_error_action(Some(DatabaseType::SqlServer), &e);
+                if is_cancel || matches!(action, PoolErrorAction::Discard | PoolErrorAction::ReconnectAndRetry) {
+                    state.remove_pool_by_key(pool_key).await;
+                }
                 all_results.push(db::QueryResult {
                     columns: vec!["Error".to_string()],
                     column_types: Vec::new(),
@@ -1592,8 +1683,7 @@ async fn execute_multi_sqlserver(
                     session_id: None,
                     has_more: false,
                 });
-                if matches!(action, PoolErrorAction::Discard | PoolErrorAction::ReconnectAndRetry) {
-                    state.remove_pool_by_key(pool_key).await;
+                if !is_cancel && matches!(action, PoolErrorAction::Discard | PoolErrorAction::ReconnectAndRetry) {
                     break;
                 }
             }
@@ -1624,6 +1714,7 @@ pub async fn execute_statements(
     statements: &[String],
     schema: Option<&str>,
     timeout_secs: Option<u64>,
+    cancel_token: Option<CancellationToken>,
 ) -> Result<db::QueryResult, String> {
     let pool_key = if database.is_empty() {
         connection_id.to_string()
@@ -1636,6 +1727,10 @@ pub async fn execute_statements(
     let mysql_dialect = connection_mysql_query_dialect(state, connection_id).await;
 
     for (i, sql) in statements.iter().enumerate() {
+        if is_canceled(&cancel_token) {
+            return Err(canceled_error());
+        }
+
         match do_execute(
             state,
             &pool_key,
@@ -1643,7 +1738,7 @@ pub async fn execute_statements(
             Some(database),
             sql,
             schema,
-            None,
+            cancel_token.clone(),
             QueryExecutionOptions { timeout_secs, ..Default::default() },
         )
         .await
@@ -1698,6 +1793,7 @@ pub async fn execute_statements_in_transaction(
     database: &str,
     statements: &[String],
     schema: Option<&str>,
+    cancel_token: Option<CancellationToken>,
 ) -> Result<db::QueryResult, String> {
     let pool_key = if database.is_empty() {
         connection_id.to_string()
@@ -1745,16 +1841,27 @@ pub async fn execute_statements_in_transaction(
     };
 
     match path {
-        Some(TxPath::Pg(pool)) => exec_tx_pg_inner(pool, statements, schema, start).await,
-        Some(TxPath::Mysql(pool, _bare)) => exec_tx_mysql_inner(pool, statements, start).await,
-        Some(TxPath::Sqlite(pool)) => exec_tx_sqlite_inner(pool, statements, start).await,
+        Some(TxPath::Pg(pool)) => exec_tx_pg_inner(pool, statements, schema, start, cancel_token).await,
+        Some(TxPath::Mysql(pool, _bare)) => exec_tx_mysql_inner(pool, statements, start, cancel_token).await,
+        Some(TxPath::Sqlite(pool)) => exec_tx_sqlite_inner(pool, statements, start, cancel_token).await,
         Some(TxPath::Explicit) => {
             let mysql_dialect = connection_mysql_query_dialect(state, connection_id).await;
-            exec_tx_explicit_inner(state, &pool_key, mysql_dialect, Some(database), statements, schema, start).await
+            exec_tx_explicit_inner(
+                state,
+                &pool_key,
+                mysql_dialect,
+                Some(database),
+                statements,
+                schema,
+                start,
+                cancel_token,
+            )
+            .await
         }
         Some(TxPath::None) => {
             let mysql_dialect = connection_mysql_query_dialect(state, connection_id).await;
-            exec_tx_none_inner(state, &pool_key, mysql_dialect, Some(database), statements, schema, start).await
+            exec_tx_none_inner(state, &pool_key, mysql_dialect, Some(database), statements, schema, start, cancel_token)
+                .await
         }
         None => Err("Connection not found for transaction".to_string()),
     }
@@ -1777,6 +1884,7 @@ async fn exec_tx_pg_inner(
     statements: &[String],
     schema: Option<&str>,
     start: std::time::Instant,
+    cancel_token: Option<CancellationToken>,
 ) -> Result<db::QueryResult, String> {
     let mut client = pool.get().await.map_err(|e| format!("Failed to acquire connection: {}", e))?;
     let had_schema = schema.is_some();
@@ -1786,7 +1894,7 @@ async fn exec_tx_pg_inner(
             .await
             .map_err(|e| format!("SET search_path failed: {}", e))?;
     }
-    let tx_result = exec_tx_pg_statements(&mut client, statements).await;
+    let tx_result = exec_tx_pg_statements(&mut client, statements, cancel_token).await;
 
     // Always reset search_path so the connection is clean when returned to the pool
     if had_schema {
@@ -1809,10 +1917,18 @@ async fn exec_tx_pg_inner(
     }
 }
 
-async fn exec_tx_pg_statements(client: &mut deadpool_postgres::Client, statements: &[String]) -> Result<u64, String> {
+async fn exec_tx_pg_statements(
+    client: &mut deadpool_postgres::Client,
+    statements: &[String],
+    cancel_token: Option<CancellationToken>,
+) -> Result<u64, String> {
     let tx = client.transaction().await.map_err(|e| format!("Failed to begin transaction: {}", e))?;
     let mut total_affected: u64 = 0;
     for (i, sql) in statements.iter().enumerate() {
+        if is_canceled(&cancel_token) {
+            // Transaction auto-rollbacks on drop
+            return Err(canceled_error());
+        }
         match tx.execute(sql, &[]).await {
             Ok(affected) => total_affected += affected,
             Err(e) => {
@@ -1829,11 +1945,16 @@ async fn exec_tx_mysql_inner(
     pool: mysql_async::Pool,
     statements: &[String],
     start: std::time::Instant,
+    cancel_token: Option<CancellationToken>,
 ) -> Result<db::QueryResult, String> {
     let mut conn = db::mysql::get_conn_with_health_check(&pool).await?;
     conn.query_drop("START TRANSACTION").await.map_err(|e| format!("Failed to begin transaction: {}", e))?;
     let mut total_affected: u64 = 0;
     for (i, sql) in statements.iter().enumerate() {
+        if is_canceled(&cancel_token) {
+            let _ = conn.query_drop("ROLLBACK").await;
+            return Err(canceled_error());
+        }
         match conn.query_iter(sql).await {
             Ok(result) => total_affected += result.affected_rows(),
             Err(e) => {
@@ -1860,6 +1981,7 @@ async fn exec_tx_sqlite_inner(
     pool: db::sqlite::SqliteHandle,
     statements: &[String],
     start: std::time::Instant,
+    cancel_token: Option<CancellationToken>,
 ) -> Result<db::QueryResult, String> {
     let statements = statements.to_vec();
     tokio::task::spawn_blocking(move || {
@@ -1867,6 +1989,10 @@ async fn exec_tx_sqlite_inner(
             conn.execute_batch("BEGIN").map_err(|e| format!("Failed to begin transaction: {}", e))?;
             let mut total_affected: u64 = 0;
             for (i, sql) in statements.iter().enumerate() {
+                if is_canceled(&cancel_token) {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(canceled_error());
+                }
                 match conn.execute_batch(sql) {
                     Ok(_) => total_affected += conn.changes(),
                     Err(e) => {
@@ -1901,6 +2027,7 @@ async fn exec_tx_explicit_inner(
     statements: &[String],
     schema: Option<&str>,
     start: std::time::Instant,
+    cancel_token: Option<CancellationToken>,
 ) -> Result<db::QueryResult, String> {
     let conns = state.connections.read().await;
     if let Some(crate::connection::PoolKind::Agent(client)) = conns.get(pool_key) {
@@ -1927,7 +2054,7 @@ async fn exec_tx_explicit_inner(
         database,
         "BEGIN TRANSACTION",
         schema,
-        None,
+        cancel_token.clone(),
         QueryExecutionOptions::default(),
     )
     .await
@@ -1935,8 +2062,35 @@ async fn exec_tx_explicit_inner(
 
     let mut total_affected: u64 = 0;
     for (i, sql) in statements.iter().enumerate() {
-        match do_execute(state, pool_key, mysql_dialect, database, sql, schema, None, QueryExecutionOptions::default())
+        if is_canceled(&cancel_token) {
+            if let Err(rb_err) = do_execute(
+                state,
+                pool_key,
+                mysql_dialect,
+                database,
+                "ROLLBACK",
+                schema,
+                cancel_token.clone(),
+                QueryExecutionOptions::default(),
+            )
             .await
+            {
+                log::error!("ROLLBACK failed after cancel: {}", rb_err);
+            }
+            return Err(canceled_error());
+        }
+
+        match do_execute(
+            state,
+            pool_key,
+            mysql_dialect,
+            database,
+            sql,
+            schema,
+            cancel_token.clone(),
+            QueryExecutionOptions::default(),
+        )
+        .await
         {
             Ok(result) => {
                 total_affected += result.affected_rows;
@@ -1949,7 +2103,7 @@ async fn exec_tx_explicit_inner(
                     database,
                     "ROLLBACK",
                     schema,
-                    None,
+                    cancel_token.clone(),
                     QueryExecutionOptions::default(),
                 )
                 .await
@@ -1961,9 +2115,18 @@ async fn exec_tx_explicit_inner(
         }
     }
 
-    do_execute(state, pool_key, mysql_dialect, database, "COMMIT", schema, None, QueryExecutionOptions::default())
-        .await
-        .map_err(|e| format!("COMMIT failed: {}", e))?;
+    do_execute(
+        state,
+        pool_key,
+        mysql_dialect,
+        database,
+        "COMMIT",
+        schema,
+        cancel_token.clone(),
+        QueryExecutionOptions::default(),
+    )
+    .await
+    .map_err(|e| format!("COMMIT failed: {}", e))?;
 
     Ok(db::QueryResult {
         columns: vec![],
@@ -1986,12 +2149,26 @@ async fn exec_tx_none_inner(
     statements: &[String],
     schema: Option<&str>,
     start: std::time::Instant,
+    cancel_token: Option<CancellationToken>,
 ) -> Result<db::QueryResult, String> {
     let mut total_affected: u64 = 0;
     for (i, sql) in statements.iter().enumerate() {
+        if is_canceled(&cancel_token) {
+            return Err(canceled_error());
+        }
+
         log::info!("[query][tx-none:statement:start] index={} sql={}", i + 1, sql);
-        match do_execute(state, pool_key, mysql_dialect, database, sql, schema, None, QueryExecutionOptions::default())
-            .await
+        match do_execute(
+            state,
+            pool_key,
+            mysql_dialect,
+            database,
+            sql,
+            schema,
+            cancel_token.clone(),
+            QueryExecutionOptions::default(),
+        )
+        .await
         {
             Ok(result) => {
                 total_affected += result.affected_rows;
@@ -2031,7 +2208,7 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
 
-        let result = wait_for_query(Some(token), async {
+        let result = wait_for_query_with_timeout(Some(token), Duration::from_secs(30), async {
             tokio::time::sleep(Duration::from_secs(30)).await;
             Ok(db::QueryResult {
                 columns: vec![],
@@ -2068,7 +2245,7 @@ mod tests {
         })
         .await;
 
-        assert_eq!(result.unwrap_err(), timeout_error());
+        assert_eq!(result.unwrap_err(), timeout_error(Duration::from_millis(10)));
     }
 
     #[cfg(feature = "duckdb-bundled")]
@@ -2085,7 +2262,7 @@ mod tests {
         let result =
             wait_for_duckdb_task_with_interrupt(None, Some(Duration::from_millis(10)), interrupt_handle, task).await;
 
-        assert_eq!(result.unwrap_err(), timeout_error());
+        assert_eq!(result.unwrap_err(), timeout_error(Duration::from_millis(10)));
 
         let follow_con = con.clone();
         let follow_up = timeout(

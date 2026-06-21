@@ -589,16 +589,16 @@ export async function closeClientConnectionSession(connectionId: string, databas
   return invoke("close_client_connection_session", { connectionId, database, clientSessionId });
 }
 
-export async function executeBatch(connectionId: string, database: string, statements: string[], schema?: string, timeoutSecs?: number): Promise<QueryResult> {
-  return invoke("execute_batch", { connectionId, database, statements, schema, timeoutSecs });
+export async function executeBatch(connectionId: string, database: string, statements: string[], schema?: string, timeoutSecs?: number, executionId?: string): Promise<QueryResult> {
+  return invoke("execute_batch", { connectionId, database, statements, schema, timeoutSecs, executionId });
 }
 
-export async function executeScript(connectionId: string, database: string, sql: string, schema?: string): Promise<QueryResult> {
-  return invoke("execute_script", { connectionId, database, sql, schema });
+export async function executeScript(connectionId: string, database: string, sql: string, schema?: string, executionId?: string): Promise<QueryResult> {
+  return invoke("execute_script", { connectionId, database, sql, schema, executionId });
 }
 
-export async function executeInTransaction(connectionId: string, database: string, statements: string[], schema?: string): Promise<QueryResult> {
-  return invoke("execute_in_transaction", { connectionId, database, statements, schema });
+export async function executeInTransaction(connectionId: string, database: string, statements: string[], schema?: string, executionId?: string): Promise<QueryResult> {
+  return invoke("execute_in_transaction", { connectionId, database, statements, schema, executionId });
 }
 
 export async function analyzeSqlReferences(sql: string, dialect?: string): Promise<SqlReferenceAnalysis> {

@@ -835,10 +835,11 @@ async function applyChanges() {
   errorMessage.value = "";
   const sql = previewSqlText.value;
   const startedAt = Date.now();
+  const executionId = uuid();
   try {
     const connection = store.getConfig(props.connectionId);
     const timeoutSecs = queryTimeoutSecsForConnection(connection);
-    const result = await api.executeBatch(props.connectionId, props.database, pendingStatements.value, props.schema, timeoutSecs);
+    const result = await api.executeBatch(props.connectionId, props.database, pendingStatements.value, props.schema, timeoutSecs, executionId);
     await recordStructureHistory(sql, startedAt, true, result);
     toast(t("structureEditor.saved"), 2500);
     emit("saved", tableComment.value !== originalTableComment.value);
