@@ -902,6 +902,7 @@ export default {
     executeSql: "Ejecutar SQL",
     copyAll: "Copiar todo",
     copied: "Copiado",
+    copyTestResult: "Copiar resultado de prueba",
     replace: "Reemplazar en el editor",
     append: "Agregar al editor",
     apply: "Aplicar al editor",

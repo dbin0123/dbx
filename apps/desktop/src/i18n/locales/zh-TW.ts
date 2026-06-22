@@ -934,6 +934,7 @@ export default {
     executeSql: "立即執行",
     copyAll: "複製全部",
     copied: "已複製",
+    copyTestResult: "複製測試結果",
     replace: "取代編輯器",
     append: "追加到編輯器",
     apply: "套用到編輯器",

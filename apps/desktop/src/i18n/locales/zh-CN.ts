@@ -1009,6 +1009,7 @@ export default {
     executeSql: "立即执行",
     copyAll: "复制全部",
     copied: "已复制",
+    copyTestResult: "复制测试结果",
     replace: "替换编辑器",
     append: "追加到编辑器",
     apply: "应用到编辑器",

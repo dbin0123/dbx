@@ -1010,6 +1010,7 @@ export default {
     executeSql: "Execute SQL",
     copyAll: "Copy All",
     copied: "Copied",
+    copyTestResult: "Copy test result",
     replace: "Replace Editor",
     append: "Append to Editor",
     apply: "Apply to Editor",

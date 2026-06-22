@@ -1015,6 +1015,7 @@ export default {
     executeSql: "SQLを実行",
     copyAll: "すべてコピー",
     copied: "コピーしました",
+    copyTestResult: "テスト結果をコピー",
     replace: "エディタを置換",
     append: "エディタに追加",
     apply: "エディタに適用",

@@ -963,6 +963,7 @@ export default {
     executeSql: "Executar SQL",
     copyAll: "Copiar Tudo",
     copied: "Copiado",
+    copyTestResult: "Copiar resultado do teste",
     replace: "Substituir Editor",
     append: "Anexar ao Editor",
     apply: "Aplicar ao Editor",
