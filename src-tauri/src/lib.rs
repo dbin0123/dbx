@@ -163,19 +163,19 @@ fn apply_desktop_icon_theme(app: &tauri::AppHandle, icon_theme: DesktopIconTheme
     Ok(())
 }
 
-fn apply_desktop_tray_icon_theme(app: &tauri::AppHandle, icon_theme: DesktopIconTheme) -> tauri::Result<()> {
-    if let Some(tray) = app.tray_by_id(DESKTOP_TRAY_ID) {
+fn apply_desktop_tray_icon_theme(app: &tauri::AppHandle, _icon_theme: DesktopIconTheme) -> tauri::Result<()> {
+    if let Some(_tray) = app.tray_by_id(DESKTOP_TRAY_ID) {
         #[cfg(target_os = "windows")]
         {
-            let icon = match icon_theme {
+            let icon = match _icon_theme {
                 DesktopIconTheme::Default => app.default_window_icon().cloned(),
                 DesktopIconTheme::Black => Some(BLACK_APP_ICON),
             };
-            tray.set_icon(icon)?;
+            _tray.set_icon(icon)?;
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
-            let _ = (tray, icon_theme);
+            let _ = (_tray, _icon_theme);
         }
     }
     Ok(())
