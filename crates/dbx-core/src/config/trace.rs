@@ -2,10 +2,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+use super::ConfigLayer;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceEntry {
     pub timestamp: DateTime<Utc>,
-    pub layer: String,
+    pub layer: ConfigLayer,
     pub key: String,
     pub action: String,
     pub detail: String,
@@ -29,10 +31,10 @@ impl TraceRingBuffer {
         self.entries.push_back(entry);
     }
 
-    pub fn record(&mut self, layer: &str, key: &str, action: &str, detail: &str) {
+    pub fn record(&mut self, layer: ConfigLayer, key: &str, action: &str, detail: &str) {
         self.push(TraceEntry {
             timestamp: Utc::now(),
-            layer: layer.to_string(),
+            layer,
             key: key.to_string(),
             action: action.to_string(),
             detail: detail.to_string(),
@@ -59,7 +61,7 @@ impl TraceRingBuffer {
         self.entries.clear();
     }
 
-    pub fn filter_by_layer(&self, layer: &str) -> Vec<&TraceEntry> {
+    pub fn filter_by_layer(&self, layer: ConfigLayer) -> Vec<&TraceEntry> {
         self.entries.iter().filter(|e| e.layer == layer).collect()
     }
 
@@ -68,7 +70,8 @@ impl TraceRingBuffer {
     }
 
     pub fn export_json(&self) -> Result<String, String> {
-        serde_json::to_string_pretty(&self.entries).map_err(|e| format!("Failed to serialize trace: {e}"))
+        serde_json::to_string_pretty(&self.entries)
+            .map_err(|e| format!("Failed to serialize {} trace entries: {e}", self.entries.len()))
     }
 
     pub fn recent(&self, n: usize) -> Vec<&TraceEntry> {
@@ -82,7 +85,7 @@ impl TraceRingBuffer {
 
         for entry in &self.entries {
             *action_counts.entry(entry.action.clone()).or_insert(0) += 1;
-            *layer_counts.entry(entry.layer.clone()).or_insert(0) += 1;
+            *layer_counts.entry(entry.layer.label().to_string()).or_insert(0) += 1;
         }
 
         TraceStats { total_entries: self.entries.len(), capacity: self.capacity, action_counts, layer_counts }
@@ -111,7 +114,7 @@ mod tests {
     fn sample_entry() -> TraceEntry {
         TraceEntry {
             timestamp: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
-            layer: "global".to_string(),
+            layer: ConfigLayer::Global,
             key: "host".to_string(),
             action: "read".to_string(),
             detail: "value resolved".to_string(),
@@ -138,7 +141,7 @@ mod tests {
         for i in 0..5 {
             buf.push(TraceEntry {
                 timestamp: Utc::now(),
-                layer: "test".to_string(),
+                layer: ConfigLayer::Task,
                 key: format!("key{i}"),
                 action: "write".to_string(),
                 detail: String::new(),
@@ -153,10 +156,10 @@ mod tests {
     #[test]
     fn test_record_convenience() {
         let mut buf = TraceRingBuffer::new(10);
-        buf.record("global", "host", "read", "localhost");
+        buf.record(ConfigLayer::Global, "host", "read", "localhost");
         assert_eq!(buf.len(), 1);
         let entry = buf.entries().next().unwrap();
-        assert_eq!(entry.layer, "global");
+        assert_eq!(entry.layer, ConfigLayer::Global);
         assert_eq!(entry.key, "host");
         assert_eq!(entry.action, "read");
     }
@@ -164,26 +167,26 @@ mod tests {
     #[test]
     fn test_filter_by_layer() {
         let mut buf = TraceRingBuffer::new(10);
-        buf.record("global", "host", "read", "");
-        buf.record("project", "port", "write", "");
-        buf.record("global", "user", "read", "");
+        buf.record(ConfigLayer::Global, "host", "read", "");
+        buf.record(ConfigLayer::Project, "port", "write", "");
+        buf.record(ConfigLayer::Global, "user", "read", "");
 
-        let global_entries = buf.filter_by_layer("global");
+        let global_entries = buf.filter_by_layer(ConfigLayer::Global);
         assert_eq!(global_entries.len(), 2);
 
-        let project_entries = buf.filter_by_layer("project");
+        let project_entries = buf.filter_by_layer(ConfigLayer::Project);
         assert_eq!(project_entries.len(), 1);
 
-        let task_entries = buf.filter_by_layer("task");
+        let task_entries = buf.filter_by_layer(ConfigLayer::Task);
         assert_eq!(task_entries.len(), 0);
     }
 
     #[test]
     fn test_filter_by_action() {
         let mut buf = TraceRingBuffer::new(10);
-        buf.record("global", "host", "read", "");
-        buf.record("global", "port", "write", "");
-        buf.record("global", "user", "read", "");
+        buf.record(ConfigLayer::Global, "host", "read", "");
+        buf.record(ConfigLayer::Global, "port", "write", "");
+        buf.record(ConfigLayer::Global, "user", "read", "");
 
         let reads = buf.filter_by_action("read");
         assert_eq!(reads.len(), 2);
@@ -197,15 +200,15 @@ mod tests {
         let mut buf = TraceRingBuffer::new(10);
         buf.push(sample_entry());
         let json = buf.export_json().unwrap();
-        assert!(json.contains("global"));
         assert!(json.contains("host"));
+        assert!(json.contains("read"));
     }
 
     #[test]
     fn test_recent() {
         let mut buf = TraceRingBuffer::new(10);
         for i in 0..5 {
-            buf.record("test", &format!("key{i}"), "write", "");
+            buf.record(ConfigLayer::Task, &format!("key{i}"), "write", "");
         }
         let recent = buf.recent(3);
         assert_eq!(recent.len(), 3);
@@ -216,7 +219,7 @@ mod tests {
     #[test]
     fn test_recent_less_than_n() {
         let mut buf = TraceRingBuffer::new(10);
-        buf.record("test", "k1", "read", "");
+        buf.record(ConfigLayer::Task, "k1", "read", "");
         let recent = buf.recent(10);
         assert_eq!(recent.len(), 1);
     }
@@ -224,8 +227,8 @@ mod tests {
     #[test]
     fn test_clear() {
         let mut buf = TraceRingBuffer::new(10);
-        buf.record("test", "k1", "read", "");
-        buf.record("test", "k2", "write", "");
+        buf.record(ConfigLayer::Task, "k1", "read", "");
+        buf.record(ConfigLayer::Task, "k2", "write", "");
         assert_eq!(buf.len(), 2);
         buf.clear();
         assert!(buf.is_empty());
@@ -234,9 +237,9 @@ mod tests {
     #[test]
     fn test_stats() {
         let mut buf = TraceRingBuffer::new(100);
-        buf.record("global", "host", "read", "");
-        buf.record("global", "port", "read", "");
-        buf.record("project", "config", "write", "");
+        buf.record(ConfigLayer::Global, "host", "read", "");
+        buf.record(ConfigLayer::Global, "port", "read", "");
+        buf.record(ConfigLayer::Project, "config", "write", "");
 
         let stats = buf.stats();
         assert_eq!(stats.total_entries, 3);
@@ -261,7 +264,7 @@ mod tests {
     #[test]
     fn test_entry_timestamp_is_set() {
         let mut buf = TraceRingBuffer::new(10);
-        buf.record("test", "k", "read", "detail");
+        buf.record(ConfigLayer::Task, "k", "read", "detail");
         let entry = buf.entries().next().unwrap();
         let now = Utc::now();
         let diff = now - entry.timestamp;

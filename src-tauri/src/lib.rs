@@ -914,6 +914,8 @@ pub fn run() {
             commands::system_fonts::list_system_fonts,
             commands::dialect_cmd::dialect_check_command,
             commands::dialect_cmd::dialect_check_all_command,
+            commands::config_cmd::trace_export_command,
+            commands::config_cmd::trace_stats_command,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+/// Controls how `TagInheritanceWhitelist` handles unlisted tags.
+///
+/// - `Allow` — all tags pass through by default; the whitelist is purely informational.
+/// - `Block` — only tags whose keys appear in `allowed_keys` pass through; unlisted tags
+///   are collected in `TagValidationResult::blocked` and count as blocking violations.
+/// - `Strict` — same key filtering as `Block`, but additionally checks that tag *values*
+///   match the base-layer values. Any value mismatch (or blocked key) is reported as a
+///   violation, and **all** violations (including value mismatches) count as blocking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TagPolicy {

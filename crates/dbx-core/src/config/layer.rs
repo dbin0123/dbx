@@ -130,6 +130,7 @@ impl ConfigTree {
 
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
+        let mut seen_keys: HashMap<&str, usize> = HashMap::new();
 
         for (i, layer) in self.layers.iter().enumerate() {
             if layer.name.is_empty() {
@@ -137,6 +138,12 @@ impl ConfigTree {
             }
             if layer.values.is_empty() && layer.tags.is_empty() {
                 errors.push(format!("Layer '{}' ({}) has no values or tags", layer.name, layer.layer.label()));
+            }
+            for key in layer.values.keys() {
+                if let Some(prev) = seen_keys.get(key.as_str()) {
+                    errors.push(format!("Key '{}' defined in multiple layers (index {prev} and {i})", key));
+                }
+                seen_keys.entry(key.as_str()).or_insert(i);
             }
         }
 

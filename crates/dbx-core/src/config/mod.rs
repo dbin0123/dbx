@@ -45,13 +45,19 @@ mod integration_tests {
             ..Default::default()
         });
 
-        let mut merged = tree.merge().unwrap();
+        let merged = tree.merge().unwrap();
         let merged_snapshot = merged.clone();
-        let config_scope = merged.values.clone();
 
-        for value in merged.values.values_mut() {
-            *value = resolve_all_expressions_in_value(value, &config_scope).unwrap();
-        }
+        let resolved: HashMap<_, _> = merged
+            .values
+            .iter()
+            .map(|(k, v)| {
+                let resolved = resolve_all_expressions_in_value(v, &merged.values)
+                    .unwrap_or_else(|e| panic!("Failed to resolve expression for key '{k}': {e}"));
+                (k.clone(), resolved)
+            })
+            .collect();
+        merged.values.extend(resolved);
 
         let db_val = merged.values.get("db_type").and_then(|v| v.as_str()).unwrap_or("mysql");
         let database_type: DatabaseType = serde_json::from_str(&format!("\"{db_val}\"")).unwrap_or(DatabaseType::Mysql);
@@ -99,9 +105,9 @@ mod integration_tests {
         assert_eq!(result.blocked.len(), 0);
 
         let mut trace = TraceRingBuffer::new(100);
-        trace.record("global", "target_schema", "read", "used for SchemaDiffPreparationOptions");
-        trace.record("global", "db_type", "read", "used for DatabaseType");
-        trace.record("task", "cascade_delete", "read", "overridden from task layer");
+        trace.record(ConfigLayer::Global, "target_schema", "read", "used for SchemaDiffPreparationOptions");
+        trace.record(ConfigLayer::Global, "db_type", "read", "used for DatabaseType");
+        trace.record(ConfigLayer::Task, "cascade_delete", "read", "overridden from task layer");
         assert_eq!(trace.len(), 3);
     }
 

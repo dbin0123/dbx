@@ -53,6 +53,8 @@ pub fn resolve_ref(path: &str, merged: &HashMap<String, serde_json::Value>) -> R
     Ok(current.clone())
 }
 
+/// Parses JSON literals only (numbers, booleans, null, quoted strings).
+/// Does NOT support arithmetic, operators, or function calls.
 fn eval_simple(expr: &str) -> Result<serde_json::Value, String> {
     let expr = expr.trim();
 
