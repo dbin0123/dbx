@@ -169,6 +169,7 @@ impl InputResolver {
             ignore_comments: false,
             cascade_delete: false,
             compare_column_order: false,
+            ..Default::default()
         };
 
         if let Some(ref meta) = resolved.meta {

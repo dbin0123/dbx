@@ -258,6 +258,7 @@ mod tests {
             ignore_comments: false,
             cascade_delete: false,
             compare_column_order: false,
+            ..Default::default()
         };
 
         let filtered = AstTransmitFilter::filter_diff_preparation_options(opts, "mysql");

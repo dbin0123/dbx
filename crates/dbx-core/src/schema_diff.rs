@@ -1,8 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
+use rayon::prelude::*;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::models::connection::DatabaseType;
+use crate::sql_dialect::descriptor::DialectKind;
+use crate::sql_dialect::inference::{ColumnType, DefaultTypeInferenceEngine, TypeInferenceEngine};
 use crate::types::{
     ColumnInfo, ForeignKeyInfo, FunctionInfo, IndexInfo, OwnerInfo, RuleInfo, SequenceInfo, TableInfo, TriggerInfo,
 };
@@ -199,6 +203,28 @@ pub struct SchemaDiffPreparationOptions {
     pub cascade_delete: bool,
     #[serde(default)]
     pub compare_column_order: bool,
+    #[serde(default)]
+    pub detect_renames: bool,
+    #[serde(default)]
+    pub rename_threshold: f64,
+    #[serde(default)]
+    pub enable_rollback: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub batch_patterns: Vec<BatchPattern>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_dialect: Option<DialectKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_dialect: Option<DialectKind>,
+    #[serde(default)]
+    pub compatibility_threshold: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_permissions: Vec<PermissionInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_permissions: Vec<PermissionInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard_strategy: Option<ShardStrategy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_constraint: Option<ResourceConstraint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,14 +240,1146 @@ pub struct SchemaDiffPreparation {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub owner_diffs: Vec<OwnerDiff>,
     pub sync_sql: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_sync_sql: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rename_candidates: Vec<RenameCandidate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_graph: Option<RollbackGraph>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compatibility_warnings: Vec<ColumnCompatibilityWarning>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permission_diffs: Vec<PermissionDiff>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_sync_sql: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency_graph: Option<DependencyGraph>,
+}
+
+// ============================================================================
+// Phase 4.1: Dependency Graph & Rename Detection
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DependencyNode {
+    pub table_name: String,
+    pub depends_on: Vec<String>,
+    pub depended_by: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DependencyGraph {
+    pub nodes: HashMap<String, DependencyNode>,
+    pub topological_order: Vec<String>,
+}
+
+impl DependencyGraph {
+    pub fn build(details: &[TableSchemaDetail], tables: &[TableInfo]) -> Self {
+        let table_names: HashSet<&str> =
+            tables.iter().filter(|t| !t.table_type.contains("VIEW")).map(|t| t.name.as_str()).collect();
+        let mut nodes: HashMap<String, DependencyNode> = table_names
+            .iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    DependencyNode { table_name: name.to_string(), depends_on: Vec::new(), depended_by: Vec::new() },
+                )
+            })
+            .collect();
+        let detail_map: HashMap<&str, &TableSchemaDetail> = details.iter().map(|d| (d.name.as_str(), d)).collect();
+
+        for table_name in &table_names {
+            if let Some(detail) = detail_map.get(table_name) {
+                for fk in &detail.foreign_keys {
+                    if table_names.contains(fk.ref_table.as_str()) {
+                        if let Some(node) = nodes.get_mut(*table_name) {
+                            if !node.depends_on.contains(&fk.ref_table) {
+                                node.depends_on.push(fk.ref_table.clone());
+                            }
+                        }
+                        if let Some(ref_node) = nodes.get_mut(&fk.ref_table) {
+                            if !ref_node.depended_by.iter().any(|d| d == *table_name) {
+                                ref_node.depended_by.push((*table_name).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let topological_order = Self::topological_sort(&nodes);
+        DependencyGraph { nodes, topological_order }
+    }
+
+    fn topological_sort(nodes: &HashMap<String, DependencyNode>) -> Vec<String> {
+        let mut in_degree: HashMap<&str, usize> = nodes.keys().map(|k| (k.as_str(), 0usize)).collect();
+        for node in nodes.values() {
+            in_degree.entry(node.table_name.as_str()).or_insert(0);
+            for _dep in &node.depends_on {
+                *in_degree.entry(node.table_name.as_str()).or_insert(0) += 1;
+            }
+        }
+
+        let mut queue: VecDeque<&str> = in_degree.iter().filter(|(_, &deg)| deg == 0).map(|(&name, _)| name).collect();
+
+        let mut result = Vec::new();
+        while let Some(name) = queue.pop_front() {
+            result.push(name.to_string());
+            if let Some(node) = nodes.get(name) {
+                for dependent in &node.depended_by {
+                    if let Some(deg) = in_degree.get_mut(dependent.as_str()) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            queue.push_back(dependent.as_str());
+                        }
+                    }
+                }
+            }
+        }
+
+        if result.len() != nodes.len() {
+            let remaining: Vec<String> = nodes.keys().filter(|k| !result.contains(k)).cloned().collect();
+            result.extend(remaining);
+        }
+
+        result
+    }
+
+    pub fn build_order(&self) -> Vec<String> {
+        self.topological_order.clone()
+    }
+
+    pub fn drop_order(&self) -> Vec<String> {
+        let mut order = self.topological_order.clone();
+        order.reverse();
+        order
+    }
+
+    pub fn coverage_score(&self, diffed_tables: &[String]) -> f64 {
+        if self.nodes.is_empty() {
+            return 1.0;
+        }
+        let diffed_set: HashSet<&str> = diffed_tables.iter().map(|s| s.as_str()).collect();
+        let mut covered_edges = 0u64;
+        let mut total_edges = 0u64;
+
+        for node in self.nodes.values() {
+            for dep in &node.depends_on {
+                total_edges += 1;
+                if diffed_set.contains(node.table_name.as_str()) && diffed_set.contains(dep.as_str()) {
+                    covered_edges += 1;
+                }
+            }
+        }
+
+        if total_edges == 0 {
+            1.0
+        } else {
+            covered_edges as f64 / total_edges as f64
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameCandidate {
+    pub removed_name: String,
+    pub added_name: String,
+    pub score: f64,
+    pub column_jaccard: f64,
+    pub type_similarity: f64,
+}
+
+fn jaccard_similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let intersection = a.intersection(b).count();
+    let union = a.union(b).count();
+    if union == 0 {
+        1.0
+    } else {
+        intersection as f64 / union as f64
+    }
+}
+
+fn column_type_similarity(source_cols: &[ColumnInfo], target_cols: &[ColumnInfo]) -> f64 {
+    if source_cols.is_empty() || target_cols.is_empty() {
+        return 0.0;
+    }
+    let engine = DefaultTypeInferenceEngine;
+    let source_map: HashMap<&str, &ColumnInfo> = source_cols.iter().map(|c| (c.name.as_str(), c)).collect();
+    let target_map: HashMap<&str, &ColumnInfo> = target_cols.iter().map(|c| (c.name.as_str(), c)).collect();
+    let common_names: HashSet<&str> = source_map.keys().filter(|k| target_map.contains_key(**k)).copied().collect();
+
+    if common_names.is_empty() {
+        return 0.0;
+    }
+
+    let total: f64 = common_names
+        .iter()
+        .map(|name| {
+            let s = ColumnType::parse(&source_map[name].data_type);
+            let t = ColumnType::parse(&target_map[name].data_type);
+            engine.type_compatibility_score(&s, &t)
+        })
+        .sum();
+    total / common_names.len() as f64
+}
+
+pub fn detect_renames(
+    removed: &[String],
+    added: &[String],
+    source_details: &[TableSchemaDetail],
+    target_details: &[TableSchemaDetail],
+    threshold: f64,
+) -> Vec<RenameCandidate> {
+    let source_detail_map: HashMap<&str, &TableSchemaDetail> =
+        source_details.iter().map(|d| (d.name.as_str(), d)).collect();
+    let target_detail_map: HashMap<&str, &TableSchemaDetail> =
+        target_details.iter().map(|d| (d.name.as_str(), d)).collect();
+
+    let mut candidates = Vec::new();
+    for removed_name in removed {
+        let Some(removed_detail) = target_detail_map.get(removed_name.as_str()) else { continue };
+        for added_name in added {
+            let Some(added_detail) = source_detail_map.get(added_name.as_str()) else { continue };
+
+            let col_names_added: HashSet<String> = added_detail.columns.iter().map(|c| c.name.clone()).collect();
+            let col_names_removed: HashSet<String> = removed_detail.columns.iter().map(|c| c.name.clone()).collect();
+            let column_jaccard = jaccard_similarity(&col_names_removed, &col_names_added);
+
+            let type_sim = column_type_similarity(&removed_detail.columns, &added_detail.columns);
+
+            let score = column_jaccard * 0.6 + type_sim * 0.4;
+
+            if score >= threshold {
+                candidates.push(RenameCandidate {
+                    removed_name: removed_name.clone(),
+                    added_name: added_name.clone(),
+                    score,
+                    column_jaccard,
+                    type_similarity: type_sim,
+                });
+            }
+        }
+    }
+
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut final_candidates = Vec::new();
+    let mut used_removed: HashSet<String> = HashSet::new();
+    let mut used_added: HashSet<String> = HashSet::new();
+
+    for c in &candidates {
+        if !used_removed.contains(&c.removed_name) && !used_added.contains(&c.added_name) {
+            final_candidates.push(c.clone());
+            used_removed.insert(c.removed_name.clone());
+            used_added.insert(c.added_name.clone());
+        }
+    }
+
+    final_candidates
+}
+
+// ============================================================================
+// Phase 4.2: Batch Naming Pattern Recognition
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchPattern {
+    pub pattern: String,
+    pub is_regex: bool,
+    pub description: String,
+}
+
+pub fn diff_names_with_patterns(
+    source: &[String],
+    target: &[String],
+    patterns: &[BatchPattern],
+) -> (Vec<String>, Vec<String>, Vec<String>, Vec<Vec<String>>) {
+    let (added, removed, common) = diff_names(source, target);
+
+    let mut pattern_matches: Vec<Vec<String>> = Vec::new();
+    for pattern in patterns {
+        let mut matches = Vec::new();
+        if pattern.is_regex {
+            if let Ok(re) = Regex::new(&pattern.pattern) {
+                for name in source {
+                    if re.is_match(name) {
+                        matches.push(name.clone());
+                    }
+                }
+            }
+        } else {
+            let glob_pattern = pattern.pattern.replace('*', ".*").replace('?', ".");
+            if let Ok(re) = Regex::new(&format!("^{}$", glob_pattern)) {
+                for name in source {
+                    if re.is_match(name) {
+                        matches.push(name.clone());
+                    }
+                }
+            }
+        }
+        if !matches.is_empty() {
+            pattern_matches.push(matches);
+        }
+    }
+
+    (added, removed, common, pattern_matches)
+}
+
+pub fn detect_pattern_conflicts(patterns: &[BatchPattern], names: &[String]) -> Vec<Vec<String>> {
+    let mut conflicts = Vec::new();
+    for i in 0..patterns.len() {
+        for j in (i + 1)..patterns.len() {
+            let pi = &patterns[i];
+            let pj = &patterns[j];
+            let pattern_i =
+                if pi.is_regex { pi.pattern.clone() } else { pi.pattern.replace('*', ".*").replace('?', ".") };
+            let pattern_j =
+                if pj.is_regex { pj.pattern.clone() } else { pj.pattern.replace('*', ".*").replace('?', ".") };
+
+            let re_i = Regex::new(&format!("^{}$", pattern_i));
+            let re_j = Regex::new(&format!("^{}$", pattern_j));
+            if let (Ok(ri), Ok(rj)) = (re_i, re_j) {
+                for name in names {
+                    if ri.is_match(name) && rj.is_match(name) {
+                        conflicts.push(vec![pi.description.clone(), pj.description.clone()]);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    conflicts
+}
+
+// ============================================================================
+// Phase 4.3: Dialect-Aware Type Compatibility Scoring
+// ============================================================================
+
+pub fn diff_columns_with_compatibility(
+    source: &[ColumnInfo],
+    target: &[ColumnInfo],
+    ignore_comments: bool,
+    compare_column_order: bool,
+    source_dialect: DialectKind,
+    target_dialect: DialectKind,
+    compatibility_threshold: f64,
+) -> (Vec<ColumnDiff>, Vec<ColumnCompatibilityWarning>) {
+    use crate::sql_dialect::descriptor::TypeMappingMatrix;
+
+    let matrix = TypeMappingMatrix::for_dialects(source_dialect, target_dialect);
+    let engine = DefaultTypeInferenceEngine;
+
+    let basic_diffs = diff_columns_with_options(source, target, ignore_comments, compare_column_order);
+
+    let mut warnings = Vec::new();
+    let mut enhanced_diffs = Vec::new();
+
+    for diff in basic_diffs {
+        let mut warning = None;
+
+        if diff.diff_type == "modified" {
+            if let (Some(src), Some(tgt)) = (&diff.source, &diff.target) {
+                let src_parsed = ColumnType::parse(&src.data_type);
+                let tgt_parsed = ColumnType::parse(&tgt.data_type);
+                let compatibility = engine.type_compatibility_score(&src_parsed, &tgt_parsed);
+
+                let (mapped_type, requires_cast) = matrix.convert_type(&tgt.data_type);
+
+                let risk = if compatibility >= 0.9 {
+                    ColumnConversionRisk::None
+                } else if compatibility >= 0.7 {
+                    ColumnConversionRisk::Low
+                } else if compatibility >= 0.5 {
+                    ColumnConversionRisk::Medium
+                } else {
+                    ColumnConversionRisk::High
+                };
+
+                if compatibility < compatibility_threshold {
+                    warning = Some(ColumnCompatibilityWarning {
+                        column_name: diff.name.clone(),
+                        source_type: src.data_type.clone(),
+                        target_type: tgt.data_type.clone(),
+                        compatibility_score: compatibility,
+                        suggested_mapping: mapped_type,
+                        requires_cast,
+                        risk,
+                    });
+                }
+            }
+        }
+
+        enhanced_diffs.push(diff);
+        if let Some(w) = warning {
+            warnings.push(w);
+        }
+    }
+
+    (enhanced_diffs, warnings)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnCompatibilityWarning {
+    pub column_name: String,
+    pub source_type: String,
+    pub target_type: String,
+    pub compatibility_score: f64,
+    pub suggested_mapping: String,
+    pub requires_cast: bool,
+    pub risk: ColumnConversionRisk,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ColumnConversionRisk {
+    None,
+    Low,
+    Medium,
+    High,
+}
+
+// ============================================================================
+// Phase 4.4: Bidirectional Diff & Rollback Graph
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffNode {
+    pub table_diff: TableDiff,
+    pub direction: DiffDirection,
+    pub dependency_order: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rename_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rename_target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rename_score: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffDirection {
+    Forward,
+    Rollback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollbackGraph {
+    pub forward_nodes: Vec<DiffNode>,
+    pub rollback_nodes: Vec<DiffNode>,
+    pub is_consistent: bool,
+    pub consistency_issues: Vec<String>,
+}
+
+impl RollbackGraph {
+    pub fn from_forward_diffs(
+        forward_diffs: &[TableDiff],
+        renames: &[RenameCandidate],
+        dep_graph: &DependencyGraph,
+    ) -> Self {
+        let mut forward_nodes = Vec::new();
+        let mut rollback_nodes = Vec::new();
+        let consistency_issues = Vec::new();
+
+        let rename_map: HashMap<&str, &RenameCandidate> =
+            renames.iter().map(|r| (r.removed_name.as_str(), r)).collect();
+        let rename_reverse: HashMap<&str, &str> =
+            renames.iter().map(|r| (r.added_name.as_str(), r.removed_name.as_str())).collect();
+
+        let order_map: HashMap<&str, usize> =
+            dep_graph.topological_order.iter().enumerate().map(|(i, name)| (name.as_str(), i)).collect();
+
+        for diff in forward_diffs {
+            let order = order_map.get(diff.name.as_str()).copied().unwrap_or(usize::MAX);
+
+            let (rename_source, rename_target, rename_score) = if diff.diff_type == "added" {
+                if let Some(rc) = rename_reverse.get(diff.name.as_str()) {
+                    (Some(rc.to_string()), Some(diff.name.clone()), None)
+                } else {
+                    (None, None, None)
+                }
+            } else if diff.diff_type == "removed" {
+                if let Some(rc) = rename_map.get(diff.name.as_str()) {
+                    (Some(diff.name.clone()), Some(rc.added_name.clone()), Some(rc.score))
+                } else {
+                    (None, None, None)
+                }
+            } else {
+                (None, None, None)
+            };
+
+            forward_nodes.push(DiffNode {
+                table_diff: diff.clone(),
+                direction: DiffDirection::Forward,
+                dependency_order: order,
+                rename_source,
+                rename_target,
+                rename_score,
+            });
+
+            let rollback_diff = Self::invert_diff(diff);
+            rollback_nodes.push(DiffNode {
+                table_diff: rollback_diff,
+                direction: DiffDirection::Rollback,
+                dependency_order: order,
+                rename_source: None,
+                rename_target: None,
+                rename_score: None,
+            });
+        }
+
+        RollbackGraph { forward_nodes, rollback_nodes, is_consistent: false, consistency_issues }
+    }
+
+    fn invert_diff_type(dt: &str) -> &str {
+        match dt {
+            "added" => "removed",
+            "removed" => "added",
+            _ => "modified",
+        }
+    }
+
+    fn invert_change_string(ch: &str) -> String {
+        if let Some(_pos) = ch.find(" → ") {
+            let parts: Vec<&str> = ch.split(" → ").collect();
+            if parts.len() == 2 {
+                format!("{} → {}", parts[1], parts[0])
+            } else {
+                ch.to_string()
+            }
+        } else {
+            ch.to_string()
+        }
+    }
+
+    fn invert_columns(cols: &[ColumnDiff]) -> Vec<ColumnDiff> {
+        cols.iter()
+            .map(|c| ColumnDiff {
+                diff_type: Self::invert_diff_type(&c.diff_type).to_string(),
+                name: c.name.clone(),
+                source: c.target.clone(),
+                target: c.source.clone(),
+                changes: c.changes.iter().map(|ch| Self::invert_change_string(ch)).collect(),
+            })
+            .collect()
+    }
+
+    fn invert_indexes(idxs: &[IndexDiff]) -> Vec<IndexDiff> {
+        idxs.iter()
+            .map(|i| IndexDiff {
+                diff_type: Self::invert_diff_type(&i.diff_type).to_string(),
+                name: i.name.clone(),
+                source: i.target.clone(),
+                target: i.source.clone(),
+                changes: i.changes.clone(),
+            })
+            .collect()
+    }
+
+    fn invert_fks(fks: &[ForeignKeyDiff]) -> Vec<ForeignKeyDiff> {
+        fks.iter()
+            .map(|fk| ForeignKeyDiff {
+                diff_type: Self::invert_diff_type(&fk.diff_type).to_string(),
+                name: fk.name.clone(),
+                source: fk.target.clone(),
+                target: fk.source.clone(),
+                changes: fk.changes.clone(),
+            })
+            .collect()
+    }
+
+    fn invert_triggers(trgs: &[TriggerDiff]) -> Vec<TriggerDiff> {
+        trgs.iter()
+            .map(|t| TriggerDiff {
+                diff_type: Self::invert_diff_type(&t.diff_type).to_string(),
+                name: t.name.clone(),
+                source: t.target.clone(),
+                target: t.source.clone(),
+                changes: t.changes.clone(),
+            })
+            .collect()
+    }
+
+    fn invert_diff(diff: &TableDiff) -> TableDiff {
+        let inverted_type = Self::invert_diff_type(&diff.diff_type).to_string();
+
+        let inverted_columns = diff.columns.as_ref().map(|cols| Self::invert_columns(cols));
+        let inverted_indexes = diff.indexes.as_ref().map(|idxs| Self::invert_indexes(idxs));
+        let inverted_fks = diff.foreign_keys.as_ref().map(|fks| Self::invert_fks(fks));
+        let inverted_triggers = diff.triggers.as_ref().map(|trgs| Self::invert_triggers(trgs));
+
+        let (source_comment, target_comment) = match inverted_type.as_str() {
+            "added" => (diff.target_table_comment.clone(), diff.source_table_comment.clone()),
+            "removed" => (diff.source_table_comment.clone(), diff.target_table_comment.clone()),
+            _ => (diff.target_table_comment.clone(), diff.source_table_comment.clone()),
+        };
+
+        TableDiff {
+            diff_type: inverted_type,
+            object_type: diff.object_type.clone(),
+            name: diff.name.clone(),
+            columns: inverted_columns,
+            indexes: inverted_indexes,
+            foreign_keys: inverted_fks,
+            triggers: inverted_triggers,
+            ddl: diff.target_ddl.clone(),
+            target_ddl: diff.ddl.clone(),
+            source_table_comment: source_comment,
+            target_table_comment: target_comment,
+            sync_sql: None,
+        }
+    }
+
+    pub fn validate_consistency(&mut self) -> bool {
+        self.consistency_issues.clear();
+
+        for fwd in &self.forward_nodes {
+            let has_rollback = self.rollback_nodes.iter().any(|rbk| {
+                rbk.table_diff.name == fwd.table_diff.name
+                    && match (fwd.table_diff.diff_type.as_str(), rbk.table_diff.diff_type.as_str()) {
+                        ("added", "removed") | ("removed", "added") => true,
+                        ("modified", "modified") => true,
+                        ("none", "none") => true,
+                        _ => false,
+                    }
+            });
+
+            if !has_rollback {
+                self.consistency_issues.push(format!(
+                    "No rollback entry for forward {}: {}",
+                    fwd.table_diff.diff_type, fwd.table_diff.name
+                ));
+            }
+
+            let rollback_of_rollback: Vec<_> = self
+                .rollback_nodes
+                .iter()
+                .filter(|rbk| rbk.table_diff.name == fwd.table_diff.name)
+                .map(|rbk| Self::invert_diff(&rbk.table_diff))
+                .collect();
+
+            for ror in &rollback_of_rollback {
+                if ror.diff_type != fwd.table_diff.diff_type {
+                    self.consistency_issues.push(format!(
+                        "Forward∘Rollback mismatch for {}: forward={}, rollback∘rollback={}",
+                        fwd.table_diff.name, fwd.table_diff.diff_type, ror.diff_type
+                    ));
+                }
+            }
+        }
+
+        self.is_consistent = self.consistency_issues.is_empty();
+        self.is_consistent
+    }
+}
+
+pub fn generate_rollback_sync_sql(
+    rollback_graph: &RollbackGraph,
+    db_type: DatabaseType,
+    schema: Option<&str>,
+    cascade_delete: bool,
+) -> String {
+    let rollback_diffs: Vec<TableDiff> = rollback_graph.rollback_nodes.iter().map(|n| n.table_diff.clone()).collect();
+    generate_schema_sync_sql(&rollback_diffs, &[], &[], &[], &[], db_type, schema, cascade_delete)
+}
+
+// ============================================================================
+// Phase 4.5: Shard-Parallel Comparison
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShardStrategy {
+    pub shard_count: usize,
+    pub shard_by: ShardBy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ShardBy {
+    Table,
+    Schema,
+    RoundRobin,
+}
+
+pub fn shard_diff(options: &SchemaDiffPreparationOptions, shard_strategy: &ShardStrategy) -> Vec<TableDiff> {
+    let table_count = options.source_tables.len().max(options.target_tables.len());
+    let shard_count = shard_strategy.shard_count.min(table_count.max(1));
+
+    if shard_count <= 1 {
+        return diff_schema(options);
+    }
+
+    let source_table_names: Vec<&str> =
+        options.source_tables.iter().filter(|t| !t.table_type.contains("VIEW")).map(|t| t.name.as_str()).collect();
+    let source_view_names: Vec<&str> =
+        options.source_tables.iter().filter(|t| t.table_type.contains("VIEW")).map(|t| t.name.as_str()).collect();
+    let _target_table_names: Vec<&str> =
+        options.target_tables.iter().filter(|t| !t.table_type.contains("VIEW")).map(|t| t.name.as_str()).collect();
+    let _target_view_names: Vec<&str> =
+        options.target_tables.iter().filter(|t| t.table_type.contains("VIEW")).map(|t| t.name.as_str()).collect();
+
+    let source_all: Vec<&str> = source_table_names.iter().chain(source_view_names.iter()).copied().collect();
+    let shards: Vec<Vec<&str>> = match &shard_strategy.shard_by {
+        ShardBy::Table | ShardBy::RoundRobin => {
+            let mut s: Vec<Vec<&str>> = vec![Vec::new(); shard_count];
+            for (i, name) in source_all.iter().enumerate() {
+                s[i % shard_count].push(*name);
+            }
+            s
+        }
+        ShardBy::Schema => {
+            let mut schema_groups: HashMap<&str, Vec<&str>> = HashMap::new();
+            for table in &options.source_tables {
+                let schema = table.parent_schema.as_deref().unwrap_or("default");
+                schema_groups.entry(schema).or_default().push(table.name.as_str());
+            }
+            let mut s: Vec<Vec<&str>> = vec![Vec::new(); shard_count];
+            for (i, (_schema, names)) in schema_groups.iter().enumerate() {
+                s[i % shard_count].extend(names);
+            }
+            s
+        }
+    };
+
+    let shard_results: Vec<Vec<TableDiff>> = shards
+        .par_iter()
+        .filter(|shard| !shard.is_empty())
+        .map(|shard| {
+            let shard_set: HashSet<&str> = shard.iter().copied().collect();
+            let shard_options = SchemaDiffPreparationOptions {
+                source_tables: options
+                    .source_tables
+                    .iter()
+                    .filter(|t| shard_set.contains(t.name.as_str()))
+                    .cloned()
+                    .collect(),
+                target_tables: options
+                    .target_tables
+                    .iter()
+                    .filter(|t| shard_set.contains(t.name.as_str()))
+                    .cloned()
+                    .collect(),
+                source_details: options
+                    .source_details
+                    .iter()
+                    .filter(|d| shard_set.contains(d.name.as_str()))
+                    .cloned()
+                    .collect(),
+                target_details: options
+                    .target_details
+                    .iter()
+                    .filter(|d| shard_set.contains(d.name.as_str()))
+                    .cloned()
+                    .collect(),
+                source_functions: options.source_functions.clone(),
+                target_functions: options.target_functions.clone(),
+                source_sequences: options.source_sequences.clone(),
+                target_sequences: options.target_sequences.clone(),
+                source_rules: options.source_rules.clone(),
+                target_rules: options.target_rules.clone(),
+                source_owners: options.source_owners.clone(),
+                target_owners: options.target_owners.clone(),
+                database_type: options.database_type,
+                target_schema: options.target_schema.clone(),
+                ignore_comments: options.ignore_comments,
+                cascade_delete: options.cascade_delete,
+                compare_column_order: options.compare_column_order,
+                ..Default::default()
+            };
+            diff_schema(&shard_options)
+        })
+        .collect();
+
+    let mut merged: Vec<TableDiff> = Vec::new();
+    for shard_result in shard_results {
+        merged.extend(shard_result);
+    }
+
+    merged.sort_by(|a, b| a.name.cmp(&b.name));
+    merged.dedup_by(|a, b| a.name == b.name && a.diff_type == b.diff_type);
+    merged
+}
+
+// ============================================================================
+// Phase 4.6: Permission & Role-Aware Sync
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionInfo {
+    pub grantee: String,
+    pub object_type: String,
+    pub object_name: String,
+    pub privilege: String,
+    pub is_grantable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionDiff {
+    #[serde(rename = "type")]
+    pub diff_type: String,
+    pub grantee: String,
+    pub object_name: String,
+    pub privilege: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<PermissionInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<PermissionInfo>,
+}
+
+pub fn diff_permissions(source: &[PermissionInfo], target: &[PermissionInfo]) -> Vec<PermissionDiff> {
+    let mut diffs = Vec::new();
+    let target_map: HashMap<(&str, &str, &str), &PermissionInfo> =
+        target.iter().map(|p| ((p.grantee.as_str(), p.object_name.as_str(), p.privilege.as_str()), p)).collect();
+    let source_map: HashMap<(&str, &str, &str), &PermissionInfo> =
+        source.iter().map(|p| ((p.grantee.as_str(), p.object_name.as_str(), p.privilege.as_str()), p)).collect();
+
+    for sp in source {
+        let key = (sp.grantee.as_str(), sp.object_name.as_str(), sp.privilege.as_str());
+        if !target_map.contains_key(&key) {
+            diffs.push(PermissionDiff {
+                diff_type: "added".to_string(),
+                grantee: sp.grantee.clone(),
+                object_name: sp.object_name.clone(),
+                privilege: sp.privilege.clone(),
+                source: Some(sp.clone()),
+                target: None,
+            });
+        }
+    }
+
+    for tp in target {
+        let key = (tp.grantee.as_str(), tp.object_name.as_str(), tp.privilege.as_str());
+        if !source_map.contains_key(&key) {
+            diffs.push(PermissionDiff {
+                diff_type: "removed".to_string(),
+                grantee: tp.grantee.clone(),
+                object_name: tp.object_name.clone(),
+                privilege: tp.privilege.clone(),
+                source: None,
+                target: Some(tp.clone()),
+            });
+        }
+    }
+
+    diffs
+}
+
+pub fn generate_permission_sync_sql(diffs: &[PermissionDiff], db_type: DatabaseType, schema: Option<&str>) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let is_mysql = matches!(
+        db_type,
+        DatabaseType::Mysql
+            | DatabaseType::Doris
+            | DatabaseType::StarRocks
+            | DatabaseType::Goldendb
+            | DatabaseType::Sundb
+            | DatabaseType::Databend
+            | DatabaseType::Gbase
+    );
+
+    for diff in diffs {
+        match diff.diff_type.as_str() {
+            "added" => {
+                if let Some(source) = &diff.source {
+                    if is_mysql {
+                        let object_path = if let Some(sch) = schema {
+                            format!("`{}`.`{}`", sch.replace('`', "``"), source.object_name.replace('`', "``"))
+                        } else {
+                            format!("`{}`", source.object_name.replace('`', "``"))
+                        };
+                        let with_grant = if source.is_grantable { " WITH GRANT OPTION" } else { "" };
+                        let grantee_escaped = source.grantee.replace('\'', "''");
+                        lines.push(format!(
+                            "GRANT {} ON {} TO '{}'{};",
+                            source.privilege, object_path, grantee_escaped, with_grant
+                        ));
+                    } else {
+                        let obj_escaped = source.object_name.replace('"', "\"\"");
+                        let object_path = if let Some(sch) = schema {
+                            format!("{} \"{}\".\"{}\"", source.object_type, sch, obj_escaped)
+                        } else {
+                            format!("{} \"{}\"", source.object_type, obj_escaped)
+                        };
+                        let with_grant = if source.is_grantable { " WITH GRANT OPTION" } else { "" };
+                        let grantee_escaped = source.grantee.replace('"', "\"\"");
+                        lines.push(format!(
+                            "GRANT {} ON {} TO \"{}\"{};",
+                            source.privilege, object_path, grantee_escaped, with_grant
+                        ));
+                    }
+                }
+            }
+            "removed" => {
+                if let Some(target) = &diff.target {
+                    if is_mysql {
+                        let object_path = if let Some(sch) = schema {
+                            format!("`{}`.`{}`", sch.replace('`', "``"), target.object_name.replace('`', "``"))
+                        } else {
+                            format!("`{}`", target.object_name.replace('`', "``"))
+                        };
+                        let grantee_escaped = target.grantee.replace('\'', "''");
+                        lines.push(format!(
+                            "REVOKE {} ON {} FROM '{}';",
+                            target.privilege, object_path, grantee_escaped
+                        ));
+                    } else {
+                        let obj_escaped = target.object_name.replace('"', "\"\"");
+                        let object_path = if let Some(sch) = schema {
+                            format!("{} \"{}\".\"{}\"", target.object_type, sch, obj_escaped)
+                        } else {
+                            format!("{} \"{}\"", target.object_type, obj_escaped)
+                        };
+                        let grantee_escaped = target.grantee.replace('"', "\"\"");
+                        lines.push(format!(
+                            "REVOKE {} ON {} FROM \"{}\";",
+                            target.privilege, object_path, grantee_escaped
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    lines.join("\n")
+}
+
+// ============================================================================
+// Phase 4.7: Metadata Resource-Aware Scheduling
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceConstraint {
+    pub max_concurrent_connections: usize,
+    pub max_memory_mb: u64,
+    pub max_tables_per_batch: usize,
+    pub throttle_delay_ms: u64,
+}
+
+impl Default for ResourceConstraint {
+    fn default() -> Self {
+        Self { max_concurrent_connections: 4, max_memory_mb: 512, max_tables_per_batch: 50, throttle_delay_ms: 100 }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AdaptiveScheduler {
+    pub constraint: ResourceConstraint,
+    pub current_connections: usize,
+    pub estimated_table_count: usize,
+}
+
+impl AdaptiveScheduler {
+    pub fn new(constraint: ResourceConstraint, table_count: usize) -> Self {
+        Self { constraint, current_connections: 0, estimated_table_count: table_count }
+    }
+
+    pub fn optimal_batch_size(&self) -> usize {
+        let conn_limit = self.constraint.max_concurrent_connections;
+        let mem_limit = self.constraint.max_memory_mb as usize * 50;
+        let table_limit = self.constraint.max_tables_per_batch;
+
+        let batches = self.estimated_table_count.max(1);
+        let per_batch = (self.estimated_table_count / conn_limit).max(1);
+
+        per_batch.min(mem_limit / batches).min(table_limit)
+    }
+
+    pub fn recommended_shard_count(&self) -> usize {
+        let per_batch = self.optimal_batch_size();
+        let count = (self.estimated_table_count as f64 / per_batch as f64).ceil() as usize;
+        count.min(self.constraint.max_concurrent_connections).max(1)
+    }
+
+    pub fn throttle_delay_ms(&self) -> u64 {
+        self.constraint.throttle_delay_ms
+    }
+}
+
+// ============================================================================
+// Phase 4: Extended SchemaDiffPreparationOptions & SchemaDiffPreparation
+// ============================================================================
+
+impl Default for SchemaDiffPreparationOptions {
+    fn default() -> Self {
+        Self {
+            source_tables: Vec::new(),
+            target_tables: Vec::new(),
+            source_details: Vec::new(),
+            target_details: Vec::new(),
+            source_functions: Vec::new(),
+            target_functions: Vec::new(),
+            source_sequences: Vec::new(),
+            target_sequences: Vec::new(),
+            source_rules: Vec::new(),
+            target_rules: Vec::new(),
+            source_owners: Vec::new(),
+            target_owners: Vec::new(),
+            database_type: DatabaseType::Sqlite,
+            target_schema: None,
+            ignore_comments: false,
+            cascade_delete: false,
+            compare_column_order: false,
+            detect_renames: false,
+            rename_threshold: 0.5,
+            enable_rollback: false,
+            batch_patterns: Vec::new(),
+            source_dialect: None,
+            target_dialect: None,
+            compatibility_threshold: 0.5,
+            source_permissions: Vec::new(),
+            target_permissions: Vec::new(),
+            shard_strategy: None,
+            resource_constraint: None,
+        }
+    }
+}
+
+// Add new optional fields to SchemaDiffPreparationOptions
+// These are added as separate impl blocks to avoid breaking existing construction sites
+impl SchemaDiffPreparationOptions {
+    pub fn with_rename_detection(mut self, detect: bool, threshold: f64) -> Self {
+        self.detect_renames = detect;
+        self.rename_threshold = threshold;
+        self
+    }
+
+    pub fn with_rollback(mut self, enable: bool) -> Self {
+        self.enable_rollback = enable;
+        self
+    }
+
+    pub fn with_batch_patterns(mut self, patterns: Vec<BatchPattern>) -> Self {
+        self.batch_patterns = patterns;
+        self
+    }
+
+    pub fn with_dialects(mut self, source: Option<DialectKind>, target: Option<DialectKind>) -> Self {
+        self.source_dialect = source;
+        self.target_dialect = target;
+        self
+    }
+
+    pub fn with_compatibility_threshold(mut self, threshold: f64) -> Self {
+        self.compatibility_threshold = threshold;
+        self
+    }
+
+    pub fn with_permissions(mut self, source: Vec<PermissionInfo>, target: Vec<PermissionInfo>) -> Self {
+        self.source_permissions = source;
+        self.target_permissions = target;
+        self
+    }
+
+    pub fn with_shard_strategy(mut self, strategy: ShardStrategy) -> Self {
+        self.shard_strategy = Some(strategy);
+        self
+    }
+
+    pub fn with_resource_constraint(mut self, constraint: ResourceConstraint) -> Self {
+        self.resource_constraint = Some(constraint);
+        self
+    }
 }
 
 pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffPreparation {
-    let mut diffs = diff_schema(&options);
+    let dep_graph = DependencyGraph::build(&options.source_details, &options.source_tables);
+
+    let mut diffs = if let Some(ref strategy) = options.shard_strategy {
+        shard_diff(&options, strategy)
+    } else {
+        diff_schema(&options)
+    };
+
+    let rename_candidates = if options.detect_renames {
+        let removed: Vec<String> = diffs.iter().filter(|d| d.diff_type == "removed").map(|d| d.name.clone()).collect();
+        let added: Vec<String> = diffs.iter().filter(|d| d.diff_type == "added").map(|d| d.name.clone()).collect();
+        let candidates = detect_renames(
+            &removed,
+            &added,
+            &options.source_details,
+            &options.target_details,
+            options.rename_threshold,
+        );
+
+        let removed_renamed: HashSet<&str> = candidates.iter().map(|r| r.removed_name.as_str()).collect();
+        let added_renamed: HashSet<&str> = candidates.iter().map(|r| r.added_name.as_str()).collect();
+
+        diffs.retain(|d| {
+            !((d.diff_type == "removed" && removed_renamed.contains(d.name.as_str()))
+                || (d.diff_type == "added" && added_renamed.contains(d.name.as_str())))
+        });
+
+        for c in &candidates {
+            let source_detail = options.source_details.iter().find(|d| d.name == c.removed_name);
+            let target_detail = options.target_details.iter().find(|d| d.name == c.added_name);
+            diffs.push(TableDiff {
+                diff_type: "renamed".to_string(),
+                object_type: Some("table".to_string()),
+                name: c.removed_name.clone(),
+                columns: None,
+                indexes: None,
+                foreign_keys: None,
+                triggers: None,
+                ddl: source_detail.and_then(|d| d.ddl.clone()),
+                target_ddl: target_detail.and_then(|d| d.ddl.clone()),
+                source_table_comment: None,
+                target_table_comment: None,
+                sync_sql: None,
+            });
+        }
+
+        candidates
+    } else {
+        Vec::new()
+    };
+
+    let compatibility_warnings = if options.source_dialect.is_some() || options.target_dialect.is_some() {
+        let src_dialect = options.source_dialect.unwrap_or(DialectKind::Mysql);
+        let tgt_dialect = options.target_dialect.unwrap_or(DialectKind::Mysql);
+        let mut all_warnings = Vec::new();
+        for diff in &diffs {
+            if diff.diff_type == "modified" {
+                if let Some(source_detail) = options.source_details.iter().find(|d| d.name == diff.name) {
+                    if let Some(target_detail) = options.target_details.iter().find(|d| d.name == diff.name) {
+                        let (_, warnings) = diff_columns_with_compatibility(
+                            &source_detail.columns,
+                            &target_detail.columns,
+                            options.ignore_comments,
+                            options.compare_column_order,
+                            src_dialect,
+                            tgt_dialect,
+                            options.compatibility_threshold,
+                        );
+                        all_warnings.extend(warnings);
+                    }
+                }
+            }
+        }
+        all_warnings
+    } else {
+        Vec::new()
+    };
+
+    let rollback_graph = if options.enable_rollback {
+        let mut graph = RollbackGraph::from_forward_diffs(&diffs, &rename_candidates, &dep_graph);
+        let _ = graph.validate_consistency();
+        Some(graph)
+    } else {
+        None
+    };
+
     let function_diffs = diff_functions(&options.source_functions, &options.target_functions);
     let sequence_diffs = diff_sequences(&options.source_sequences, &options.target_sequences);
     let rule_diffs = diff_rules(&options.source_rules, &options.target_rules);
     let owner_diffs = diff_owners(&options.source_owners, &options.target_owners);
+
     for diff in &mut diffs {
         let sync_sql = generate_schema_sync_sql(
             std::slice::from_ref(diff),
@@ -237,6 +1395,7 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
             diff.sync_sql = Some(sync_sql);
         }
     }
+
     let sync_sql = generate_schema_sync_sql(
         &diffs,
         &function_diffs,
@@ -247,7 +1406,43 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
         options.target_schema.as_deref(),
         options.cascade_delete,
     );
-    SchemaDiffPreparation { diffs, function_diffs, sequence_diffs, rule_diffs, owner_diffs, sync_sql }
+
+    let rollback_sync_sql = rollback_graph.as_ref().map(|graph| {
+        generate_rollback_sync_sql(
+            graph,
+            options.database_type,
+            options.target_schema.as_deref(),
+            options.cascade_delete,
+        )
+    });
+
+    let permission_diffs = if !options.source_permissions.is_empty() || !options.target_permissions.is_empty() {
+        diff_permissions(&options.source_permissions, &options.target_permissions)
+    } else {
+        Vec::new()
+    };
+
+    let permission_sync_sql = if !permission_diffs.is_empty() {
+        Some(generate_permission_sync_sql(&permission_diffs, options.database_type, options.target_schema.as_deref()))
+    } else {
+        None
+    };
+
+    SchemaDiffPreparation {
+        diffs,
+        function_diffs,
+        sequence_diffs,
+        rule_diffs,
+        owner_diffs,
+        sync_sql,
+        rollback_sync_sql,
+        rename_candidates,
+        rollback_graph,
+        compatibility_warnings,
+        permission_diffs,
+        permission_sync_sql,
+        dependency_graph: Some(dep_graph),
+    }
 }
 
 fn diff_schema(options: &SchemaDiffPreparationOptions) -> Vec<TableDiff> {
@@ -1706,6 +2901,7 @@ mod tests {
             ignore_comments: true,
             cascade_delete: false,
             compare_column_order: false,
+            ..Default::default()
         };
 
         let result = prepare_schema_diff(options);
@@ -1759,6 +2955,7 @@ mod tests {
             ignore_comments: false,
             cascade_delete: false,
             compare_column_order: false,
+            ..Default::default()
         };
 
         let result = prepare_schema_diff(options);
@@ -1827,5 +3024,631 @@ mod tests {
             ]
             .join("\n")
         );
+    }
+
+    // ========================================================================
+    // Phase 4.1: Dependency Graph Tests
+    // ========================================================================
+
+    #[test]
+    fn dependency_graph_builds_dag_from_foreign_keys() {
+        let details = vec![
+            TableSchemaDetail {
+                name: "orders".to_string(),
+                columns: vec![],
+                indexes: vec![],
+                foreign_keys: vec![ForeignKeyInfo {
+                    name: "fk_orders_users".to_string(),
+                    column: "user_id".to_string(),
+                    ref_schema: None,
+                    ref_table: "users".to_string(),
+                    ref_column: "id".to_string(),
+                    on_update: None,
+                    on_delete: None,
+                }],
+                triggers: vec![],
+                ddl: None,
+            },
+            TableSchemaDetail {
+                name: "users".to_string(),
+                columns: vec![],
+                indexes: vec![],
+                foreign_keys: vec![],
+                triggers: vec![],
+                ddl: None,
+            },
+        ];
+        let tables = vec![
+            TableInfo {
+                name: "orders".to_string(),
+                table_type: "BASE TABLE".to_string(),
+                comment: None,
+                parent_schema: None,
+                parent_name: None,
+            },
+            TableInfo {
+                name: "users".to_string(),
+                table_type: "BASE TABLE".to_string(),
+                comment: None,
+                parent_schema: None,
+                parent_name: None,
+            },
+        ];
+
+        let graph = DependencyGraph::build(&details, &tables);
+        assert_eq!(graph.nodes.len(), 2);
+        assert!(graph.nodes["orders"].depends_on.contains(&"users".to_string()));
+        assert_eq!(graph.nodes["orders"].depends_on.len(), 1);
+        assert_eq!(graph.nodes["users"].depends_on.len(), 0);
+    }
+
+    #[test]
+    fn dependency_graph_topological_sort_drop_order() {
+        let details = vec![
+            TableSchemaDetail {
+                name: "order_items".to_string(),
+                columns: vec![],
+                indexes: vec![],
+                foreign_keys: vec![ForeignKeyInfo {
+                    name: "fk_items_orders".to_string(),
+                    column: "order_id".to_string(),
+                    ref_schema: None,
+                    ref_table: "orders".to_string(),
+                    ref_column: "id".to_string(),
+                    on_update: None,
+                    on_delete: None,
+                }],
+                triggers: vec![],
+                ddl: None,
+            },
+            TableSchemaDetail {
+                name: "orders".to_string(),
+                columns: vec![],
+                indexes: vec![],
+                foreign_keys: vec![ForeignKeyInfo {
+                    name: "fk_orders_users".to_string(),
+                    column: "user_id".to_string(),
+                    ref_schema: None,
+                    ref_table: "users".to_string(),
+                    ref_column: "id".to_string(),
+                    on_update: None,
+                    on_delete: None,
+                }],
+                triggers: vec![],
+                ddl: None,
+            },
+            TableSchemaDetail {
+                name: "users".to_string(),
+                columns: vec![],
+                indexes: vec![],
+                foreign_keys: vec![],
+                triggers: vec![],
+                ddl: None,
+            },
+        ];
+        let tables = vec![
+            TableInfo {
+                name: "order_items".to_string(),
+                table_type: "BASE TABLE".to_string(),
+                comment: None,
+                parent_schema: None,
+                parent_name: None,
+            },
+            TableInfo {
+                name: "orders".to_string(),
+                table_type: "BASE TABLE".to_string(),
+                comment: None,
+                parent_schema: None,
+                parent_name: None,
+            },
+            TableInfo {
+                name: "users".to_string(),
+                table_type: "BASE TABLE".to_string(),
+                comment: None,
+                parent_schema: None,
+                parent_name: None,
+            },
+        ];
+
+        let graph = DependencyGraph::build(&details, &tables);
+        let drop_order = graph.drop_order();
+
+        let di = drop_order.iter().position(|n| n == "order_items").unwrap();
+        let oi = drop_order.iter().position(|n| n == "orders").unwrap();
+        assert!(di < oi, "order_items should be dropped before orders");
+    }
+
+    #[test]
+    fn coverage_score_empty_graph_returns_one() {
+        let graph = DependencyGraph { nodes: HashMap::new(), topological_order: vec![] };
+        assert_eq!(graph.coverage_score(&[]), 1.0);
+    }
+
+    #[test]
+    fn coverage_score_partial_coverage() {
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            "a".to_string(),
+            DependencyNode { table_name: "a".to_string(), depends_on: vec!["b".to_string()], depended_by: vec![] },
+        );
+        nodes.insert(
+            "b".to_string(),
+            DependencyNode {
+                table_name: "b".to_string(),
+                depends_on: vec!["c".to_string()],
+                depended_by: vec!["a".to_string()],
+            },
+        );
+        nodes.insert(
+            "c".to_string(),
+            DependencyNode { table_name: "c".to_string(), depends_on: vec![], depended_by: vec!["b".to_string()] },
+        );
+        let graph =
+            DependencyGraph { nodes, topological_order: vec!["c".to_string(), "b".to_string(), "a".to_string()] };
+
+        let score = graph.coverage_score(&["a".to_string(), "b".to_string()]);
+        assert!((score - 0.5).abs() < 0.01);
+    }
+
+    // ========================================================================
+    // Phase 4.1: Rename Detection Tests
+    // ========================================================================
+
+    #[test]
+    fn detect_renames_high_similarity_columns() {
+        let source_details = vec![TableSchemaDetail {
+            name: "users_old".to_string(),
+            columns: vec![
+                column("id", "int", None),
+                column("name", "varchar(100)", None),
+                column("email", "varchar(255)", None),
+                column("created_at", "datetime", None),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            triggers: vec![],
+            ddl: None,
+        }];
+        let target_details = vec![TableSchemaDetail {
+            name: "users_new".to_string(),
+            columns: vec![
+                column("id", "integer", None),
+                column("name", "varchar(100)", None),
+                column("email", "varchar(255)", None),
+                column("updated_at", "datetime", None),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            triggers: vec![],
+            ddl: None,
+        }];
+
+        let candidates = detect_renames(
+            &["users_new".to_string()],
+            &["users_old".to_string()],
+            &source_details,
+            &target_details,
+            0.5,
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].removed_name, "users_new");
+        assert_eq!(candidates[0].added_name, "users_old");
+        assert!(candidates[0].score >= 0.5);
+    }
+
+    #[test]
+    fn detect_renames_low_similarity_below_threshold() {
+        let source_details = vec![TableSchemaDetail {
+            name: "users".to_string(),
+            columns: vec![column("id", "int", None)],
+            indexes: vec![],
+            foreign_keys: vec![],
+            triggers: vec![],
+            ddl: None,
+        }];
+        let target_details = vec![TableSchemaDetail {
+            name: "products".to_string(),
+            columns: vec![column("sku", "varchar(50)", None), column("price", "decimal", None)],
+            indexes: vec![],
+            foreign_keys: vec![],
+            triggers: vec![],
+            ddl: None,
+        }];
+
+        let candidates =
+            detect_renames(&["users".to_string()], &["products".to_string()], &source_details, &target_details, 0.5);
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn jaccard_similarity_identical_sets() {
+        let a: HashSet<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let b: HashSet<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        assert!((jaccard_similarity(&a, &b) - 1.0).abs() < f64::EPSILON);
+    }
+
+    // ========================================================================
+    // Phase 4.2: Batch Naming Pattern Tests
+    // ========================================================================
+
+    #[test]
+    fn batch_pattern_matching_wildcard() {
+        let source = vec!["log_2024_01".to_string(), "log_2024_02".to_string(), "users".to_string()];
+        let target = vec!["log_2024_03".to_string()];
+        let patterns = vec![BatchPattern {
+            pattern: "log_*".to_string(),
+            is_regex: false,
+            description: "all log tables".to_string(),
+        }];
+
+        let (added, removed, common, matches) = diff_names_with_patterns(&source, &target, &patterns);
+        assert_eq!(removed, vec!["log_2024_03"]);
+        assert_eq!(common.len(), 0);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].len(), 2);
+    }
+
+    #[test]
+    fn batch_pattern_regex_matching() {
+        let source = vec!["tbl_001".to_string(), "tbl_002".to_string(), "other".to_string()];
+        let target = vec![];
+        let patterns = vec![BatchPattern {
+            pattern: r"tbl_\d{3}".to_string(),
+            is_regex: true,
+            description: "numbered tables".to_string(),
+        }];
+
+        let (_added, _removed, _common, matches) = diff_names_with_patterns(&source, &target, &patterns);
+        assert_eq!(matches[0].len(), 2);
+    }
+
+    #[test]
+    fn pattern_conflict_detection() {
+        let patterns = vec![
+            BatchPattern { pattern: "user_*".to_string(), is_regex: false, description: "user tables".to_string() },
+            BatchPattern {
+                pattern: "user_data".to_string(),
+                is_regex: false,
+                description: "specific user data".to_string(),
+            },
+        ];
+
+        let names = vec!["user_data".to_string(), "user_log".to_string()];
+        let conflicts = detect_pattern_conflicts(&patterns, &names);
+        assert!(!conflicts.is_empty());
+    }
+
+    // ========================================================================
+    // Phase 4.3: Type Compatibility Tests
+    // ========================================================================
+
+    #[test]
+    fn diff_columns_with_compatibility_integer_family() {
+        let (_diffs, warnings) = diff_columns_with_compatibility(
+            &[column("id", "INT", None)],
+            &[column("id", "BIGINT", None)],
+            false,
+            false,
+            DialectKind::Mysql,
+            DialectKind::Mysql,
+            0.9,
+        );
+        assert!(!warnings.is_empty());
+        assert_eq!(warnings[0].risk, ColumnConversionRisk::Low);
+    }
+
+    #[test]
+    fn diff_columns_with_compatibility_exact_match_no_warning() {
+        let (_diffs, warnings) = diff_columns_with_compatibility(
+            &[column("id", "INT", None)],
+            &[column("id", "INT", None)],
+            false,
+            false,
+            DialectKind::Mysql,
+            DialectKind::Mysql,
+            0.5,
+        );
+        assert!(warnings.is_empty());
+    }
+
+    // ========================================================================
+    // Phase 4.4: Bidirectional Diff & Rollback Tests
+    // ========================================================================
+
+    fn make_diff(diff_type: &str, name: &str) -> TableDiff {
+        TableDiff {
+            diff_type: diff_type.to_string(),
+            object_type: Some("table".to_string()),
+            name: name.to_string(),
+            columns: None,
+            indexes: None,
+            foreign_keys: None,
+            triggers: None,
+            ddl: None,
+            target_ddl: None,
+            source_table_comment: None,
+            target_table_comment: None,
+            sync_sql: None,
+        }
+    }
+
+    #[test]
+    fn rollback_graph_add_becomes_drop() {
+        let diffs = vec![make_diff("added", "new_table")];
+        let dep_graph = DependencyGraph { nodes: HashMap::new(), topological_order: vec![] };
+        let graph = RollbackGraph::from_forward_diffs(&diffs, &[], &dep_graph);
+
+        assert_eq!(graph.forward_nodes.len(), 1);
+        assert_eq!(graph.rollback_nodes.len(), 1);
+        assert_eq!(graph.forward_nodes[0].table_diff.diff_type, "added");
+        assert_eq!(graph.rollback_nodes[0].table_diff.diff_type, "removed");
+    }
+
+    #[test]
+    fn rollback_graph_remove_becomes_add() {
+        let diffs = vec![make_diff("removed", "old_table")];
+        let dep_graph = DependencyGraph { nodes: HashMap::new(), topological_order: vec![] };
+        let graph = RollbackGraph::from_forward_diffs(&diffs, &[], &dep_graph);
+
+        assert_eq!(graph.rollback_nodes[0].table_diff.diff_type, "added");
+        assert_eq!(graph.rollback_nodes[0].table_diff.ddl, None);
+    }
+
+    #[test]
+    fn rollback_graph_modified_stays_modified_swapped() {
+        let source_col = column("name", "varchar(100)", None);
+        let target_col = column("name", "varchar(50)", None);
+        let diffs = vec![TableDiff {
+            diff_type: "modified".to_string(),
+            object_type: Some("table".to_string()),
+            name: "users".to_string(),
+            columns: Some(vec![ColumnDiff {
+                diff_type: "modified".to_string(),
+                name: "name".to_string(),
+                source: Some(source_col.clone()),
+                target: Some(target_col.clone()),
+                changes: vec!["type: varchar(50) → varchar(100)".to_string()],
+            }]),
+            indexes: None,
+            foreign_keys: None,
+            triggers: None,
+            ddl: None,
+            target_ddl: None,
+            source_table_comment: None,
+            target_table_comment: None,
+            sync_sql: None,
+        }];
+
+        let dep_graph = DependencyGraph { nodes: HashMap::new(), topological_order: vec![] };
+        let graph = RollbackGraph::from_forward_diffs(&diffs, &[], &dep_graph);
+
+        let rollback = &graph.rollback_nodes[0];
+        assert_eq!(rollback.table_diff.diff_type, "modified");
+        let rb_cols = rollback.table_diff.columns.as_ref().unwrap();
+        assert_eq!(rb_cols[0].diff_type, "modified");
+        assert_eq!(rb_cols[0].source.as_ref().unwrap().data_type, "varchar(50)");
+        assert_eq!(rb_cols[0].target.as_ref().unwrap().data_type, "varchar(100)");
+    }
+
+    #[test]
+    fn rollback_consistency_validation() {
+        let diffs = vec![make_diff("added", "t1"), make_diff("removed", "t2")];
+        let dep_graph = DependencyGraph { nodes: HashMap::new(), topological_order: vec![] };
+        let mut graph = RollbackGraph::from_forward_diffs(&diffs, &[], &dep_graph);
+        assert!(graph.validate_consistency());
+        assert!(graph.consistency_issues.is_empty());
+    }
+
+    // ========================================================================
+    // Phase 4.6: Permission Tests
+    // ========================================================================
+
+    #[test]
+    fn diff_permissions_detects_added_and_removed() {
+        let source = vec![PermissionInfo {
+            grantee: "app_user".to_string(),
+            object_type: "TABLE".to_string(),
+            object_name: "orders".to_string(),
+            privilege: "SELECT".to_string(),
+            is_grantable: false,
+        }];
+        let target = vec![PermissionInfo {
+            grantee: "app_user".to_string(),
+            object_type: "TABLE".to_string(),
+            object_name: "orders".to_string(),
+            privilege: "INSERT".to_string(),
+            is_grantable: false,
+        }];
+
+        let diffs = diff_permissions(&source, &target);
+        assert_eq!(diffs.len(), 2);
+        assert!(diffs.iter().any(|d| d.diff_type == "added"));
+        assert!(diffs.iter().any(|d| d.diff_type == "removed"));
+    }
+
+    #[test]
+    fn generate_permission_sql_mysql() {
+        let diffs = vec![PermissionDiff {
+            diff_type: "added".to_string(),
+            grantee: "app_user".to_string(),
+            object_name: "orders".to_string(),
+            privilege: "SELECT".to_string(),
+            source: Some(PermissionInfo {
+                grantee: "app_user".to_string(),
+                object_type: "TABLE".to_string(),
+                object_name: "orders".to_string(),
+                privilege: "SELECT".to_string(),
+                is_grantable: true,
+            }),
+            target: None,
+        }];
+
+        let sql = generate_permission_sync_sql(&diffs, DatabaseType::Mysql, Some("mydb"));
+        assert!(sql.contains("GRANT SELECT ON `mydb`.`orders` TO 'app_user' WITH GRANT OPTION"));
+    }
+
+    #[test]
+    fn generate_permission_sql_postgres_revoke() {
+        let diffs = vec![PermissionDiff {
+            diff_type: "removed".to_string(),
+            grantee: "old_user".to_string(),
+            object_name: "users".to_string(),
+            privilege: "INSERT".to_string(),
+            source: None,
+            target: Some(PermissionInfo {
+                grantee: "old_user".to_string(),
+                object_type: "TABLE".to_string(),
+                object_name: "users".to_string(),
+                privilege: "INSERT".to_string(),
+                is_grantable: false,
+            }),
+        }];
+
+        let sql = generate_permission_sync_sql(&diffs, DatabaseType::Postgres, Some("public"));
+        assert!(sql.contains("REVOKE INSERT ON TABLE \"public\".\"users\" FROM \"old_user\""));
+    }
+
+    // ========================================================================
+    // Phase 4.7: Resource Scheduling Tests
+    // ========================================================================
+
+    #[test]
+    fn adaptive_scheduler_optimal_batch_size() {
+        let constraint = ResourceConstraint::default();
+        let scheduler = AdaptiveScheduler::new(constraint, 400);
+        let batch = scheduler.optimal_batch_size();
+        assert!(batch > 0);
+        assert!(batch <= 50);
+    }
+
+    #[test]
+    fn adaptive_scheduler_shard_count() {
+        let constraint = ResourceConstraint::default();
+        let scheduler = AdaptiveScheduler::new(constraint, 200);
+        let count = scheduler.recommended_shard_count();
+        assert!(count >= 1);
+        assert!(count <= 4);
+    }
+
+    // ========================================================================
+    // Phase 4.8: Backward Compatibility Tests
+    // ========================================================================
+
+    #[test]
+    fn new_options_default_values_do_not_affect_basic_diff() {
+        let options = SchemaDiffPreparationOptions::default();
+        let result = prepare_schema_diff(options);
+        assert!(result.diffs.is_empty());
+        assert!(result.sync_sql.is_empty());
+        assert!(result.rollback_sync_sql.is_none());
+        assert!(result.rename_candidates.is_empty());
+        assert!(result.rollback_graph.is_none());
+        assert!(result.compatibility_warnings.is_empty());
+        assert!(result.permission_diffs.is_empty());
+    }
+
+    #[test]
+    fn prepare_schema_diff_with_rename_detection() {
+        let options = SchemaDiffPreparationOptions {
+            source_tables: vec![TableInfo {
+                name: "users_old".to_string(),
+                table_type: "BASE TABLE".to_string(),
+                comment: None,
+                parent_schema: None,
+                parent_name: None,
+            }],
+            target_tables: vec![TableInfo {
+                name: "users_new".to_string(),
+                table_type: "BASE TABLE".to_string(),
+                comment: None,
+                parent_schema: None,
+                parent_name: None,
+            }],
+            source_details: vec![TableSchemaDetail {
+                name: "users_old".to_string(),
+                columns: vec![column("id", "int", None), column("name", "varchar(100)", None)],
+                indexes: vec![],
+                foreign_keys: vec![],
+                triggers: vec![],
+                ddl: None,
+            }],
+            target_details: vec![TableSchemaDetail {
+                name: "users_new".to_string(),
+                columns: vec![column("id", "int", None), column("name", "varchar(100)", None)],
+                indexes: vec![],
+                foreign_keys: vec![],
+                triggers: vec![],
+                ddl: None,
+            }],
+            source_functions: vec![],
+            target_functions: vec![],
+            source_sequences: vec![],
+            target_sequences: vec![],
+            source_rules: vec![],
+            target_rules: vec![],
+            source_owners: vec![],
+            target_owners: vec![],
+            database_type: DatabaseType::Mysql,
+            target_schema: None,
+            ignore_comments: false,
+            cascade_delete: false,
+            compare_column_order: false,
+            detect_renames: true,
+            rename_threshold: 0.5,
+            ..Default::default()
+        };
+
+        let result = prepare_schema_diff(options);
+        assert!(!result.rename_candidates.is_empty());
+        assert!(result.rename_candidates[0].score >= 0.5);
+    }
+
+    #[test]
+    fn prepare_schema_diff_with_rollback_generates_rollback_sql() {
+        let options = SchemaDiffPreparationOptions {
+            source_tables: vec![TableInfo {
+                name: "new_table".to_string(),
+                table_type: "BASE TABLE".to_string(),
+                comment: None,
+                parent_schema: None,
+                parent_name: None,
+            }],
+            target_tables: vec![],
+            source_details: vec![TableSchemaDetail {
+                name: "new_table".to_string(),
+                columns: vec![column("id", "int", None)],
+                indexes: vec![],
+                foreign_keys: vec![],
+                triggers: vec![],
+                ddl: Some("CREATE TABLE new_table (id int);".to_string()),
+            }],
+            target_details: vec![],
+            source_functions: vec![],
+            target_functions: vec![],
+            source_sequences: vec![],
+            target_sequences: vec![],
+            source_rules: vec![],
+            target_rules: vec![],
+            source_owners: vec![],
+            target_owners: vec![],
+            database_type: DatabaseType::Mysql,
+            target_schema: None,
+            ignore_comments: false,
+            cascade_delete: false,
+            compare_column_order: false,
+            enable_rollback: true,
+            ..Default::default()
+        };
+
+        let result = prepare_schema_diff(options);
+        assert!(result.rollback_sync_sql.is_some());
+        assert!(result.rollback_graph.is_some());
+        let graph = result.rollback_graph.unwrap();
+        assert!(graph.is_consistent);
+        assert_eq!(graph.forward_nodes.len(), 1);
+        assert_eq!(graph.rollback_nodes.len(), 1);
+        assert_eq!(graph.rollback_nodes[0].table_diff.diff_type, "removed");
     }
 }

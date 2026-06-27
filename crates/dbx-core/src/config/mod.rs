@@ -80,6 +80,7 @@ mod integration_tests {
             ignore_comments: merged.values.get("ignore_comments").and_then(|v| v.as_bool()).unwrap_or(false),
             cascade_delete: merged.values.get("cascade_delete").and_then(|v| v.as_bool()).unwrap_or(false),
             compare_column_order: merged.values.get("compare_column_order").and_then(|v| v.as_bool()).unwrap_or(false),
+            ..Default::default()
         };
 
         assert_eq!(opts.database_type, DatabaseType::Postgres);
