@@ -11,6 +11,7 @@ pub mod ai;
 pub mod ai_cli_agent;
 pub mod ai_codex_cli;
 pub mod cloud_sync;
+pub mod config;
 pub mod connection;
 pub mod connection_secrets;
 pub mod csv_export;
