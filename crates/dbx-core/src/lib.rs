@@ -48,6 +48,7 @@ pub mod sql_analysis;
 pub mod sql_dialect;
 pub mod sql_editability;
 pub mod sql_file_import;
+pub mod sql_parser;
 pub mod sql_risk;
 pub mod sqlite_backup;
 pub mod storage;

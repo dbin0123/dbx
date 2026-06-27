@@ -45,7 +45,7 @@ mod integration_tests {
             ..Default::default()
         });
 
-        let merged = tree.merge().unwrap();
+        let mut merged = tree.merge().unwrap();
         let merged_snapshot = merged.clone();
 
         let resolved: HashMap<_, _> = merged
