@@ -41,6 +41,7 @@ pub mod query_execution_sql;
 pub mod query_result_export;
 pub mod query_result_sql;
 pub mod redis_ops;
+pub mod safety_report;
 pub mod saved_sql;
 pub mod schema;
 pub mod schema_diff;
