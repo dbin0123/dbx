@@ -192,6 +192,16 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         created_at TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL DEFAULT ''
     )",
+    "CREATE TABLE IF NOT EXISTS rebase_history (
+        id TEXT PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        previous_baseline_id TEXT NOT NULL,
+        new_baseline_id TEXT NOT NULL,
+        object_count INTEGER NOT NULL DEFAULT 0,
+        conflict_count INTEGER NOT NULL DEFAULT 0,
+        auto_resolved INTEGER NOT NULL DEFAULT 1,
+        notes TEXT NOT NULL DEFAULT ''
+    )",
 ];
 
 impl Storage {
@@ -1609,6 +1619,69 @@ impl Storage {
             conn.execute("DELETE FROM tab_runtime_cache WHERE cache_key = ?1", [key])
                 .map(|_| ())
                 .map_err(|e| e.to_string())
+        })
+        .await
+    }
+}
+
+// Rebase history
+
+impl Storage {
+    pub async fn save_rebase_entry(&self, entry: &crate::state_calibrator::RebaseHistoryEntry) -> Result<(), String> {
+        let entry = entry.clone();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO rebase_history \
+                 (id, timestamp, previous_baseline_id, new_baseline_id, object_count, conflict_count, auto_resolved, notes) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    entry.id,
+                    entry.timestamp,
+                    entry.previous_baseline_id,
+                    entry.new_baseline_id,
+                    entry.object_count,
+                    entry.conflict_count,
+                    entry.auto_resolved,
+                    entry.notes,
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn load_rebase_history(&self) -> Result<Vec<crate::state_calibrator::RebaseHistoryEntry>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, timestamp, previous_baseline_id, new_baseline_id, object_count, conflict_count, auto_resolved, notes FROM rebase_history ORDER BY timestamp DESC")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(crate::state_calibrator::RebaseHistoryEntry {
+                        id: row.get(0)?,
+                        timestamp: row.get(1)?,
+                        previous_baseline_id: row.get(2)?,
+                        new_baseline_id: row.get(3)?,
+                        object_count: row.get(4)?,
+                        conflict_count: row.get(5)?,
+                        // SQLite stores bool as 0/1 integer
+                        auto_resolved: row.get::<_, i32>(6)? != 0,
+                        notes: row.get(7)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    pub async fn delete_rebase_entry(&self, id: &str) -> Result<(), String> {
+        let id = id.to_string();
+        self.with_conn(move |conn| {
+            conn.execute("DELETE FROM rebase_history WHERE id = ?1", [id]).map(|_| ()).map_err(|e| e.to_string())
         })
         .await
     }

@@ -1916,7 +1916,7 @@ fn is_mysql_like(db_type: DatabaseType) -> bool {
 /// - Converting CRLF to LF
 /// - Collapsing all whitespace (tabs, multiple spaces) to single spaces
 /// - Trimming each line and rejoining
-fn normalize_definition(def: &str) -> String {
+pub(crate) fn normalize_definition(def: &str) -> String {
     def.replace("\r\n", "\n")
         .split('\n')
         .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
