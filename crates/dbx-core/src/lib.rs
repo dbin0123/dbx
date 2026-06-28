@@ -54,6 +54,7 @@ pub mod sql_parser;
 pub mod sql_risk;
 pub mod sqlite_backup;
 pub mod state_calibrator;
+pub mod state_persistence;
 pub mod storage;
 pub mod table_export;
 pub mod table_import;

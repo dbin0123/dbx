@@ -169,6 +169,14 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         ON mq_token_records (connection_id, subject, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_mq_token_records_fingerprint
         ON mq_token_records (token_fingerprint)",
+    "CREATE TABLE IF NOT EXISTS state_store (
+        key TEXT PRIMARY KEY,
+        version INTEGER NOT NULL DEFAULT 1,
+        payload BLOB NOT NULL,
+        content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )",
     "CREATE TABLE IF NOT EXISTS saved_sql_folders (
         id TEXT PRIMARY KEY,
         connection_id TEXT NOT NULL,
@@ -1618,6 +1626,111 @@ impl Storage {
         self.with_conn(move |conn| {
             conn.execute("DELETE FROM tab_runtime_cache WHERE cache_key = ?1", [key])
                 .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+}
+
+// State store (generic KV for state persistence backends)
+
+impl Storage {
+    pub async fn save_state(&self, key: &str, payload: &[u8], content_type: &str) -> Result<(), String> {
+        let key = key.to_string();
+        let payload = payload.to_vec();
+        let content_type = content_type.to_string();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO state_store (key, payload, content_type) VALUES (?1, ?2, ?3) \
+                 ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, \
+                 content_type = excluded.content_type, version = version + 1, \
+                 updated_at = datetime('now')",
+                params![key, payload, content_type],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn load_state(&self, key: &str) -> Result<Option<(Vec<u8>, String)>, String> {
+        let key = key.to_string();
+        self.with_conn(move |conn| {
+            conn.query_row("SELECT payload, content_type FROM state_store WHERE key = ?1", [key], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+            })
+            .optional()
+            .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn delete_state(&self, key: &str) -> Result<(), String> {
+        let key = key.to_string();
+        self.with_conn(move |conn| {
+            conn.execute("DELETE FROM state_store WHERE key = ?1", [key]).map(|_| ()).map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn state_exists(&self, key: &str) -> Result<bool, String> {
+        let key = key.to_string();
+        self.with_conn(move |conn| {
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM state_store WHERE key = ?1", [key], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            Ok(count > 0)
+        })
+        .await
+    }
+
+    pub async fn compare_and_swap_state(
+        &self,
+        key: &str,
+        expected_version: Option<u64>,
+        payload: &[u8],
+        content_type: &str,
+    ) -> Result<bool, String> {
+        let key = key.to_string();
+        let payload = payload.to_vec();
+        let content_type = content_type.to_string();
+        self.with_conn(move |conn| {
+            let current_version: Option<u64> = conn
+                .query_row("SELECT version FROM state_store WHERE key = ?1", [&key], |row| row.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?;
+
+            match (expected_version, current_version) {
+                (None, None) => {
+                    let affected = conn
+                        .execute(
+                            "INSERT OR IGNORE INTO state_store (key, payload, content_type) VALUES (?1, ?2, ?3)",
+                            params![key, payload, content_type],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(affected > 0)
+                }
+                (Some(exp), Some(cur)) if exp == cur => {
+                    let affected = conn
+                        .execute(
+                            "UPDATE state_store SET payload = ?1, content_type = ?2, version = version + 1, \
+                             updated_at = datetime('now') WHERE key = ?3 AND version = ?4",
+                            params![payload, content_type, key, cur],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(affected > 0)
+                }
+                _ => Ok(false),
+            }
+        })
+        .await
+    }
+
+    pub async fn get_state_version(&self, key: &str) -> Result<Option<u64>, String> {
+        let key = key.to_string();
+        self.with_conn(move |conn| {
+            conn.query_row("SELECT version FROM state_store WHERE key = ?1", [key], |row| row.get(0))
+                .optional()
                 .map_err(|e| e.to_string())
         })
         .await
