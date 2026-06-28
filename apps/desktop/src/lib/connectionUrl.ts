@@ -1,4 +1,5 @@
 import type { ConnectionConfig, DatabaseType } from "@/types/database";
+import { h2JdbcUrlHasPasswordParam, h2JdbcUrlHasUserParam, parseH2JdbcUrl } from "@/lib/h2Connection";
 
 export interface ParsedConnectionUrl {
   name?: string;
@@ -418,17 +419,84 @@ function parseJdbcInformixUrl(source: string): ParsedConnectionUrl | null {
   };
 }
 
+function parseJdbcDremioUrl(source: string): ParsedConnectionUrl | null {
+  const match = /^jdbc:dremio:(?<mode>direct|zk)=(?<host>\[[^\]]+\]|[^:;]+)(?::(?<port>\d+))?(?:;(?<params>.*))?$/i.exec(source);
+  if (!match?.groups) return null;
+
+  const props = new Map<string, string>();
+  const urlParams: string[] = [];
+  for (const part of (match.groups.params || "").split(";")) {
+    if (!part) continue;
+    const [rawKey, ...rest] = part.split("=");
+    const key = rawKey.trim();
+    const value = rest.join("=");
+    const normalizedKey = key.toLowerCase();
+    if (normalizedKey === "schema" || normalizedKey === "user" || normalizedKey === "password") {
+      props.set(normalizedKey, value);
+    } else {
+      urlParams.push(part);
+    }
+  }
+
+  return {
+    dbType: "jdbc",
+    driverProfile: "dremio",
+    driverLabel: "Dremio",
+    host: match.groups.host.replace(/^\[/, "").replace(/\]$/, ""),
+    port: match.groups.port ? Number(match.groups.port) : match.groups.mode.toLowerCase() === "zk" ? 2181 : 31010,
+    username: decodeUrlPart(props.get("user") || ""),
+    password: decodeUrlPart(props.get("password") || ""),
+    database: decodeUrlPart(props.get("schema") || "") || undefined,
+    urlParams: urlParams.join(";"),
+    ssl: false,
+    connectionString: source,
+  };
+}
+
+function parseJdbcDremioArrowFlightSqlUrl(source: string): ParsedConnectionUrl | null {
+  if (!/^jdbc:arrow-flight-sql:\/\//i.test(source)) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(source.replace(/^jdbc:/i, ""));
+  } catch {
+    return null;
+  }
+
+  const urlParams = parsed.search.replace(/^\?/, "");
+
+  return {
+    dbType: "jdbc",
+    driverProfile: "dremio",
+    driverLabel: "Dremio",
+    host: parsed.hostname.replace(/^\[(.*)]$/, "$1"),
+    port: parsed.port ? Number(parsed.port) : 32010,
+    username: decodeUrlPart(parsed.username),
+    password: decodeUrlPart(parsed.password),
+    database: queryParamValue(urlParams, "schema") || undefined,
+    urlParams,
+    ssl: queryParamValue(urlParams, "useEncryption")?.toLowerCase() !== "false",
+    connectionString: source,
+  };
+}
+
 export function parseConnectionUrl(value: string, preferredProfile?: string): ParsedConnectionUrl {
   const input = value.trim();
   if (!input) {
     throw new Error("Connection URL is empty");
   }
+  const jdbcH2 = parseH2JdbcUrl(input);
+  if (jdbcH2) return jdbcH2;
   const jdbcUCanAccess = parseJdbcUCanAccessUrl(input);
   if (jdbcUCanAccess) return jdbcUCanAccess;
   const jdbcGbase8s = parseJdbcGbase8sUrl(input);
   if (jdbcGbase8s) return jdbcGbase8s;
   const jdbcInformix = parseJdbcInformixUrl(input);
   if (jdbcInformix) return jdbcInformix;
+  const jdbcDremioArrowFlightSql = parseJdbcDremioArrowFlightSqlUrl(input);
+  if (jdbcDremioArrowFlightSql) return jdbcDremioArrowFlightSql;
+  const jdbcDremio = parseJdbcDremioUrl(input);
+  if (jdbcDremio) return jdbcDremio;
   const jdbcOracle = parseJdbcOracleUrl(input);
   if (jdbcOracle) return jdbcOracle;
   const jdbcSqlServer = parseJdbcSqlServerUrl(input);
@@ -515,6 +583,20 @@ function zookeeperConnectStringFromUrl(parsed: URL, defaultPort: number): string
   return `${host}:${port}${chroot}`;
 }
 
+function applyParsedUsername(config: Omit<ConnectionConfig, "id">, parsed: ParsedConnectionUrl): string {
+  if (parsed.dbType === "h2" && config.db_type === "h2" && !h2JdbcUrlHasUserParam(parsed.connectionString)) {
+    return config.username || parsed.username;
+  }
+  return parsed.username;
+}
+
+function applyParsedPassword(config: Omit<ConnectionConfig, "id">, parsed: ParsedConnectionUrl): string {
+  if (parsed.dbType === "h2" && config.db_type === "h2" && !h2JdbcUrlHasPasswordParam(parsed.connectionString)) {
+    return config.password || parsed.password;
+  }
+  return parsed.password;
+}
+
 export function applyParsedConnectionUrl(config: Omit<ConnectionConfig, "id">, parsed: ParsedConnectionUrl): Omit<ConnectionConfig, "id"> {
   return {
     ...config,
@@ -524,8 +606,8 @@ export function applyParsedConnectionUrl(config: Omit<ConnectionConfig, "id">, p
     host: parsed.host,
     port: parsed.port,
     name: parsed.name?.trim() || config.name,
-    username: parsed.username,
-    password: parsed.password,
+    username: applyParsedUsername(config, parsed),
+    password: applyParsedPassword(config, parsed),
     database: parsed.database,
     url_params: parsed.urlParams,
     ssl: parsed.ssl,

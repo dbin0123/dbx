@@ -83,7 +83,7 @@ import {
   type ObjectBrowserSortKey,
 } from "@/lib/objectBrowserRows";
 
-type ObjectFilter = "all" | "tables" | "views" | "procedures" | "functions" | "sequences" | "packages";
+type ObjectFilter = "all" | "tables" | "views" | "materializedViews" | "procedures" | "functions" | "sequences" | "packages";
 type ObjectBrowserColumnKey = "select" | "name" | "type" | "estimatedRows" | "totalBytes" | "created_at" | "updated_at" | "comment";
 
 const props = defineProps<{
@@ -169,7 +169,8 @@ const { addTask: addExportTask } = useExportTracker();
 
 const needsSchema = computed(() => isSchemaAware(props.connection.db_type) && !connectionUsesDatabaseObjectTreeMode(props.connection));
 const tableCount = computed(() => rows.value.filter((row) => row.type === "TABLE").length);
-const viewCount = computed(() => rows.value.filter((row) => row.type === "VIEW" || row.type === "MATERIALIZED_VIEW").length);
+const viewCount = computed(() => rows.value.filter((row) => row.type === "VIEW").length);
+const materializedViewCount = computed(() => rows.value.filter((row) => row.type === "MATERIALIZED_VIEW").length);
 const procedureCount = computed(() => rows.value.filter((row) => row.type === "PROCEDURE").length);
 const functionCount = computed(() => rows.value.filter((row) => row.type === "FUNCTION").length);
 const sequenceCount = computed(() => rows.value.filter((row) => row.type === "SEQUENCE").length);
@@ -186,6 +187,7 @@ const objectFilters = computed<ObjectFilter[]>(() =>
       ["all", rows.value.length],
       ["tables", tableCount.value],
       ["views", viewCount.value],
+      ["materializedViews", materializedViewCount.value],
       ["procedures", procedureCount.value],
       ["functions", functionCount.value],
       ["sequences", sequenceCount.value],
@@ -245,7 +247,8 @@ function iconFor(row: ObjectBrowserRow) {
 }
 
 function typeLabel(type: ObjectBrowserRow["type"]) {
-  if (type === "VIEW" || type === "MATERIALIZED_VIEW") return t("objects.view");
+  if (type === "MATERIALIZED_VIEW") return t("common.materializedView");
+  if (type === "VIEW") return t("objects.view");
   if (type === "PROCEDURE") return t("objects.procedure");
   if (type === "FUNCTION") return t("objects.function");
   if (type === "SEQUENCE") return t("objects.sequence");
@@ -313,7 +316,8 @@ function resetObjectColumnWidth(key: ObjectBrowserColumnKey, width: number, even
 
 function rowMatchesObjectFilter(row: ObjectBrowserRow) {
   if (objectFilter.value === "tables") return row.type === "TABLE";
-  if (objectFilter.value === "views") return row.type === "VIEW" || row.type === "MATERIALIZED_VIEW";
+  if (objectFilter.value === "views") return row.type === "VIEW";
+  if (objectFilter.value === "materializedViews") return row.type === "MATERIALIZED_VIEW";
   if (objectFilter.value === "procedures") return row.type === "PROCEDURE";
   if (objectFilter.value === "functions") return row.type === "FUNCTION";
   if (objectFilter.value === "sequences") return row.type === "SEQUENCE";
@@ -435,13 +439,16 @@ async function openSource(row: ObjectBrowserRow) {
 async function openViewDdl(row: ObjectBrowserRow) {
   if (row.type !== "VIEW" && row.type !== "MATERIALIZED_VIEW") return;
   try {
-    const result = await api.getObjectSource(props.connection.id, props.database, row.schema || selectedSchema.value || props.database, row.name, "VIEW");
-    const ddl = await buildViewDdl({
-      databaseType: effectiveDatabaseType.value,
-      schema: row.schema || selectedSchema.value || props.database,
-      name: row.name,
-      source: result.source,
-    });
+    const schema = row.schema || selectedSchema.value || props.database;
+    const ddl =
+      row.type === "MATERIALIZED_VIEW"
+        ? await api.getTableDdl(props.connection.id, props.database, schema, row.name, "MATERIALIZED_VIEW")
+        : await buildViewDdl({
+            databaseType: effectiveDatabaseType.value,
+            schema,
+            name: row.name,
+            source: (await api.getObjectSource(props.connection.id, props.database, schema, row.name, "VIEW")).source,
+          });
     const formatted = await formatSqlForDisplay(ddl, sourceFormatDialect.value, settingsStore.editorSettings.sqlFormatter);
     const tabId = queryStore.createTab(props.connection.id, props.database, `DDL - ${row.name}`);
     queryStore.updateSql(tabId, formatted);
@@ -791,11 +798,16 @@ async function confirmBatchDropTables() {
 async function exportStructure(row: ObjectBrowserRow) {
   try {
     const schema = row.schema || selectedSchema.value || props.database;
-    const ddl = await api.getTableDdl(props.connection.id, props.database, schema, row.name, row.type === "VIEW" || row.type === "MATERIALIZED_VIEW" ? "VIEW" : undefined);
+    const ddl = await api.getTableDdl(props.connection.id, props.database, schema, row.name, tableDdlObjectType(row.type));
     await saveFileContent(ddl + "\n", `${row.name}.sql`, "SQL", "sql");
   } catch (e: any) {
     console.error("Export structure failed:", e);
   }
+}
+
+function tableDdlObjectType(type: ObjectBrowserRow["type"]): ObjectSourceKind | undefined {
+  if (type === "VIEW" || type === "MATERIALIZED_VIEW") return type;
+  return undefined;
 }
 
 async function exportDataLegacy(row: ObjectBrowserRow, format: "json" | "sql") {
@@ -1170,6 +1182,7 @@ function onSchemaChange(value: any) {
 function filterCount(filter: ObjectFilter) {
   if (filter === "tables") return tableCount.value;
   if (filter === "views") return viewCount.value;
+  if (filter === "materializedViews") return materializedViewCount.value;
   if (filter === "procedures") return procedureCount.value;
   if (filter === "functions") return functionCount.value;
   if (filter === "sequences") return sequenceCount.value;
@@ -1178,7 +1191,22 @@ function filterCount(filter: ObjectFilter) {
 }
 
 function filterLabel(filter: ObjectFilter) {
-  const key = filter === "tables" ? "objects.tables" : filter === "views" ? "objects.views" : filter === "procedures" ? "objects.procedures" : filter === "functions" ? "objects.functions" : filter === "sequences" ? "objects.sequences" : filter === "packages" ? "objects.packages" : "objects.all";
+  const key =
+    filter === "tables"
+      ? "objects.tables"
+      : filter === "views"
+        ? "objects.views"
+        : filter === "materializedViews"
+          ? "tree.materializedViews"
+          : filter === "procedures"
+            ? "objects.procedures"
+            : filter === "functions"
+              ? "objects.functions"
+              : filter === "sequences"
+                ? "objects.sequences"
+                : filter === "packages"
+                  ? "objects.packages"
+                  : "objects.all";
   return `${t(key)} ${filterCount(filter)}`;
 }
 

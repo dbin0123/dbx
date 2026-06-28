@@ -661,8 +661,13 @@ export const useConnectionStore = defineStore("connection", () => {
     return tables.map((table) => ({
       name: table.name,
       schema,
-      type: table.table_type === "VIEW" || table.table_type === "MATERIALIZED VIEW" ? "view" : "table",
+      type: isViewLikeTableType(table.table_type) ? "view" : "table",
     }));
+  }
+
+  function isViewLikeTableType(tableType: string): boolean {
+    const normalized = tableType.toUpperCase().replace(/[\s-]+/g, "_");
+    return normalized === "VIEW" || normalized === "MATERIALIZED_VIEW";
   }
 
   function sameSidebarObjectName(left: string | undefined, right: string | undefined): boolean {
@@ -3016,7 +3021,7 @@ export const useConnectionStore = defineStore("connection", () => {
               results = tables.map((table) => ({
                 name: table.name,
                 schema,
-                type: table.table_type === "VIEW" || table.table_type === "MATERIALIZED_VIEW" ? ("view" as const) : ("table" as const),
+                type: isViewLikeTableType(table.table_type) ? ("view" as const) : ("table" as const),
               }));
             } else {
               results = lookupLocalCompletionTables(connectionId, database, normalizedFilter, limit);
@@ -3029,7 +3034,7 @@ export const useConnectionStore = defineStore("connection", () => {
                 results = tables.map((table) => ({
                   name: table.name,
                   schema,
-                  type: table.table_type === "VIEW" || table.table_type === "MATERIALIZED_VIEW" ? ("view" as const) : ("table" as const),
+                  type: isViewLikeTableType(table.table_type) ? ("view" as const) : ("table" as const),
                 }));
               } catch {
                 results = [];
@@ -3050,7 +3055,7 @@ export const useConnectionStore = defineStore("connection", () => {
           completionTablesCache.value[cacheKey] = tables.map((table) => ({
             name: table.name,
             schema,
-            type: table.table_type === "VIEW" || table.table_type === "MATERIALIZED_VIEW" ? ("view" as const) : ("table" as const),
+            type: isViewLikeTableType(table.table_type) ? ("view" as const) : ("table" as const),
           }));
         } else {
           completionTablesCache.value[cacheKey] = lookupLocalCompletionTables(connectionId, database, normalizedFilter, limit);
@@ -3066,7 +3071,7 @@ export const useConnectionStore = defineStore("connection", () => {
       }
       completionTablesCache.value[cacheKey] = tables.map((table) => ({
         name: table.name,
-        type: table.table_type === "VIEW" || table.table_type === "MATERIALIZED_VIEW" ? ("view" as const) : ("table" as const),
+        type: isViewLikeTableType(table.table_type) ? ("view" as const) : ("table" as const),
       }));
       completionTablesCache.value[cacheKey] = limit ? completionTablesCache.value[cacheKey].slice(0, limit) : completionTablesCache.value[cacheKey];
       indexCompletionTables(connectionId, database, schema, completionTablesCache.value[cacheKey]);

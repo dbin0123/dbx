@@ -1044,6 +1044,10 @@ export async function loadSavedSqlLibrary(): Promise<SavedSqlLibrary> {
   return invoke("load_saved_sql_library");
 }
 
+export async function loadSavedSqlFile(id: string): Promise<SavedSqlFile | null> {
+  return invoke("load_saved_sql_file", { id });
+}
+
 export async function saveSavedSqlFolder(folder: SavedSqlFolder): Promise<SavedSqlFolder> {
   return invoke("save_saved_sql_folder", { folder });
 }
@@ -1346,6 +1350,10 @@ export interface KvListPrefixResponse {
   revision?: number | null;
 }
 
+export interface KvListPrefixOptions {
+  recursive?: boolean | null;
+}
+
 export interface KvGetResponse {
   found: boolean;
   key?: string | null;
@@ -1391,8 +1399,8 @@ export async function etcdDelete(connectionId: string, key: string): Promise<KvD
 }
 
 // --- ZooKeeper ---
-export async function zookeeperListPrefix(connectionId: string, prefix: string, limit: number, continuation?: string | null): Promise<KvListPrefixResponse> {
-  return invoke("zookeeper_list_prefix", { connectionId, prefix, limit, continuation });
+export async function zookeeperListPrefix(connectionId: string, prefix: string, limit: number, continuation?: string | null, options?: KvListPrefixOptions | null): Promise<KvListPrefixResponse> {
+  return invoke("zookeeper_list_prefix", { connectionId, prefix, limit, continuation, recursive: options?.recursive ?? null });
 }
 
 export async function zookeeperGet(connectionId: string, key: string): Promise<KvGetResponse> {

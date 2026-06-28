@@ -999,7 +999,12 @@ async fn list_tables_once(
             drop(connections);
             let mut client = client.lock().await;
             match client
-                .list_tables::<Vec<db::TableInfo>>(database, schema, agent_metadata_timeout(db_config.as_ref()))
+                .list_tables_filtered::<Vec<db::TableInfo>>(
+                    database,
+                    schema,
+                    object_types,
+                    agent_metadata_timeout(db_config.as_ref()),
+                )
                 .await
             {
                 Ok(tables) if !tables.is_empty() => {
@@ -2833,6 +2838,18 @@ pub async fn get_table_ddl_core(
             name: table.to_string(),
             source: source.source,
         }));
+    }
+    if matches!(object_type, Some(db::ObjectSourceKind::MaterializedView)) {
+        let source = get_object_source_core(
+            state,
+            connection_id,
+            database,
+            schema,
+            table,
+            db::ObjectSourceKind::MaterializedView,
+        )
+        .await?;
+        return Ok(source.source);
     }
 
     let pool_key = state.get_or_create_pool(connection_id, Some(database)).await?;

@@ -2029,9 +2029,10 @@ mod tests {
     use super::{
         contains_or_fuzzy_match, decode_sql_file_bytes, find_statement_at_cursor_for_database, fuzzy_filter_enabled,
         fuzzy_like_pattern_with_escape, fuzzy_subsequence_match, optimize_sql_file_import_statements,
-        prepare_sql_file_statement, split_sql_script, split_sql_statements_for_database,
-        starts_with_executable_sql_keyword, starts_with_executable_sql_keyword_for_database, SqlDialectProfile,
-        SqlFileStatementAction, SqlStatementSplitter,
+        prepare_sql_file_statement, split_sql_script, split_sql_statement_ranges_with_options,
+        split_sql_statements_for_database, starts_with_executable_sql_keyword,
+        starts_with_executable_sql_keyword_for_database, SqlDialectProfile, SqlFileStatementAction, SqlParsingOptions,
+        SqlStatementSplitter,
     };
 
     #[test]
@@ -2925,6 +2926,41 @@ delimiter ;";
         assert_eq!(
             find_statement_at_cursor_for_database(sql, cursor, DatabaseType::Mysql),
             "CREATE PROCEDURE `fix_collation`()\nBEGIN\n    SET @sql = CONCAT('ALTER TABLE `', 't', '` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci');\n    PREPARE stmt FROM @sql;\n    EXECUTE stmt;\nEND"
+        );
+    }
+
+    #[test]
+    fn mysql_delimiter_command_skips_empty_custom_delimiter_statement_per_issue_1988() {
+        let sql = "\
+select COUNT(1) FROM your_table;
+delimiter ;;
+select COUNT(1) FROM your_table;
+
+;;
+delimiter ;";
+
+        assert_eq!(
+            split_sql_statements_for_database(sql, DatabaseType::Mysql),
+            vec!["select COUNT(1) FROM your_table", "select COUNT(1) FROM your_table;"]
+        );
+    }
+
+    #[test]
+    fn mysql_delimiter_command_ranges_skip_empty_custom_delimiter_statement_per_issue_1988() {
+        let sql = "\
+select COUNT(1) FROM your_table;
+delimiter ;;
+select COUNT(1) FROM your_table;
+
+;;
+delimiter ;";
+
+        let ranges =
+            split_sql_statement_ranges_with_options(sql, SqlParsingOptions::for_database_type(DatabaseType::Mysql));
+
+        assert_eq!(
+            ranges.iter().map(|range| range.text.as_str()).collect::<Vec<_>>(),
+            vec!["select COUNT(1) FROM your_table", "select COUNT(1) FROM your_table;"]
         );
     }
 

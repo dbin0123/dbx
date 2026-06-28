@@ -608,8 +608,21 @@ impl AgentDriverClient {
         schema: &str,
         timeout_duration: Option<Duration>,
     ) -> Result<T, String> {
-        self.call_method_with_timeout(AgentMethod::ListTables, agent_schema_params(database, schema), timeout_duration)
-            .await
+        self.list_tables_filtered(database, schema, None, timeout_duration).await
+    }
+
+    pub async fn list_tables_filtered<T: DeserializeOwned + Send + 'static>(
+        &mut self,
+        database: &str,
+        schema: &str,
+        object_types: Option<&[String]>,
+        timeout_duration: Option<Duration>,
+    ) -> Result<T, String> {
+        let mut params = agent_schema_params(database, schema);
+        if let Some(object_types) = object_types {
+            params["object_types"] = serde_json::json!(object_types);
+        }
+        self.call_method_with_timeout(AgentMethod::ListTables, params, timeout_duration).await
     }
 
     pub async fn list_objects<T: DeserializeOwned + Send + 'static>(

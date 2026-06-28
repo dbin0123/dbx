@@ -27,6 +27,10 @@ public interface DatabaseAgent {
 
     List<TableInfo> listTables(String schema);
 
+    default List<TableInfo> listTables(String schema, List<String> objectTypes) {
+        return listTables(schema);
+    }
+
     default List<ObjectInfo> listObjects(String schema) {
         List<ObjectInfo> result = new ArrayList<>();
         for (TableInfo table : listTables(schema)) {

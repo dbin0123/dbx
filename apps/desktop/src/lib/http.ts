@@ -58,6 +58,7 @@ import type {
   RedisNodeEndpoint,
   KvValue,
   KvListPrefixResponse,
+  KvListPrefixOptions,
   KvGetResponse,
   KvPutOptions,
   KvPutResponse,
@@ -402,6 +403,10 @@ export async function listenAgentInstallProgress(handler: (progress: DriverInsta
 
 export async function loadSavedSqlLibrary(): Promise<SavedSqlLibrary> {
   return get("/api/saved-sql");
+}
+
+export async function loadSavedSqlFile(id: string): Promise<SavedSqlFile | null> {
+  return get(`/api/saved-sql/${encodeURIComponent(id)}`);
 }
 
 export async function saveSavedSqlFolder(folder: SavedSqlFolder): Promise<SavedSqlFolder> {
@@ -1602,8 +1607,8 @@ export async function etcdDelete(connectionId: string, key: string): Promise<KvD
 // ZooKeeper
 // ---------------------------------------------------------------------------
 
-export async function zookeeperListPrefix(connectionId: string, prefix: string, limit: number, continuation?: string | null): Promise<KvListPrefixResponse> {
-  return post("/api/zookeeper/list-prefix", { connectionId, prefix, limit, continuation });
+export async function zookeeperListPrefix(connectionId: string, prefix: string, limit: number, continuation?: string | null, options?: KvListPrefixOptions | null): Promise<KvListPrefixResponse> {
+  return post("/api/zookeeper/list-prefix", { connectionId, prefix, limit, continuation, recursive: options?.recursive ?? null });
 }
 
 export async function zookeeperGet(connectionId: string, key: string): Promise<KvGetResponse> {

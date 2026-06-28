@@ -109,7 +109,7 @@ public final class JsonRpcServer {
         }
         if (AgentProtocol.METHOD_LIST_TABLES.equals(method)) {
             switchCatalog(params);
-            return agent.listTables(params.get("schema").getAsString());
+            return agent.listTables(params.get("schema").getAsString(), stringListOrNull(params, "object_types"));
         }
         if (AgentProtocol.METHOD_LIST_OBJECTS.equals(method)) {
             switchCatalog(params);

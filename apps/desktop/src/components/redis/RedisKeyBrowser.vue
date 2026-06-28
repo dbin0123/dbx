@@ -126,6 +126,13 @@ const fetchAllProgressText = computed(() => {
   }
   return t("redis.fetchAllProgressUnknown", { loaded: flatKeys.value.length });
 });
+const keyCountText = computed(() => {
+  if (loading.value && flatKeys.value.length === 0) return loadingEmptyText.value;
+  if (!isSearchMode.value && lastTotalKeys.value > 0) {
+    return t("redis.loadedKeys", { loaded: flatKeys.value.length, total: lastTotalKeys.value });
+  }
+  return t("redis.keys", { count: flatKeys.value.length });
+});
 const selectedKey = computed(() => flatKeys.value.find((key) => key.key_raw === selectedKeyRaw.value) ?? null);
 const dangerDetails = computed(() => {
   if (!pendingDanger.value) return "";
@@ -268,23 +275,6 @@ async function streamValueSearch(requestId: number) {
   }
 }
 
-async function fillInitialKeyBatch(requestId: number) {
-  // Initial batch should fetch a substantial number of keys regardless of
-  // redisScanPageSize.  We scan in batches of at most 8 iterations each and
-  // keep going until we've done at least 16 total iterations (enough to cover
-  // most key spaces even with COUNT=200) or hasMore becomes false.
-  const MAX_TOTAL_ITERATIONS = 16;
-  const BATCH_ITERATIONS = 8;
-  let totalIters = 0;
-  while (requestId === searchRequestId && hasMore.value && totalIters < MAX_TOTAL_ITERATIONS) {
-    const batchSize = Math.min(BATCH_ITERATIONS, MAX_TOTAL_ITERATIONS - totalIters);
-    const result = await fetchScanBatchPage(batchSize);
-    if (requestId !== searchRequestId) return;
-    appendScanResult(result);
-    totalIters += batchSize;
-  }
-}
-
 async function loadKeys() {
   if (!redisBrowserIsActive) return;
   const requestId = ++searchRequestId;
@@ -297,18 +287,15 @@ async function loadKeys() {
   checkedKeys.value = new Set();
   expandedGroupIds.value = new Set();
   scanCursor.value = 0;
+  lastTotalKeys.value = 0;
   try {
     if (isValueSearchMode.value && !valueQuery.value) {
       hasMore.value = false;
       return;
     }
     const applied = await scanNextPage(requestId);
-    if (applied) {
-      if (isValueSearchMode.value) {
-        await streamValueSearch(requestId);
-      } else {
-        await fillInitialKeyBatch(requestId);
-      }
+    if (applied && isValueSearchMode.value) {
+      await streamValueSearch(requestId);
     }
   } finally {
     if (requestId === searchRequestId) {
@@ -440,6 +427,7 @@ function resetLoadedKeys() {
   checkedKeys.value = new Set();
   expandedGroupIds.value = new Set();
   hasMore.value = false;
+  lastTotalKeys.value = 0;
 }
 
 async function deleteKeyRaws(keys: string[]) {
@@ -986,12 +974,21 @@ defineExpose({ focusSearch });
             <Button variant="ghost" size="icon" class="h-6 w-6 shrink-0" :title="t('redis.createKey')" @click="openCreateKeyDialog">
               <Plus class="h-3 w-3" />
             </Button>
-            <span class="text-xs text-muted-foreground shrink-0 ml-1">{{ loading && flatKeys.length === 0 ? loadingEmptyText : t("redis.keys", { count: flatKeys.length }) }}</span>
+            <span class="text-xs text-muted-foreground shrink-0 ml-1">{{ keyCountText }}</span>
             <Button v-if="checkedKeys.size > 0" variant="ghost" size="sm" class="h-6 text-xs text-destructive shrink-0 ml-1" @click="requestBatchDelete"> <Trash2 class="w-3 h-3 mr-1" />{{ checkedKeys.size }} </Button>
           </div>
 
-          <div v-if="flatKeys.length === 0 && !loading" class="flex-1 flex items-center justify-center text-muted-foreground text-xs">
-            {{ t("redis.noKeys") }}
+          <div v-if="flatKeys.length === 0 && !loading" class="flex-1 flex flex-col items-center justify-center text-muted-foreground text-xs p-4 text-center">
+            <template v-if="hasMore">
+              <span class="mb-3">{{ t("redis.noKeysInScanHint") }}</span>
+              <Button variant="outline" size="sm" class="h-7 text-xs" :disabled="loadingMore" @click="loadMore">
+                <Loader2 v-if="loadingMore" class="w-3 h-3 mr-1.5 animate-spin" />
+                {{ t("redis.loadMoreKeys") }}
+              </Button>
+            </template>
+            <template v-else>
+              {{ t("redis.noKeys") }}
+            </template>
           </div>
           <div v-else-if="loading && flatKeys.length === 0" class="flex-1 flex items-center justify-center gap-2 text-muted-foreground text-xs">
             <Loader2 class="w-3.5 h-3.5 animate-spin" />
