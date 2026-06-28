@@ -273,6 +273,25 @@ pub struct DependencyGraph {
     pub topological_order: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverageReport {
+    pub level1_score: f64,
+    pub level2_score: f64,
+    pub composite_score: f64,
+    pub level1_covered: u64,
+    pub level1_total: u64,
+    pub level2_covered: u64,
+    pub level2_total: u64,
+    pub uncovered_edges: Vec<UncoveredEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UncoveredEdge {
+    pub from_table: String,
+    pub to_table: String,
+    pub level: u32,
+}
+
 impl DependencyGraph {
     pub fn build(details: &[TableSchemaDetail], tables: &[TableInfo]) -> Self {
         let table_names: HashSet<&str> =
@@ -356,6 +375,10 @@ impl DependencyGraph {
     }
 
     pub fn coverage_score(&self, diffed_tables: &[String]) -> f64 {
+        self.coverage_score_level1(diffed_tables)
+    }
+
+    pub fn coverage_score_level1(&self, diffed_tables: &[String]) -> f64 {
         if self.nodes.is_empty() {
             return 1.0;
         }
@@ -377,6 +400,132 @@ impl DependencyGraph {
         } else {
             covered_edges as f64 / total_edges as f64
         }
+    }
+
+    pub fn coverage_score_level2(&self, diffed_tables: &[String]) -> f64 {
+        if self.nodes.is_empty() {
+            return 1.0;
+        }
+        let diffed_set: HashSet<&str> = diffed_tables.iter().map(|s| s.as_str()).collect();
+
+        let mut transitive_edges = 0u64;
+        let mut covered_transitive = 0u64;
+
+        for node in self.nodes.values() {
+            let table_name = node.table_name.as_str();
+            if !diffed_set.contains(table_name) {
+                continue;
+            }
+            for indirect in &node.depends_on {
+                if let Some(inner) = self.nodes.get(indirect) {
+                    for grand in &inner.depends_on {
+                        transitive_edges += 1;
+                        if diffed_set.contains(table_name) && diffed_set.contains(grand.as_str()) {
+                            covered_transitive += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        if transitive_edges == 0 {
+            1.0
+        } else {
+            covered_transitive as f64 / transitive_edges as f64
+        }
+    }
+
+    pub fn composite_coverage_score(&self, diffed_tables: &[String]) -> CoverageReport {
+        let diffed_set: HashSet<&str> = diffed_tables.iter().map(|s| s.as_str()).collect();
+
+        let (l1_covered, l1_total) = self.count_edges(diffed_tables, &diffed_set, 1);
+        let (l2_covered, l2_total) = self.count_transitive_edges(diffed_tables, &diffed_set);
+
+        let l1_score = if l1_total == 0 { 1.0 } else { l1_covered as f64 / l1_total as f64 };
+        let l2_score = if l2_total == 0 { 1.0 } else { l2_covered as f64 / l2_total as f64 };
+
+        let composite_score = 0.6 * l1_score + 0.4 * l2_score;
+
+        let uncovered = self.collect_uncovered_edges(diffed_tables, &diffed_set);
+
+        CoverageReport {
+            level1_score: l1_score,
+            level2_score: l2_score,
+            composite_score,
+            level1_covered: l1_covered,
+            level1_total: l1_total,
+            level2_covered: l2_covered,
+            level2_total: l2_total,
+            uncovered_edges: uncovered,
+        }
+    }
+
+    fn count_edges(&self, _diffed_tables: &[String], diffed_set: &HashSet<&str>, _level: u32) -> (u64, u64) {
+        let mut covered = 0u64;
+        let mut total = 0u64;
+        for node in self.nodes.values() {
+            for dep in &node.depends_on {
+                total += 1;
+                if diffed_set.contains(node.table_name.as_str()) && diffed_set.contains(dep.as_str()) {
+                    covered += 1;
+                }
+            }
+        }
+        (covered, total)
+    }
+
+    fn count_transitive_edges(&self, _diffed_tables: &[String], diffed_set: &HashSet<&str>) -> (u64, u64) {
+        let mut covered = 0u64;
+        let mut total = 0u64;
+        for node in self.nodes.values() {
+            let table_name = node.table_name.as_str();
+            if !diffed_set.contains(table_name) {
+                continue;
+            }
+            for indirect in &node.depends_on {
+                if let Some(inner) = self.nodes.get(indirect) {
+                    for grand in &inner.depends_on {
+                        total += 1;
+                        if diffed_set.contains(table_name) && diffed_set.contains(grand.as_str()) {
+                            covered += 1;
+                        }
+                    }
+                }
+            }
+        }
+        (covered, total)
+    }
+
+    fn collect_uncovered_edges(&self, _diffed_tables: &[String], diffed_set: &HashSet<&str>) -> Vec<UncoveredEdge> {
+        let mut uncovered = Vec::new();
+        for node in self.nodes.values() {
+            for dep in &node.depends_on {
+                let both_covered = diffed_set.contains(node.table_name.as_str()) && diffed_set.contains(dep.as_str());
+                if !both_covered {
+                    uncovered.push(UncoveredEdge {
+                        from_table: node.table_name.clone(),
+                        to_table: dep.clone(),
+                        level: 1,
+                    });
+                }
+            }
+            for indirect in &node.depends_on {
+                if let Some(inner) = self.nodes.get(indirect) {
+                    for grand in &inner.depends_on {
+                        let all_covered =
+                            diffed_set.contains(node.table_name.as_str()) && diffed_set.contains(grand.as_str());
+                        if !all_covered {
+                            uncovered.push(UncoveredEdge {
+                                from_table: node.table_name.clone(),
+                                to_table: grand.clone(),
+                                level: 2,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        uncovered
     }
 }
 
@@ -3188,6 +3337,141 @@ mod tests {
 
         let score = graph.coverage_score(&["a".to_string(), "b".to_string()]);
         assert!((score - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn coverage_score_level2_transitive_edges() {
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            "a".to_string(),
+            DependencyNode { table_name: "a".to_string(), depends_on: vec!["b".to_string()], depended_by: vec![] },
+        );
+        nodes.insert(
+            "b".to_string(),
+            DependencyNode {
+                table_name: "b".to_string(),
+                depends_on: vec!["c".to_string()],
+                depended_by: vec!["a".to_string()],
+            },
+        );
+        nodes.insert(
+            "c".to_string(),
+            DependencyNode { table_name: "c".to_string(), depends_on: vec![], depended_by: vec!["b".to_string()] },
+        );
+        let graph =
+            DependencyGraph { nodes, topological_order: vec!["c".to_string(), "b".to_string(), "a".to_string()] };
+
+        let l2_score = graph.coverage_score_level2(&["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert!((l2_score - 1.0).abs() < 0.01, "full coverage should give 1.0");
+    }
+
+    #[test]
+    fn coverage_score_level2_partial() {
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            "a".to_string(),
+            DependencyNode { table_name: "a".to_string(), depends_on: vec!["b".to_string()], depended_by: vec![] },
+        );
+        nodes.insert(
+            "b".to_string(),
+            DependencyNode {
+                table_name: "b".to_string(),
+                depends_on: vec!["c".to_string()],
+                depended_by: vec!["a".to_string()],
+            },
+        );
+        nodes.insert(
+            "c".to_string(),
+            DependencyNode { table_name: "c".to_string(), depends_on: vec![], depended_by: vec!["b".to_string()] },
+        );
+        let graph =
+            DependencyGraph { nodes, topological_order: vec!["c".to_string(), "b".to_string(), "a".to_string()] };
+
+        let l2_score = graph.coverage_score_level2(&["a".to_string(), "b".to_string()]);
+        assert!((l2_score - 0.0).abs() < 0.01, "missing grandparent c means 0 transitive coverage");
+    }
+
+    #[test]
+    fn composite_coverage_full_coverage() {
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            "a".to_string(),
+            DependencyNode { table_name: "a".to_string(), depends_on: vec!["b".to_string()], depended_by: vec![] },
+        );
+        nodes.insert(
+            "b".to_string(),
+            DependencyNode {
+                table_name: "b".to_string(),
+                depends_on: vec!["c".to_string()],
+                depended_by: vec!["a".to_string()],
+            },
+        );
+        nodes.insert(
+            "c".to_string(),
+            DependencyNode { table_name: "c".to_string(), depends_on: vec![], depended_by: vec!["b".to_string()] },
+        );
+        let graph =
+            DependencyGraph { nodes, topological_order: vec!["c".to_string(), "b".to_string(), "a".to_string()] };
+
+        let report = graph.composite_coverage_score(&["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert!((report.level1_score - 1.0).abs() < 0.01);
+        assert!((report.level2_score - 1.0).abs() < 0.01);
+        assert!((report.composite_score - 1.0).abs() < 0.01);
+        assert_eq!(report.level1_covered, 2);
+        assert_eq!(report.level1_total, 2);
+        assert_eq!(report.level2_covered, 1);
+        assert_eq!(report.level2_total, 1);
+    }
+
+    #[test]
+    fn composite_coverage_partial() {
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            "a".to_string(),
+            DependencyNode { table_name: "a".to_string(), depends_on: vec!["b".to_string()], depended_by: vec![] },
+        );
+        nodes.insert(
+            "b".to_string(),
+            DependencyNode {
+                table_name: "b".to_string(),
+                depends_on: vec!["c".to_string()],
+                depended_by: vec!["a".to_string()],
+            },
+        );
+        nodes.insert(
+            "c".to_string(),
+            DependencyNode { table_name: "c".to_string(), depends_on: vec![], depended_by: vec!["b".to_string()] },
+        );
+        let graph =
+            DependencyGraph { nodes, topological_order: vec!["c".to_string(), "b".to_string(), "a".to_string()] };
+
+        let report = graph.composite_coverage_score(&["a".to_string(), "b".to_string()]);
+        assert!((report.level1_score - 0.5).abs() < 0.01);
+        assert!((report.level2_score - 0.0).abs() < 0.01);
+        assert!((report.composite_score - 0.3).abs() < 0.01, "0.6*0.5 + 0.4*0.0 = 0.3");
+        assert_eq!(report.level1_covered, 1);
+        assert_eq!(report.level1_total, 2);
+        assert!(!report.uncovered_edges.is_empty());
+    }
+
+    #[test]
+    fn composite_coverage_no_dependencies() {
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            "t1".to_string(),
+            DependencyNode { table_name: "t1".to_string(), depends_on: vec![], depended_by: vec![] },
+        );
+        nodes.insert(
+            "t2".to_string(),
+            DependencyNode { table_name: "t2".to_string(), depends_on: vec![], depended_by: vec![] },
+        );
+        let graph = DependencyGraph { nodes, topological_order: vec!["t1".to_string(), "t2".to_string()] };
+
+        let report = graph.composite_coverage_score(&["t1".to_string()]);
+        assert!((report.level1_score - 1.0).abs() < 0.01);
+        assert!((report.level2_score - 1.0).abs() < 0.01);
+        assert!((report.composite_score - 1.0).abs() < 0.01);
+        assert!(report.uncovered_edges.is_empty());
     }
 
     // ========================================================================

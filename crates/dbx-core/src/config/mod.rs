@@ -5,7 +5,9 @@ pub mod trace;
 
 pub use expression::{parse_expression, resolve_all_expressions_in_value, resolve_expression, Expression};
 pub use layer::{ConfigLayer, ConfigTree, LayerConfig, MergedConfig};
-pub use tag::{BusinessTag, TagInheritanceWhitelist, TagPolicy, TagValidationResult, TagValidator};
+pub use tag::{
+    BlockStats, BusinessTag, TagGuard, TagInheritanceWhitelist, TagPolicy, TagValidationResult, TagValidator,
+};
 pub use trace::{TraceEntry, TraceRingBuffer, TraceStats};
 
 #[cfg(test)]

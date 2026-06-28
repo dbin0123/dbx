@@ -1240,6 +1240,127 @@ fn should_degrade(source_row_count: u64, target_row_count: u64, threshold: &Degr
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DegradationEvent {
+    pub source_row_count: u64,
+    pub target_row_count: u64,
+    pub decided_level: String,
+    pub sample_rate: f64,
+    pub confidence: f64,
+    pub auto_decision: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DegradationChain {
+    pub threshold: DegradationThreshold,
+    pub events: Vec<DegradationEvent>,
+    pub auto_upgrade_enabled: bool,
+    pub auto_downgrade_enabled: bool,
+}
+
+impl DegradationChain {
+    pub fn new(threshold: DegradationThreshold) -> Self {
+        Self { threshold, events: Vec::new(), auto_upgrade_enabled: true, auto_downgrade_enabled: true }
+    }
+
+    pub fn decide(
+        &mut self,
+        source_row_count: u64,
+        target_row_count: u64,
+        metrics: Option<&crate::risk_metrics::DegradationMetrics>,
+    ) -> DegradationLevel {
+        let max_count = source_row_count.max(target_row_count);
+        let new_level = if max_count <= self.threshold.full_compare_max_rows {
+            DegradationLevel::Full
+        } else if max_count <= self.threshold.sample_max_rows {
+            DegradationLevel::Sample
+        } else {
+            DegradationLevel::SkipWithRisk
+        };
+
+        let (sample_rate, confidence) = match &new_level {
+            DegradationLevel::Full => (1.0, 1.0),
+            DegradationLevel::Sample => {
+                let rate = self.threshold.sample_size as f64 / max_count as f64;
+                let conf = 0.95 * rate;
+                (rate, conf.max(0.5).min(0.95))
+            }
+            DegradationLevel::SkipWithRisk => (0.0, 0.0),
+        };
+
+        if self.auto_upgrade_enabled {
+            if let Some(last) = self.events.last() {
+                let auto_upgrade = match (last.decided_level.as_str(), &new_level) {
+                    ("skip_with_risk", DegradationLevel::Sample) => true,
+                    ("sample", DegradationLevel::Full) => true,
+                    _ => false,
+                };
+                if auto_upgrade {
+                    if let Some(m) = metrics {
+                        m.record_auto_upgrade();
+                    }
+                }
+            }
+        }
+
+        if self.auto_downgrade_enabled {
+            if let Some(last) = self.events.last() {
+                let auto_downgrade = match (last.decided_level.as_str(), &new_level) {
+                    ("full", DegradationLevel::Sample | DegradationLevel::SkipWithRisk) => true,
+                    ("sample", DegradationLevel::SkipWithRisk) => true,
+                    _ => false,
+                };
+                if auto_downgrade {
+                    if let Some(m) = metrics {
+                        m.record_auto_downgrade();
+                    }
+                }
+            }
+        }
+
+        if let Some(m) = metrics {
+            m.record_degradation(&new_level.to_string(), sample_rate, confidence);
+        }
+
+        let auto_decision = if new_level == DegradationLevel::Full {
+            "auto".to_string()
+        } else if new_level == DegradationLevel::Sample {
+            "auto_degraded".to_string()
+        } else {
+            "auto_skipped".to_string()
+        };
+
+        self.events.push(DegradationEvent {
+            source_row_count,
+            target_row_count,
+            decided_level: new_level.to_string(),
+            sample_rate,
+            confidence,
+            auto_decision,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+
+        new_level
+    }
+
+    pub fn event_count(&self) -> usize {
+        self.events.len()
+    }
+
+    pub fn last_event(&self) -> Option<&DegradationEvent> {
+        self.events.last()
+    }
+}
+
+impl Default for DegradationChain {
+    fn default() -> Self {
+        Self::new(DegradationThreshold::default())
+    }
+}
+
 fn build_sampling_select_sql(
     database_type: DatabaseType,
     schema: &str,
@@ -1996,5 +2117,81 @@ mod tests {
             ),
             "SELECT \"ID\", \"NAME\" FROM \"APP\".\"EVENTS\" ORDER BY \"ID\" ASC FETCH FIRST 25 ROWS ONLY"
         );
+    }
+
+    #[test]
+    fn degradation_chain_full_for_small_table() {
+        let threshold = DegradationThreshold::default();
+        let mut chain = DegradationChain::new(threshold);
+        let level = chain.decide(1000, 1000, None);
+        assert_eq!(level, DegradationLevel::Full);
+        assert_eq!(chain.event_count(), 1);
+        let last = chain.last_event().unwrap();
+        assert_eq!(last.decided_level, "full");
+        assert!((last.sample_rate - 1.0).abs() < f64::EPSILON);
+        assert!((last.confidence - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn degradation_chain_sample_for_large_table() {
+        let threshold = DegradationThreshold::default();
+        let mut chain = DegradationChain::new(threshold);
+        let level = chain.decide(500_000, 500_000, None);
+        assert_eq!(level, DegradationLevel::Sample);
+        let last = chain.last_event().unwrap();
+        assert_eq!(last.decided_level, "sample");
+        assert!(last.sample_rate < 1.0);
+        assert!(last.confidence >= 0.5);
+    }
+
+    #[test]
+    fn degradation_chain_skip_for_huge_table() {
+        let threshold = DegradationThreshold::default();
+        let mut chain = DegradationChain::new(threshold);
+        let level = chain.decide(20_000_000, 20_000_000, None);
+        assert_eq!(level, DegradationLevel::SkipWithRisk);
+        let last = chain.last_event().unwrap();
+        assert_eq!(last.decided_level, "skip_with_risk");
+        assert!((last.sample_rate - 0.0).abs() < f64::EPSILON);
+        assert!((last.confidence - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn degradation_chain_records_multiple_events() {
+        let threshold = DegradationThreshold::default();
+        let mut chain = DegradationChain::new(threshold);
+        chain.decide(1000, 1000, None);
+        chain.decide(500_000, 500_000, None);
+        chain.decide(20_000_000, 20_000_000, None);
+        assert_eq!(chain.event_count(), 3);
+    }
+
+    #[test]
+    fn degradation_chain_with_metrics_integration() {
+        let threshold = DegradationThreshold::default();
+        let mut chain = DegradationChain::new(threshold);
+        let metrics = crate::risk_metrics::DegradationMetrics::new();
+
+        chain.decide(1000, 1000, Some(&metrics));
+        chain.decide(500_000, 500_000, Some(&metrics));
+        chain.decide(20_000_000, 20_000_000, Some(&metrics));
+
+        let snapshot = metrics.snapshot();
+        let total = snapshot.iter().find(|e| e.name == "dbx_degradation_total").unwrap();
+        assert_eq!(total.value, crate::risk_metrics::MetricValue::Counter(3));
+    }
+
+    #[test]
+    fn degradation_chain_auto_chain_detection() {
+        let threshold = DegradationThreshold::default();
+        let mut chain = DegradationChain::new(threshold);
+        let metrics = crate::risk_metrics::DegradationMetrics::new();
+
+        chain.decide(20_000_000, 20_000_000, Some(&metrics));
+        chain.decide(500_000, 500_000, Some(&metrics));
+
+        let snapshot = metrics.snapshot();
+        let up = snapshot.iter().find(|e| e.name == "dbx_auto_upgrade_total").unwrap();
+        assert_eq!(up.value, crate::risk_metrics::MetricValue::Counter(1));
     }
 }

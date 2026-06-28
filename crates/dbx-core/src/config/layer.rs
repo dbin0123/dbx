@@ -128,6 +128,27 @@ impl ConfigTree {
         Ok(MergedConfig { values, tags, provenance })
     }
 
+    pub fn merge_with_guard(&self, tag_guard: &crate::config::tag::TagGuard) -> Result<MergedConfig, String> {
+        let merged = self.merge()?;
+        let tags: Vec<crate::config::tag::BusinessTag> = merged
+            .tags
+            .iter()
+            .map(|(k, v)| crate::config::tag::BusinessTag {
+                key: k.clone(),
+                value: v.clone(),
+                description: String::new(),
+                immutable: false,
+            })
+            .collect();
+        let base_tags: HashMap<String, String> = HashMap::new();
+        let result = tag_guard.validate_and_collect(&tags, &base_tags);
+        if tag_guard.validator.has_blocking_violations(&result) {
+            let (blocked, violations, _total) = tag_guard.blocking_summary();
+            return Err(format!("Tag guard blocked config merge: {blocked} tags blocked, {violations} violations"));
+        }
+        Ok(merged)
+    }
+
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
         let mut seen_keys: HashMap<&str, usize> = HashMap::new();

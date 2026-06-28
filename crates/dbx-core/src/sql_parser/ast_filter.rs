@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use sqlparser::ast::Statement;
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -19,6 +20,126 @@ pub trait AstFilter {
 pub struct FilterResult {
     pub allowed: Vec<String>,
     pub denied: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxResult {
+    pub allowed: Vec<String>,
+    pub denied: Vec<String>,
+    pub nesting_violations: Vec<String>,
+    pub is_pure: bool,
+    pub stats: SandboxStats,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxMode {
+    Permissive,
+    Strict,
+    Isolation,
+}
+
+impl Default for SandboxMode {
+    fn default() -> Self {
+        SandboxMode::Strict
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxStats {
+    pub total_statements: usize,
+    pub allowed_count: usize,
+    pub denied_count: usize,
+    pub mode: String,
+    pub max_nesting_depth: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AstSandbox {
+    pub mode: SandboxMode,
+    pub max_nesting_depth: usize,
+}
+
+impl Default for AstSandbox {
+    fn default() -> Self {
+        Self { mode: SandboxMode::Strict, max_nesting_depth: 10 }
+    }
+}
+
+impl AstSandbox {
+    pub fn new(mode: SandboxMode, max_nesting_depth: usize) -> Self {
+        Self { mode, max_nesting_depth }
+    }
+
+    pub fn filter_sql(&self, sql: &str, dialect_str: &str) -> Result<SandboxResult, String> {
+        let base = AstTransmitFilter::filter_sql(sql, dialect_str)?;
+
+        let stats = SandboxStats {
+            total_statements: base.allowed.len() + base.denied.len(),
+            allowed_count: base.allowed.len(),
+            denied_count: base.denied.len(),
+            mode: match self.mode {
+                SandboxMode::Permissive => "permissive".to_string(),
+                SandboxMode::Strict => "strict".to_string(),
+                SandboxMode::Isolation => "isolation".to_string(),
+            },
+            max_nesting_depth: self.max_nesting_depth,
+        };
+
+        let (further_blocked, nest_violations) = match self.mode {
+            SandboxMode::Permissive => (Vec::new(), Vec::new()),
+            SandboxMode::Strict | SandboxMode::Isolation => self.check_nesting(&base.allowed, self.max_nesting_depth),
+        };
+
+        let is_pure = match self.mode {
+            SandboxMode::Permissive => base.denied.is_empty(),
+            SandboxMode::Strict => base.denied.is_empty() && further_blocked.is_empty(),
+            SandboxMode::Isolation => {
+                base.denied.is_empty() && further_blocked.is_empty() && nest_violations.is_empty()
+            }
+        };
+
+        Ok(SandboxResult {
+            allowed: base.allowed,
+            denied: base.denied.iter().chain(further_blocked.iter()).cloned().collect(),
+            nesting_violations: nest_violations,
+            is_pure,
+            stats,
+        })
+    }
+
+    fn check_nesting(&self, statements: &[String], max_depth: usize) -> (Vec<String>, Vec<String>) {
+        let mut further_blocked = Vec::new();
+        let mut violations = Vec::new();
+        for stmt in statements {
+            let depth = self.count_nesting(stmt);
+            if depth > max_depth {
+                further_blocked.push(stmt.clone());
+                violations.push(format!("Nesting depth {depth} exceeds max {max_depth}: {stmt}"));
+            }
+        }
+        (further_blocked, violations)
+    }
+
+    fn count_nesting(&self, stmt: &str) -> usize {
+        let mut max_depth = 0usize;
+        let mut current = 0usize;
+        for ch in stmt.chars() {
+            match ch {
+                '(' => {
+                    current += 1;
+                    max_depth = max_depth.max(current);
+                }
+                ')' => {
+                    if current > 0 {
+                        current -= 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        max_depth
+    }
 }
 
 pub struct AstTransmitFilter;
@@ -264,5 +385,73 @@ mod tests {
         let filtered = AstTransmitFilter::filter_diff_preparation_options(opts, "mysql");
         assert_eq!(filtered.source_functions.len(), 1);
         assert_eq!(filtered.source_functions[0].name, "t1");
+    }
+
+    #[test]
+    fn sandbox_strict_mode_blocks_dangerous_statement() {
+        let sandbox = AstSandbox::new(SandboxMode::Strict, 10);
+        let result = sandbox
+            .filter_sql(
+                "CREATE TABLE t (id INT); CREATE FUNCTION f() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE SQL",
+                "postgres",
+            )
+            .unwrap();
+        assert_eq!(result.allowed.len(), 1);
+        assert!(!result.denied.is_empty());
+        assert!(!result.is_pure);
+    }
+
+    #[test]
+    fn sandbox_isolation_mode_checks_nesting() {
+        let sandbox = AstSandbox::new(SandboxMode::Isolation, 4);
+        let result = sandbox
+            .filter_sql("CREATE TABLE t (a INT, b INT, c INT, d INT, e INT DEFAULT (((1))))", "generic")
+            .unwrap();
+        assert!(result.nesting_violations.is_empty(), "Should pass with nesting depth 4");
+        assert!(result.is_pure);
+    }
+
+    #[test]
+    fn sandbox_isolation_blocks_deeply_nested() {
+        let sandbox = AstSandbox::new(SandboxMode::Isolation, 1);
+        let result = sandbox.filter_sql("CREATE TABLE t (a INT DEFAULT ((((1)))))", "generic").unwrap();
+        assert!(!result.nesting_violations.is_empty());
+        assert!(!result.is_pure);
+    }
+
+    #[test]
+    fn sandbox_permissive_accepts_everything_allowed() {
+        let sandbox = AstSandbox::new(SandboxMode::Permissive, 10);
+        let result = sandbox
+            .filter_sql("CREATE TABLE t (id INT); CREATE FUNCTION f() RETURNS INT LANGUAGE SQL RETURN 1", "generic")
+            .unwrap();
+        assert_eq!(result.allowed.len(), 1, "Permissive allows CREATE TABLE but blocks CREATE FUNCTION");
+        assert!(!result.denied.is_empty(), "Permissive denies function but not table");
+        assert!(!result.is_pure, "Permissive is not pure when function is denied by base filter");
+    }
+
+    #[test]
+    fn sandbox_permissive_no_nesting_check() {
+        let sandbox = AstSandbox::new(SandboxMode::Permissive, 0);
+        let result = sandbox.filter_sql("CREATE TABLE t (a INT DEFAULT ((((1)))))", "generic").unwrap();
+        assert!(!result.allowed.is_empty());
+        assert!(result.nesting_violations.is_empty());
+        assert!(result.is_pure);
+    }
+
+    #[test]
+    fn sandbox_stats_correct() {
+        let sandbox = AstSandbox::new(SandboxMode::Strict, 10);
+        let result = sandbox
+            .filter_sql(
+                "CREATE TABLE t1 (id INT); CREATE TABLE t2 (id INT); DROP TABLE t3; SELECT * FROM t1",
+                "generic",
+            )
+            .unwrap();
+        assert_eq!(result.stats.total_statements, 4);
+        assert_eq!(result.stats.allowed_count, 3);
+        assert_eq!(result.stats.denied_count, 1);
+        assert_eq!(result.stats.mode, "strict");
+        assert_eq!(result.stats.max_nesting_depth, 10);
     }
 }

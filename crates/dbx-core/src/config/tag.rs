@@ -133,6 +133,67 @@ impl TagValidator {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockStats {
+    pub total_tags: usize,
+    pub blocked_count: usize,
+    pub violation_count: usize,
+    pub by_key: HashMap<String, usize>,
+    pub strict_mode: bool,
+}
+
+impl BlockStats {
+    pub fn from_validation(result: &TagValidationResult, strict_mode: bool) -> Self {
+        let mut by_key = HashMap::new();
+        for tag in &result.blocked {
+            *by_key.entry(tag.key.clone()).or_insert(0) += 1;
+        }
+        Self {
+            total_tags: result.allowed.len() + result.blocked.len(),
+            blocked_count: result.blocked.len(),
+            violation_count: result.violations.len(),
+            by_key,
+            strict_mode,
+        }
+    }
+}
+
+pub struct TagGuard {
+    pub validator: TagValidator,
+    pub stats: std::sync::Mutex<Vec<BlockStats>>,
+}
+
+impl TagGuard {
+    pub fn new(validator: TagValidator) -> Self {
+        Self { validator, stats: std::sync::Mutex::new(Vec::new()) }
+    }
+
+    pub fn validate_and_collect(
+        &self,
+        tags: &[BusinessTag],
+        base_tags: &HashMap<String, String>,
+    ) -> TagValidationResult {
+        let result = self.validator.validate_tags(tags, base_tags);
+        let stats = BlockStats::from_validation(&result, self.validator.strict_mode);
+        if let Ok(mut guard) = self.stats.lock() {
+            guard.push(stats);
+        }
+        result
+    }
+
+    pub fn accumulated_stats(&self) -> Vec<BlockStats> {
+        self.stats.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    pub fn blocking_summary(&self) -> (usize, usize, usize) {
+        let stats = self.accumulated_stats();
+        let total_blocked = stats.iter().map(|s| s.blocked_count).sum();
+        let total_violations = stats.iter().map(|s| s.violation_count).sum();
+        let total_tags = stats.iter().map(|s| s.total_tags).sum();
+        (total_blocked, total_violations, total_tags)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +325,127 @@ mod tests {
             immutable: true,
         };
         assert!(tag.immutable);
+    }
+
+    #[test]
+    fn block_stats_from_validation() {
+        let whitelist = TagInheritanceWhitelist::new(vec!["allowed".to_string()], TagPolicy::Block);
+        let validator = TagValidator::new(whitelist, false);
+
+        let tags = vec![
+            BusinessTag {
+                key: "allowed".to_string(),
+                value: "yes".to_string(),
+                description: String::new(),
+                immutable: false,
+            },
+            BusinessTag {
+                key: "blocked1".to_string(),
+                value: "no".to_string(),
+                description: String::new(),
+                immutable: false,
+            },
+            BusinessTag {
+                key: "blocked2".to_string(),
+                value: "no".to_string(),
+                description: String::new(),
+                immutable: false,
+            },
+        ];
+        let base = HashMap::new();
+        let result = validator.validate_tags(&tags, &base);
+        let stats = BlockStats::from_validation(&result, false);
+        assert_eq!(stats.total_tags, 3);
+        assert_eq!(stats.blocked_count, 2);
+        assert_eq!(stats.violation_count, 2);
+        assert_eq!(stats.by_key.get("blocked1"), Some(&1usize));
+        assert_eq!(stats.by_key.get("blocked2"), Some(&1usize));
+        assert!(!stats.strict_mode);
+    }
+
+    #[test]
+    fn block_stats_with_strict_mode_violations() {
+        let whitelist = TagInheritanceWhitelist::new(vec!["env".to_string()], TagPolicy::Strict);
+        let validator = TagValidator::new(whitelist, true);
+
+        let tags = vec![BusinessTag {
+            key: "env".to_string(),
+            value: "dev".to_string(),
+            description: String::new(),
+            immutable: false,
+        }];
+        let mut base = HashMap::new();
+        base.insert("env".to_string(), "prod".to_string());
+        let result = validator.validate_tags(&tags, &base);
+        let stats = BlockStats::from_validation(&result, true);
+        assert_eq!(stats.blocked_count, 0);
+        assert_eq!(stats.violation_count, 1);
+        assert!(stats.strict_mode);
+    }
+
+    #[test]
+    fn tag_guard_collects_multiple_validations() {
+        let whitelist = TagInheritanceWhitelist::new(vec!["env".to_string()], TagPolicy::Strict);
+        let validator = TagValidator::new(whitelist, true);
+        let guard = TagGuard::new(validator);
+
+        let tags1 = vec![BusinessTag {
+            key: "env".to_string(),
+            value: "staging".to_string(),
+            description: String::new(),
+            immutable: false,
+        }];
+        let mut base1 = HashMap::new();
+        base1.insert("env".to_string(), "prod".to_string());
+
+        let tags2 = vec![BusinessTag {
+            key: "blocked".to_string(),
+            value: "x".to_string(),
+            description: String::new(),
+            immutable: false,
+        }];
+
+        guard.validate_and_collect(&tags1, &base1);
+        guard.validate_and_collect(&tags2, &HashMap::new());
+
+        let stats = guard.accumulated_stats();
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].violation_count, 1);
+        assert_eq!(stats[1].blocked_count, 1);
+
+        let (blocked, violations, total) = guard.blocking_summary();
+        assert_eq!(blocked, 1);
+        assert_eq!(violations, 2);
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn tag_guard_empty_stats() {
+        let whitelist = TagInheritanceWhitelist::new(vec![], TagPolicy::Allow);
+        let validator = TagValidator::new(whitelist, false);
+        let guard = TagGuard::new(validator);
+
+        assert!(guard.accumulated_stats().is_empty());
+        let (blocked, violations, total) = guard.blocking_summary();
+        assert_eq!(blocked, 0);
+        assert_eq!(violations, 0);
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn tag_guard_blocking_with_strict_mode() {
+        let whitelist = TagInheritanceWhitelist::new(vec![], TagPolicy::Strict);
+        let validator = TagValidator::new(whitelist, true);
+        let guard = TagGuard::new(validator);
+
+        let tags = vec![BusinessTag {
+            key: "env".to_string(),
+            value: "dev".to_string(),
+            description: String::new(),
+            immutable: false,
+        }];
+        let result = guard.validate_and_collect(&tags, &HashMap::new());
+        assert_eq!(result.blocked.len(), 1);
+        assert!(guard.validator.has_blocking_violations(&result));
     }
 }
