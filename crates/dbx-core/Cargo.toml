@@ -55,6 +55,7 @@ bytes = "1"
 font-kit = "0.14.3"
 zip = { version = "4", default-features = false, features = ["deflate"] }
 sysinfo = { version = "0.32", features = ["system"] }
+minijinja = "2"
 
 [dev-dependencies]
 insta = { version = "1", features = ["json", "glob"] }
