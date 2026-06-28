@@ -11,7 +11,7 @@ import { useToast } from "@/composables/useToast";
 import { databaseOptionsForConnection } from "@/composables/useDatabaseOptions";
 import { isSchemaAware } from "@/lib/databaseCapabilities";
 import { copyToClipboard } from "@/lib/clipboard";
-import type { DataCompareCellValue, DataCompareModifiedRow, DataCompareResult, DataCompareRow, DataCompareSyncPlan, DataCompareSyncPlanTableOptions } from "@/lib/dataCompare";
+import type { DataCompareCellValue, DataCompareModifiedRow, DataCompareResult, DataCompareRow, DataCompareSyncPlan, DataCompareSyncPlanTableOptions, DegradationThreshold, SamplingStrategy } from "@/lib/dataCompare";
 import type { ColumnInfo, DatabaseType } from "@/types/database";
 import * as api from "@/lib/api";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
@@ -112,6 +112,13 @@ const syncErrors = ref<{ sql: string; error: string }[]>([]);
 const showAdded = ref(true);
 const showRemoved = ref(true);
 const showModified = ref(true);
+
+// Sampling & degradation options
+const showDataCompareAdvanced = ref(false);
+const degradationLevel = ref("full");
+const samplingStrategy = ref("random");
+const maxRowsThreshold = ref(100000);
+const confidenceThreshold = ref(0.95);
 
 let syncPlanRequestId = 0;
 
@@ -256,6 +263,24 @@ function clearResult() {
   executedCount.value = 0;
   executeTotal.value = 0;
   syncPlanRequestId++;
+}
+
+function buildAdvancedCompareOptions(): { degradationThreshold?: DegradationThreshold; samplingStrategy?: SamplingStrategy; enableChecksum?: boolean } {
+  if (degradationLevel.value === "full") {
+    return { enableChecksum: true };
+  }
+  const threshold: DegradationThreshold = {
+    fullCompareMaxRows: maxRowsThreshold.value,
+    sampleMaxRows: maxRowsThreshold.value * 10,
+    sampleSize: 10000,
+    extremeSampleCount: 500,
+  };
+  const sampling: SamplingStrategy = samplingStrategy.value === "hybrid" ? "Hybrid" : samplingStrategy.value === "firstRows" ? "ExtremeValues" : "Random";
+  return {
+    degradationThreshold: threshold,
+    samplingStrategy: sampling,
+    enableChecksum: true,
+  };
 }
 
 function swapSourceTarget() {
@@ -574,6 +599,7 @@ async function startCompare() {
             targetSchema: targetSchema.value,
             targetTable: task.targetTable,
             keyColumns: resolvedKeys,
+            ...buildAdvancedCompareOptions(),
           });
           results.push({
             sourceTable: task.sourceTable,
@@ -630,6 +656,7 @@ async function startCompare() {
           targetTable: task.targetTable,
           columns,
           keyColumns: resolvedKeys,
+          ...buildAdvancedCompareOptions(),
         });
 
         const added = preparation.result.added.length;
@@ -1024,6 +1051,56 @@ watch(
           <div class="text-[11px] text-muted-foreground">
             {{ t("dataCompare.keyColumnsAutoHint") }}
           </div>
+        </div>
+
+        <!-- Advanced compare options -->
+        <div class="rounded-lg border p-3 space-y-2">
+          <button class="flex items-center gap-2 text-xs font-medium w-full text-left" @click="showDataCompareAdvanced = !showDataCompareAdvanced">
+            <ChevronDown v-if="showDataCompareAdvanced" class="w-3 h-3" />
+            <ChevronRight v-else class="w-3 h-3" />
+            {{ t("diff.options") }}
+          </button>
+          <template v-if="showDataCompareAdvanced">
+            <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+              <div class="space-y-1">
+                <Label class="text-[11px] text-muted-foreground">{{ t("dataCompare.degradationLevel") }}</Label>
+                <Select v-model="degradationLevel">
+                  <SelectTrigger class="h-7 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="full">{{ t("dataCompare.degradationLevelFull") }}</SelectItem>
+                    <SelectItem value="sample">{{ t("dataCompare.degradationLevelSample") }}</SelectItem>
+                    <SelectItem value="skipWithRisk">{{ t("dataCompare.degradationLevelSkipWithRisk") }}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div class="space-y-1">
+                <Label class="text-[11px] text-muted-foreground">{{ t("dataCompare.samplingStrategy") }}</Label>
+                <Select v-model="samplingStrategy">
+                  <SelectTrigger class="h-7 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="random">{{ t("dataCompare.samplingStrategyRandom") }}</SelectItem>
+                    <SelectItem value="firstRows">{{ t("dataCompare.samplingStrategyFirstRows") }}</SelectItem>
+                    <SelectItem value="hybrid">{{ t("dataCompare.samplingStrategyHybrid") }}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div class="space-y-1">
+                <Label class="text-[11px] text-muted-foreground">{{ t("dataCompare.maxRowsThreshold") }}</Label>
+                <Input v-model.number="maxRowsThreshold" type="number" class="h-7 text-xs" min="1000" step="1000" />
+              </div>
+              <div class="space-y-1">
+                <Label class="text-[11px] text-muted-foreground">{{ t("dataCompare.confidenceThreshold") }}</Label>
+                <div class="flex items-center gap-2">
+                  <input type="range" min="0.5" max="1" step="0.05" v-model.number="confidenceThreshold" class="flex-1 h-1.5 accent-primary cursor-pointer" />
+                  <span class="text-xs font-mono w-10 text-right">{{ confidenceThreshold.toFixed(2) }}</span>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
 
         <div v-if="hasResults" class="space-y-3">

@@ -150,7 +150,7 @@ fn generate_schema_sync_sql_output_invariant() {
         sync_sql: None,
     }];
 
-    let sql = generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Postgres, None, false);
+    let sql = generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Postgres, None, false, None);
     assert!(sql.contains("CREATE TABLE"), "SQL should contain CREATE TABLE");
     assert!(sql.contains("users"), "SQL should contain table name");
 }

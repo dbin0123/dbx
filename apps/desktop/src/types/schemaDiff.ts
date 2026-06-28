@@ -20,6 +20,13 @@ export interface SchemaDiffCompareOptions {
   tableIncludePattern: string;
   tableExcludePattern: string;
   tableFilterPriority: SchemaDiffTableFilterPriority;
+  detectRenames: boolean;
+  renameThreshold: number;
+  enableRollback: boolean;
+  batchPatterns: string;
+  sourceDialect: string;
+  targetDialect: string;
+  compatibilityThreshold: number;
 }
 
 export interface SchemaDiffConfig {
@@ -69,6 +76,13 @@ export const DEFAULT_POSTGRES_OPTIONS: SchemaDiffCompareOptions = {
   tableIncludePattern: "",
   tableExcludePattern: "",
   tableFilterPriority: "exclude",
+  detectRenames: false,
+  renameThreshold: 0.5,
+  enableRollback: false,
+  batchPatterns: "",
+  sourceDialect: "",
+  targetDialect: "",
+  compatibilityThreshold: 0.5,
 };
 
 export const DEFAULT_MYSQL_OPTIONS: SchemaDiffCompareOptions = {
@@ -91,6 +105,13 @@ export const DEFAULT_MYSQL_OPTIONS: SchemaDiffCompareOptions = {
   tableIncludePattern: "",
   tableExcludePattern: "",
   tableFilterPriority: "exclude",
+  detectRenames: false,
+  renameThreshold: 0.5,
+  enableRollback: false,
+  batchPatterns: "",
+  sourceDialect: "",
+  targetDialect: "",
+  compatibilityThreshold: 0.5,
 };
 
 export function getDefaultOptionsForDbType(dbType: string): SchemaDiffCompareOptions {

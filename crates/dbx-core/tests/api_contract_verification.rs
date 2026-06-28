@@ -67,8 +67,17 @@ fn prepare_schema_diff_function_signature() {
 /// Verify generate_schema_sync_sql accepts all arg types
 #[test]
 fn generate_schema_sync_sql_function_signature() {
-    let _sql =
-        dbx_core::schema_diff::generate_schema_sync_sql(&[], &[], &[], &[], &[], DatabaseType::Postgres, None, false);
+    let _sql = dbx_core::schema_diff::generate_schema_sync_sql(
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        DatabaseType::Postgres,
+        None,
+        false,
+        None,
+    );
 }
 
 /// Verify classify_sql_risk function signature

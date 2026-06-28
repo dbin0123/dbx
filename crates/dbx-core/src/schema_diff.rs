@@ -721,7 +721,7 @@ pub fn diff_columns_with_compatibility(
     let matrix = TypeMappingMatrix::for_dialects(source_dialect, target_dialect);
     let engine = DefaultTypeInferenceEngine;
 
-    let basic_diffs = diff_columns_with_options(source, target, ignore_comments, compare_column_order);
+    let basic_diffs = diff_columns_with_options(source, target, ignore_comments, compare_column_order, false, 0.5);
 
     let mut warnings = Vec::new();
     let mut enhanced_diffs = Vec::new();
@@ -889,6 +889,7 @@ impl RollbackGraph {
         match dt {
             "added" => "removed",
             "removed" => "added",
+            "renamed" => "renamed",
             _ => "modified",
         }
     }
@@ -908,12 +909,19 @@ impl RollbackGraph {
 
     fn invert_columns(cols: &[ColumnDiff]) -> Vec<ColumnDiff> {
         cols.iter()
-            .map(|c| ColumnDiff {
-                diff_type: Self::invert_diff_type(&c.diff_type).to_string(),
-                name: c.name.clone(),
-                source: c.target.clone(),
-                target: c.source.clone(),
-                changes: c.changes.iter().map(|ch| Self::invert_change_string(ch)).collect(),
+            .map(|c| {
+                let inverted_name = if c.diff_type == "renamed" {
+                    c.target.as_ref().map(|t| t.name.clone()).unwrap_or_else(|| c.name.clone())
+                } else {
+                    c.name.clone()
+                };
+                ColumnDiff {
+                    diff_type: Self::invert_diff_type(&c.diff_type).to_string(),
+                    name: inverted_name,
+                    source: c.target.clone(),
+                    target: c.source.clone(),
+                    changes: c.changes.iter().map(|ch| Self::invert_change_string(ch)).collect(),
+                }
             })
             .collect()
     }
@@ -1034,7 +1042,7 @@ pub fn generate_rollback_sync_sql(
     cascade_delete: bool,
 ) -> String {
     let rollback_diffs: Vec<TableDiff> = rollback_graph.rollback_nodes.iter().map(|n| n.table_diff.clone()).collect();
-    generate_schema_sync_sql(&rollback_diffs, &[], &[], &[], &[], db_type, schema, cascade_delete)
+    generate_schema_sync_sql(&rollback_diffs, &[], &[], &[], &[], db_type, schema, cascade_delete, None)
 }
 
 // ============================================================================
@@ -1539,6 +1547,7 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
             options.database_type,
             options.target_schema.as_deref(),
             options.cascade_delete,
+            options.source_dialect,
         );
         if !sync_sql.is_empty() {
             diff.sync_sql = Some(sync_sql);
@@ -1554,6 +1563,7 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
         options.database_type,
         options.target_schema.as_deref(),
         options.cascade_delete,
+        options.source_dialect,
     );
 
     let rollback_sync_sql = rollback_graph.as_ref().map(|graph| {
@@ -1712,6 +1722,8 @@ fn diff_schema(options: &SchemaDiffPreparationOptions) -> Vec<TableDiff> {
             &target.columns,
             options.ignore_comments,
             options.compare_column_order,
+            options.detect_renames,
+            options.rename_threshold,
         );
         let index_diffs = diff_indexes(&source.indexes, &target.indexes);
         let foreign_key_diffs = diff_foreign_keys(&source.foreign_keys, &target.foreign_keys);
@@ -1759,7 +1771,39 @@ fn diff_names(source: &[String], target: &[String]) -> (Vec<String>, Vec<String>
 }
 
 pub fn diff_columns(source: &[ColumnInfo], target: &[ColumnInfo]) -> Vec<ColumnDiff> {
-    diff_columns_with_options(source, target, false, false)
+    diff_columns_with_options(source, target, false, false, false, 0.5)
+}
+
+fn column_type_similarity_score(source_type: &str, target_type: &str) -> f64 {
+    let s = ColumnType::parse(source_type).base_type.to_ascii_lowercase();
+    let t = ColumnType::parse(target_type).base_type.to_ascii_lowercase();
+    if s == t {
+        return 1.0;
+    }
+    let exact_matches = [
+        ("int", "integer"),
+        ("integer", "int"),
+        ("float", "real"),
+        ("real", "float"),
+        ("double", "double precision"),
+        ("double precision", "double"),
+        ("bool", "boolean"),
+        ("boolean", "bool"),
+        ("timestamp", "datetime"),
+        ("datetime", "timestamp"),
+    ];
+    if exact_matches.contains(&(s.as_str(), t.as_str())) {
+        return 1.0;
+    }
+    let integer_family = ["tinyint", "smallint", "mediumint", "int", "integer", "bigint", "serial", "bigserial"];
+    let text_family = ["char", "varchar", "text", "tinytext", "mediumtext", "longtext", "clob", "nclob"];
+    if integer_family.contains(&s.as_str()) && integer_family.contains(&t.as_str()) {
+        return 0.8;
+    }
+    if text_family.contains(&s.as_str()) && text_family.contains(&t.as_str()) {
+        return 0.8;
+    }
+    0.0
 }
 
 fn diff_columns_with_options(
@@ -1767,6 +1811,8 @@ fn diff_columns_with_options(
     target: &[ColumnInfo],
     ignore_comments: bool,
     compare_column_order: bool,
+    detect_renames: bool,
+    rename_threshold: f64,
 ) -> Vec<ColumnDiff> {
     let mut diffs = Vec::new();
     let target_map: HashMap<&str, &ColumnInfo> = target.iter().map(|column| (column.name.as_str(), column)).collect();
@@ -1846,6 +1892,74 @@ fn diff_columns_with_options(
                 changes: Vec::new(),
             });
         }
+    }
+
+    if detect_renames && rename_threshold > 0.0 {
+        let removed_indices: Vec<usize> =
+            diffs.iter().enumerate().filter(|(_, d)| d.diff_type == "removed").map(|(i, _)| i).collect();
+        let added_indices: Vec<usize> =
+            diffs.iter().enumerate().filter(|(_, d)| d.diff_type == "added").map(|(i, _)| i).collect();
+
+        let mut matched_added: HashSet<usize> = HashSet::new();
+        let mut matched_removed: HashSet<usize> = HashSet::new();
+        let mut rename_pairs: Vec<(usize, usize, f64)> = Vec::new();
+
+        for &ri in &removed_indices {
+            if let Some(removed_col) = &diffs[ri].target {
+                let mut best_score = 0.0_f64;
+                let mut best_ai = None;
+                for &ai in &added_indices {
+                    if matched_added.contains(&ai) {
+                        continue;
+                    }
+                    if let Some(added_col) = &diffs[ai].source {
+                        let type_score = column_type_similarity_score(&removed_col.data_type, &added_col.data_type);
+                        if type_score < rename_threshold {
+                            continue;
+                        }
+                        let mut score = type_score;
+                        if removed_col.is_nullable == added_col.is_nullable {
+                            score *= 1.0;
+                        } else {
+                            score *= 0.8;
+                        }
+                        if score > best_score {
+                            best_score = score;
+                            best_ai = Some(ai);
+                        }
+                    }
+                }
+                if let Some(ai) = best_ai {
+                    rename_pairs.push((ri, ai, best_score));
+                    matched_removed.insert(ri);
+                    matched_added.insert(ai);
+                }
+            }
+        }
+
+        for (ri, ai, _score) in &rename_pairs {
+            let old_name = diffs[*ri].name.clone();
+            let old_col = diffs[*ri].target.clone().unwrap();
+            let new_col = diffs[*ai].source.clone().unwrap();
+            let new_name = new_col.name.clone();
+
+            diffs[*ri] = ColumnDiff {
+                diff_type: "renamed".to_string(),
+                name: new_name.clone(),
+                source: Some(new_col),
+                target: Some(old_col),
+                changes: vec![format!("{} → {}", old_name, new_name)],
+            };
+            diffs[*ai] = ColumnDiff {
+                diff_type: "_matched_rename".to_string(),
+                name: String::new(),
+                source: None,
+                target: None,
+                changes: Vec::new(),
+            };
+        }
+
+        diffs.retain(|d| d.diff_type != "_matched_rename");
     }
 
     diffs
@@ -2429,10 +2543,19 @@ pub fn generate_schema_sync_sql(
     db_type: DatabaseType,
     schema: Option<&str>,
     cascade_delete: bool,
+    source_dialect: Option<DialectKind>,
 ) -> String {
     let mut lines = Vec::new();
     let is_mysql = is_mysql_like(db_type);
     let cascade = if cascade_delete { " CASCADE" } else { "" };
+
+    let type_matrix = source_dialect.map(|src| {
+        let target_dialect = DialectKind::from_database_type(db_type);
+        crate::sql_dialect::descriptor::TypeMappingMatrix::for_dialects(src, target_dialect)
+    });
+    let map_type = |source_type: &str| -> String {
+        type_matrix.as_ref().map_or_else(|| source_type.to_string(), |m| m.convert_type(source_type).0)
+    };
 
     for diff in diffs {
         let table = qualified_name(&diff.name, db_type, schema);
@@ -2472,11 +2595,13 @@ pub fn generate_schema_sync_sql(
         }
 
         if let Some(columns) = &diff.columns {
+            let convert_col =
+                |col: &ColumnInfo| -> ColumnInfo { ColumnInfo { data_type: map_type(&col.data_type), ..col.clone() } };
             for column in columns {
                 match column.diff_type.as_str() {
                     "added" => {
                         if let Some(source) = &column.source {
-                            parts.push(format!("  ADD COLUMN {}", column_def(source, db_type)));
+                            parts.push(format!("  ADD COLUMN {}", column_def(&convert_col(source), db_type)));
                         }
                     }
                     "removed" => {
@@ -2484,14 +2609,15 @@ pub fn generate_schema_sync_sql(
                     }
                     "modified" => {
                         if let Some(source) = &column.source {
+                            let mapped = convert_col(source);
                             if is_mysql {
                                 if column.changes.iter().any(|change| !change.starts_with("order:")) {
-                                    parts.push(format!("  MODIFY COLUMN {}", column_def(source, db_type)));
+                                    parts.push(format!("  MODIFY COLUMN {}", column_def(&mapped, db_type)));
                                 }
                             } else {
                                 let name = quote_id(&column.name, db_type);
                                 if column.changes.iter().any(|change| change.starts_with("type:")) {
-                                    parts.push(format!("  ALTER COLUMN {name} TYPE {}", source.data_type));
+                                    parts.push(format!("  ALTER COLUMN {name} TYPE {}", mapped.data_type));
                                 }
                                 if column.changes.iter().any(|change| change.starts_with("nullable:")) {
                                     parts.push(if source.is_nullable {
@@ -2507,6 +2633,45 @@ pub fn generate_schema_sync_sql(
                                         format!("  ALTER COLUMN {name} DROP DEFAULT")
                                     });
                                 }
+                            }
+                        }
+                    }
+                    "renamed" => {
+                        if let (Some(source), Some(target_col)) = (&column.source, &column.target) {
+                            let mapped = convert_col(source);
+                            if is_mysql {
+                                let old_name = quote_id(&target_col.name, db_type);
+                                parts.push(format!("  CHANGE COLUMN {} {}", old_name, column_def(&mapped, db_type)));
+                            } else if db_type == DatabaseType::Postgres {
+                                let old_name = quote_id(&target_col.name, db_type);
+                                let new_name = quote_id(&column.name, db_type);
+                                parts.push(format!("  RENAME COLUMN {old_name} TO {new_name}"));
+                                if source.data_type.to_lowercase() != target_col.data_type.to_lowercase() {
+                                    parts.push(format!("  ALTER COLUMN {new_name} TYPE {}", mapped.data_type));
+                                }
+                                if source.is_nullable != target_col.is_nullable {
+                                    let action = if source.is_nullable { "DROP NOT NULL" } else { "SET NOT NULL" };
+                                    parts.push(format!("  ALTER COLUMN {new_name} {action}"));
+                                }
+                            } else if db_type == DatabaseType::H2 {
+                                let old_name = quote_id(&target_col.name, db_type);
+                                let new_name = quote_id(&column.name, db_type);
+                                parts.push(format!("  ALTER COLUMN {old_name} RENAME TO {new_name}"));
+                                if source.data_type.to_lowercase() != target_col.data_type.to_lowercase() {
+                                    parts.push(format!("  ALTER COLUMN {new_name} SET DATA TYPE {}", mapped.data_type));
+                                }
+                            } else if db_type == DatabaseType::SqlServer {
+                                let target_table = qualified_name(&diff.name, db_type, schema);
+                                let full_obj_path = format!("{target_table}.{}", quote_id(&target_col.name, db_type));
+                                parts.push(format!(
+                                    "  EXEC sp_rename '{}', '{}', 'COLUMN';",
+                                    full_obj_path.replace('\'', "''"),
+                                    column.name.replace('\'', "''")
+                                ));
+                            } else {
+                                let old_name = quote_id(&target_col.name, db_type);
+                                let new_name = quote_id(&column.name, db_type);
+                                parts.push(format!("  RENAME COLUMN {old_name} TO {new_name}"));
                             }
                         }
                     }
@@ -2542,6 +2707,11 @@ pub fn generate_schema_sync_sql(
                             ));
                         }
                         if column.diff_type == "added" {
+                            if let Some(comment) = &source.comment {
+                                lines.push(column_comment_sql(&diff.name, &column.name, comment, db_type, schema));
+                            }
+                        }
+                        if column.diff_type == "renamed" {
                             if let Some(comment) = &source.comment {
                                 lines.push(column_comment_sql(&diff.name, &column.name, comment, db_type, schema));
                             }
@@ -2806,6 +2976,8 @@ mod tests {
             &[column("status", "varchar(16)", None), column("id", "int", None), column("name", "varchar(64)", None)],
             false,
             false,
+            false,
+            0.5,
         );
 
         assert!(diffs.is_empty());
@@ -2818,10 +2990,113 @@ mod tests {
             &[column("status", "varchar(16)", None), column("id", "int", None), column("name", "varchar(64)", None)],
             false,
             true,
+            false,
+            0.5,
         );
 
         assert_eq!(diffs.len(), 3);
         assert_eq!(diffs[0].changes, vec!["order: 2 → 1"]);
+    }
+
+    #[test]
+    fn detects_column_rename_with_same_type() {
+        let source = vec![
+            column("id", "int", None),
+            column("name2", "varchar(120)", None),
+            column("del_flag", "tinyint", None),
+            column("create_at", "datetime", None),
+        ];
+        let target =
+            vec![column("id", "int", None), column("name", "varchar(120)", None), column("del_flag", "tinyint", None)];
+        let diffs = diff_columns_with_options(&source, &target, false, false, true, 0.5);
+        let renamed: Vec<_> = diffs.iter().filter(|d| d.diff_type == "renamed").collect();
+        let added: Vec<_> = diffs.iter().filter(|d| d.diff_type == "added").collect();
+        let removed: Vec<_> = diffs.iter().filter(|d| d.diff_type == "removed").collect();
+        assert_eq!(renamed.len(), 1, "should detect one renamed column");
+        assert_eq!(renamed[0].name, "name2");
+        assert_eq!(renamed[0].changes, vec!["name → name2"]);
+        assert_eq!(added.len(), 1, "should have one truly added column (create_at)");
+        assert_eq!(added[0].name, "create_at");
+        assert!(removed.is_empty(), "should have no removed columns");
+    }
+
+    #[test]
+    fn detects_column_rename_with_compatible_type() {
+        let source = vec![column("col_a", "varchar(64)", None), column("col_b", "int", None)];
+        let target = vec![column("col_a_old", "varchar(100)", None), column("col_b", "int", None)];
+        let diffs = diff_columns_with_options(&source, &target, false, false, true, 0.5);
+        let renamed: Vec<_> = diffs.iter().filter(|d| d.diff_type == "renamed").collect();
+        assert_eq!(renamed.len(), 1, "should detect rename across varchar family");
+        assert_eq!(renamed[0].changes, vec!["col_a_old → col_a"]);
+    }
+
+    #[test]
+    fn no_rename_detection_when_disabled() {
+        let source = vec![
+            column("id", "int", None),
+            column("name2", "varchar(120)", None),
+            column("create_at", "datetime", None),
+        ];
+        let target = vec![column("id", "int", None), column("name", "varchar(120)", None)];
+        let diffs = diff_columns_with_options(&source, &target, false, false, false, 0.5);
+        let renamed: Vec<_> = diffs.iter().filter(|d| d.diff_type == "renamed").collect();
+        let added: Vec<_> = diffs.iter().filter(|d| d.diff_type == "added").collect();
+        let removed: Vec<_> = diffs.iter().filter(|d| d.diff_type == "removed").collect();
+        assert!(renamed.is_empty(), "should not detect renames when disabled");
+        assert_eq!(added.len(), 2);
+        assert_eq!(removed.len(), 1);
+    }
+
+    #[test]
+    fn rename_not_detected_with_unrelated_types() {
+        let source = vec![column("col_a", "varchar(120)", None), column("col_b", "int", None)];
+        let target = vec![column("col_old", "int", None), column("col_b", "int", None)];
+        let diffs = diff_columns_with_options(&source, &target, false, false, true, 0.5);
+        let renamed: Vec<_> = diffs.iter().filter(|d| d.diff_type == "renamed").collect();
+        assert!(renamed.is_empty(), "should not rename across unrelated types");
+    }
+
+    #[test]
+    fn rename_with_rollback_graph_inversion() {
+        let source = vec![column("id", "int", None), column("new_name", "varchar(120)", None)];
+        let target = vec![column("id", "int", None), column("old_name", "varchar(120)", None)];
+        let diffs = diff_columns_with_options(&source, &target, false, false, true, 0.5);
+        let inverted = RollbackGraph::invert_columns(&diffs);
+        let renamed_inv: Vec<_> = inverted.iter().filter(|d| d.diff_type == "renamed").collect();
+        assert_eq!(renamed_inv.len(), 1, "inverted rename should exist");
+        assert_eq!(renamed_inv[0].name, "old_name");
+        assert_eq!(renamed_inv[0].changes, vec!["new_name → old_name"]);
+    }
+
+    #[test]
+    fn column_rename_generates_change_column_sql_for_mysql() {
+        let source = vec![
+            column("id", "int", None),
+            column("name2", "varchar(120)", None),
+            column("del_flag", "tinyint", None),
+            column("create_at", "datetime", None),
+        ];
+        let target =
+            vec![column("id", "int", None), column("name", "varchar(120)", None), column("del_flag", "tinyint", None)];
+        let diffs = diff_columns_with_options(&source, &target, false, false, true, 0.5);
+        let table_diff = TableDiff {
+            diff_type: "modified".to_string(),
+            object_type: Some("table".to_string()),
+            name: "tb_user".to_string(),
+            columns: Some(diffs),
+            indexes: None,
+            foreign_keys: None,
+            triggers: None,
+            ddl: None,
+            target_ddl: None,
+            source_table_comment: None,
+            target_table_comment: None,
+            sync_sql: None,
+        };
+        let sql = generate_schema_sync_sql(&[table_diff], &[], &[], &[], &[], DatabaseType::Mysql, None, false, None);
+        assert!(sql.contains("CHANGE COLUMN `name`"), "should generate CHANGE COLUMN for rename: {sql}");
+        assert!(sql.contains("ADD COLUMN `create_at`"), "should generate ADD COLUMN for new column: {sql}");
+        assert!(!sql.contains("DROP COLUMN"), "should not DROP COLUMN: {sql}");
     }
 
     #[test]
@@ -2957,7 +3232,7 @@ mod tests {
         }];
 
         assert_eq!(
-            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Postgres, None, false),
+            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Postgres, None, false, None),
             [
                 "ALTER TABLE \"orders\" DROP CONSTRAINT \"orders_user_id_fk\";",
                 "DROP INDEX IF EXISTS \"idx_orders_status\";",
@@ -2992,7 +3267,7 @@ mod tests {
         }];
 
         assert_eq!(
-            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, None, false),
+            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, None, false, None),
             [
                 "-- Alter table: users",
                 "ALTER TABLE `users`",
@@ -3164,7 +3439,7 @@ mod tests {
         }];
 
         assert_eq!(
-            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Postgres, Some("sales"), false),
+            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Postgres, Some("sales"), false, None),
             [
                 "-- Alter table: orders",
                 "ALTER TABLE \"sales\".\"orders\"  ADD COLUMN \"status\" text;",

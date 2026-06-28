@@ -607,6 +607,7 @@ pub fn generate_rollback_script(rollback_graph: &RollbackGraph, options: &Rollba
         options.db_type,
         options.target_schema.as_deref(),
         options.cascade_delete,
+        None,
     );
 
     let idempotent_sql = apply_idempotent_strategy(&sync_sql, options.db_type, options.idempotent_strategy);
