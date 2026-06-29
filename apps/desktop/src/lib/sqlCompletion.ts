@@ -1174,7 +1174,8 @@ class SqlCompletionProvider {
       return dedupeAndSort(buildMongoCompletionItemsFromContext({ mode: "root", prefix: context.prefix, from: 0 }).map(mongoCompletionItemToSqlCompletionItem));
     }
 
-    if (!context.exclusiveTableSuggestions && !context.exclusiveColumnSuggestions && !context.exclusiveRoutineSuggestions) {
+    const preferReferencedColumns = hasMatchingReferencedColumnPrefix(context, this.input.columnsByTable);
+    if (!preferReferencedColumns && !context.exclusiveTableSuggestions && !context.exclusiveColumnSuggestions && !context.exclusiveRoutineSuggestions) {
       const snippets = this.databaseType === "manticoresearch" ? [...(this.input.snippets ?? DEFAULT_SQL_SNIPPETS), ...MANTICORESEARCH_SQL_SNIPPETS] : (this.input.snippets ?? DEFAULT_SQL_SNIPPETS);
       this.items.push(...buildSnippetItems(context.prefix, snippets, this.input.keywordCase));
       this.items.push(...buildFunctionSnippetItems(context.prefix, getFunctionDescriptions(this.t), this.databaseType));
@@ -1215,12 +1216,12 @@ class SqlCompletionProvider {
     }
 
     if (context.referencedTables.length > 0 && !context.suggestColumns && !context.insertTable) {
-      this.items.push(...buildAliasItems(context));
+      this.items.push(...buildAliasItems(context, this.databaseType));
     }
 
     if (!context.exclusiveColumnSuggestions && context.suggestTables) {
       this.items.push(...buildForeignKeyRelatedTableItems(context, this.input.tables, this.input.foreignKeysByTable, this.dialect));
-      this.items.push(...buildTableItems(context.prefix, this.input.tables, this.dialect, !!this.input.autoAliasTables && context.autoAliasTableCompletions, context.referencedTables));
+      this.items.push(...buildTableItems(context.prefix, this.input.tables, this.dialect, !!this.input.autoAliasTables && context.autoAliasTableCompletions, context.referencedTables, this.databaseType));
       if (isOracleLikeDatabase(this.databaseType)) {
         this.items.push(...buildOracleTableFunctionItems(context.prefix));
       }
@@ -2364,7 +2365,7 @@ function requiresPostgresIdentifierQuote(identifier: string): boolean {
 
 const POSTGRES_IDENTIFIER_KEYWORDS = new Set(SQL_KEYWORDS.map((keyword) => keyword.toLowerCase()).concat(["current_user", "session_user", "user"]));
 
-function buildTableItems(prefix: string, tables: SqlCompletionTable[], dialect?: "mysql" | "postgres" | "sqlserver", autoAliasTables = false, referencedTables: SqlCompletionReferencedTable[] = []): SqlCompletionItem[] {
+function buildTableItems(prefix: string, tables: SqlCompletionTable[], dialect?: "mysql" | "postgres" | "sqlserver", autoAliasTables = false, referencedTables: SqlCompletionReferencedTable[] = [], databaseType?: DatabaseType): SqlCompletionItem[] {
   const existingAliases = new Set(referencedTables.map((ref) => ref.alias?.toLowerCase()).filter((alias): alias is string => !!alias));
   return tables
     .filter((table) => matchesPrefix(table.name, prefix))
@@ -2375,7 +2376,7 @@ function buildTableItems(prefix: string, tables: SqlCompletionTable[], dialect?:
         label: table.name,
         type: "table" as const,
         detail: table.schema ? `${table.schema}.${table.name}` : table.type,
-        apply: alias ? `${applyName} AS ${alias}` : applyName,
+        apply: formatTableAliasApply(applyName, alias, databaseType),
         boost: computeBoost(table.name, prefix) + 1000,
       };
     })
@@ -2662,7 +2663,7 @@ function buildComparisonValueItems(context: SqlCompletionContext, columnsByTable
   return items;
 }
 
-function buildAliasItems(context: SqlCompletionContext): SqlCompletionItem[] {
+function buildAliasItems(context: SqlCompletionContext, databaseType?: DatabaseType): SqlCompletionItem[] {
   const items: SqlCompletionItem[] = [];
   const existingAliases = new Set(context.referencedTables.map((ref) => ref.alias?.toLowerCase()).filter((alias): alias is string => !!alias));
   const seen = new Set<string>(existingAliases);
@@ -2676,11 +2677,20 @@ function buildAliasItems(context: SqlCompletionContext): SqlCompletionItem[] {
       label: candidate,
       type: "snippet" as const,
       detail: `alias for ${ref.name}`,
-      apply: `AS ${candidate} `,
+      apply: formatAliasCompletionApply(candidate, databaseType),
       boost: 1600 - items.length,
     });
   }
   return items;
+}
+
+function formatTableAliasApply(tableName: string, alias: string, databaseType?: DatabaseType): string {
+  if (!alias) return tableName;
+  return isOracleLikeDatabase(databaseType) ? `${tableName} ${alias}` : `${tableName} AS ${alias}`;
+}
+
+function formatAliasCompletionApply(alias: string, databaseType?: DatabaseType): string {
+  return isOracleLikeDatabase(databaseType) ? `${alias} ` : `AS ${alias} `;
 }
 
 function generateAlias(tableName: string, existing = new Set<string>()): string {
@@ -2777,6 +2787,8 @@ function buildColumnItems(context: SqlCompletionContext, columnsByTable: Map<str
     const qualifiedTarget = qualifiedTableTargetFromContext(context);
     const relatedTables = context.referencedTables.filter((table) => referencedTableMatchesColumnQualifier(table, q, qLower, qualifiedTarget));
     relevantCols = allColumns.filter((column) => relatedTables.some((table) => columnMatchesReferencedTable(column, table)) || (!!qualifiedTarget && columnMatchesQualifiedTable(column, qualifiedTarget)));
+  } else if (context.referencedTables.length > 0) {
+    relevantCols = allColumns.filter((column) => context.referencedTables.some((table) => columnMatchesReferencedTable(column, table)));
   }
 
   // Count name frequencies to detect duplicates across tables
@@ -2822,6 +2834,21 @@ function buildColumnItems(context: SqlCompletionContext, columnsByTable: Map<str
       };
     })
     .sort(compareCompletionItems);
+}
+
+function hasMatchingReferencedColumnPrefix(context: SqlCompletionContext, columnsByTable: Map<string, SqlCompletionColumn[]>): boolean {
+  if (!context.suggestColumns || !context.prefix || context.referencedTables.length === 0) return false;
+
+  for (const [key, cols] of columnsByTable.entries()) {
+    for (const column of cols) {
+      if (!matchesPrefix(column.name, context.prefix)) continue;
+      if (context.referencedTables.some((table) => columnMatchesReferencedTable({ ...column, key }, table))) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function qualifiedTableTargetFromContext(context: SqlCompletionContext): { schema: string; table: string } | null {

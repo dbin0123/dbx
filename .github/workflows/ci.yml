@@ -47,7 +47,7 @@ jobs:
       - name: Node package publish dry run
         run: pnpm publish:dry-run
 
-  rust:
+  rust-fmt-clippy:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-22.04
@@ -68,13 +68,13 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "./ -> target"
-          shared-key: ci-x86_64-unknown-linux-gnu
+          shared-key: ci-rust-fmt-clippy-x86_64-unknown-linux-gnu
 
       - name: Cargo fmt check
         run: cargo fmt --check
@@ -82,8 +82,51 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy --workspace --locked --all-targets
 
+  rust-test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/.ghcup || true
+          docker system prune -af || true
+          df -h
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libsecret-1-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./ -> target"
+          shared-key: ci-rust-test-x86_64-unknown-linux-gnu
+
       - name: Cargo test
         run: cargo test --workspace --locked
+
+  rust:
+    needs: [changes, rust-fmt-clippy, rust-test]
+    if: always() && needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check Rust jobs
+        run: |
+          if [ "${{ needs.rust-fmt-clippy.result }}" != "success" ]; then
+            echo "rust-fmt-clippy result: ${{ needs.rust-fmt-clippy.result }}"
+            exit 1
+          fi
+          if [ "${{ needs.rust-test.result }}" != "success" ]; then
+            echo "rust-test result: ${{ needs.rust-test.result }}"
+            exit 1
+          fi
 
   jdbc:
     needs: changes

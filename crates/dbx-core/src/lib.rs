@@ -55,6 +55,7 @@ pub mod sql_file_import;
 pub mod sql_parser;
 pub mod sql_risk;
 pub mod sqlite_backup;
+pub(crate) mod sqlserver_temporal;
 pub mod state_calibrator;
 pub mod state_persistence;
 pub mod storage;
