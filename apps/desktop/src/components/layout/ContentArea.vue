@@ -348,7 +348,7 @@ const mongoQueryResultSaveHandler = computed<CustomSaveHandler | undefined>(() =
     return stmts;
   };
 
-  return { save, preview, canInsert: false, canDelete: false, readonlyColumns: [target.idColumn], targetLabel: target.collection };
+  return { save, preview, canInsert: false, canDelete: false, supportsInsert: false, readonlyColumns: [target.idColumn], targetLabel: target.collection };
 });
 const resultsPaneOpen = ref(false);
 const resultsPaneSize = ref(Number(safeLocalStorageGet("dbx-results-pane-size")) || DEFAULT_QUERY_RESULTS_PANE_SIZE);
