@@ -1,5 +1,8 @@
 mod capabilities;
 pub mod descriptor;
+pub mod dialect_loader;
+pub mod dialect_yaml;
+pub mod hot_reload;
 mod identifiers;
 pub mod inference;
 mod table_select;
@@ -28,3 +31,40 @@ pub use identifiers::{normalize_where_input, qualified_table_name, quote_table_i
 pub(crate) use identifiers::{parse_sqlserver_linked_schema_ref, qualified_transfer_table, quote_transfer_identifier};
 pub use table_select::{build_count_table_sql, build_table_data_select_sql, build_table_select_sql};
 pub use types::*;
+
+// ============================================================================
+// Global dialect resolution: YAML registry → hardcoded fallback
+// ============================================================================
+
+/// Resolve a dialect descriptor for the given kind.
+/// Checks the YAML DialectRegistry first; falls back to hardcoded for_dialect().
+pub fn resolve(kind: descriptor::DialectKind) -> descriptor::DialectCapabilityDescriptor {
+    lazy_init();
+    if let Some(desc) = dialect_loader::DialectRegistry::global().get_descriptor(kind.label()) {
+        return desc;
+    }
+    descriptor::DialectCapabilityDescriptor::for_dialect(kind)
+}
+
+/// Ensure DML rules are loaded once.
+fn lazy_init() {
+    use std::sync::OnceLock;
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        let _ = crate::dml_binding::DmlCleanRuleRegistry::load_default();
+    });
+}
+
+/// Convenience: resolve descriptor from database type (most common entry point).
+pub fn resolve_for_db(db_type: crate::models::connection::DatabaseType) -> descriptor::DialectCapabilityDescriptor {
+    let kind = descriptor::DialectKind::from_database_type(db_type);
+    resolve(kind)
+}
+
+/// Resolve kind label (prefer YAML display_name, fallback to DialectKind::label).
+pub fn resolve_label(kind: descriptor::DialectKind) -> String {
+    if let Some(loaded) = dialect_loader::DialectRegistry::global().get(kind.label()) {
+        return loaded.yaml.dialect.display_name.clone().unwrap_or_else(|| kind.label().to_string());
+    }
+    kind.label().to_string()
+}

@@ -89,6 +89,33 @@ impl DialectKind {
             DialectKind::Unsupported => "unsupported",
         }
     }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label.to_ascii_lowercase().as_str() {
+            // MySQL family
+            "mysql" | "doris" | "starrocks" | "goldendb" | "sundb" | "databend" | "gbase" => Some(DialectKind::Mysql),
+            // PostgreSQL family
+            "postgresql" | "postgres" | "gaussdb" | "kwdb" | "opengauss" | "highgo" | "vastbase" | "kingbase"
+            | "firebird" | "redshift" | "vertica" | "exasol" => Some(DialectKind::Postgres),
+            // SQLite family
+            "sqlite" | "rqlite" | "turso" => Some(DialectKind::Sqlite),
+            // DuckDB
+            "duckdb" => Some(DialectKind::DuckDb),
+            // SQL Server family
+            "sqlserver" | "mssql" | "sql server" | "access" => Some(DialectKind::SqlServer),
+            // Oracle family
+            "oracle" | "dameng" | "oceanbaseoracle" | "oceanbase" | "iris" | "yashandb" | "xugu" => {
+                Some(DialectKind::Oracle)
+            }
+            // Others
+            "h2" => Some(DialectKind::H2),
+            "clickhouse" => Some(DialectKind::ClickHouse),
+            "manticoresearch" => Some(DialectKind::ManticoreSearch),
+            "informix" => Some(DialectKind::Informix),
+            "questdb" => Some(DialectKind::Questdb),
+            _ => None,
+        }
+    }
 }
 
 type DdlCapabilityFlags = u64;
@@ -598,7 +625,7 @@ impl DialectCapabilityDescriptor {
     }
 
     pub fn capabilities_for_database_type(db_type: DatabaseType) -> Self {
-        Self::for_dialect(DialectKind::from_database_type(db_type))
+        crate::sql_dialect::resolve_for_db(db_type)
     }
 }
 
@@ -943,7 +970,7 @@ impl From<DialectCapabilityDescriptor> for DialectInfo {
 
 impl DialectInfo {
     pub fn for_kind(kind: DialectKind) -> Self {
-        let caps = DialectCapabilityDescriptor::for_dialect(kind);
+        let caps = crate::sql_dialect::resolve(kind);
         Self::from(caps)
     }
 

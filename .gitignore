@@ -64,3 +64,5 @@ DBX_*_x64-portable.zip
 .agents/skills
 .pnpm-store/*
 .dbx-web
+/.opencode/commands/handoff-export.md
+/.opencode/commands/handoff-load.md

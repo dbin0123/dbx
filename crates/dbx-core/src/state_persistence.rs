@@ -66,6 +66,18 @@ impl StateBackend for LocalBackend {
     async fn exists(&self, key: &str) -> Result<bool, String> {
         self.storage.state_exists(key).await
     }
+
+    async fn compare_and_swap(&self, key: &str, old: Option<&[u8]>, new: &[u8]) -> Result<bool, String> {
+        let expected_version = match old {
+            Some(data) => {
+                let entry: StateEntry =
+                    serde_json::from_slice(data).map_err(|e| format!("CAS deserialize error: {e}"))?;
+                Some(entry.version)
+            }
+            None => None,
+        };
+        self.storage.compare_and_swap_state(key, expected_version, new, "application/json").await
+    }
 }
 
 // ============================================================================
@@ -574,7 +586,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 // ============================================================================
-// 8.4: State Machine with CAS Optimistic Locking
+// 8.4: State Machine with CAS Optimistic Locking (extended Phase 15)
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -583,10 +595,14 @@ pub enum StateTransition {
     Created,
     Running,
     Paused,
+    OscSyncing,
     Completed,
     Failed,
     Cancelled,
-    RolledBack,
+    RollingBack,
+    FullyRolledBack,
+    PartiallyRolledBack,
+    RecoveryRequired,
 }
 
 impl StateTransition {
@@ -595,10 +611,14 @@ impl StateTransition {
             Self::Created => "created",
             Self::Running => "running",
             Self::Paused => "paused",
+            Self::OscSyncing => "osc_syncing",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
-            Self::RolledBack => "rolled_back",
+            Self::RollingBack => "rolling_back",
+            Self::FullyRolledBack => "fully_rolled_back",
+            Self::PartiallyRolledBack => "partially_rolled_back",
+            Self::RecoveryRequired => "recovery_required",
         }
     }
 
@@ -607,10 +627,14 @@ impl StateTransition {
             "created" => Some(Self::Created),
             "running" => Some(Self::Running),
             "paused" => Some(Self::Paused),
+            "osc_syncing" => Some(Self::OscSyncing),
             "completed" => Some(Self::Completed),
             "failed" => Some(Self::Failed),
             "cancelled" => Some(Self::Cancelled),
-            "rolled_back" => Some(Self::RolledBack),
+            "rolling_back" => Some(Self::RollingBack),
+            "fully_rolled_back" => Some(Self::FullyRolledBack),
+            "partially_rolled_back" => Some(Self::PartiallyRolledBack),
+            "recovery_required" => Some(Self::RecoveryRequired),
             _ => None,
         }
     }
@@ -618,12 +642,30 @@ impl StateTransition {
 
 const ALLOWED_TRANSITIONS: &[(StateTransition, &[StateTransition])] = &[
     (StateTransition::Created, &[StateTransition::Running, StateTransition::Cancelled]),
-    (StateTransition::Running, &[StateTransition::Paused, StateTransition::Completed, StateTransition::Failed]),
+    (
+        StateTransition::Running,
+        &[StateTransition::Paused, StateTransition::OscSyncing, StateTransition::Completed, StateTransition::Failed],
+    ),
     (StateTransition::Paused, &[StateTransition::Running, StateTransition::Cancelled]),
-    (StateTransition::Completed, &[StateTransition::RolledBack]),
-    (StateTransition::Failed, &[StateTransition::Running, StateTransition::Cancelled]),
+    (StateTransition::OscSyncing, &[StateTransition::Completed, StateTransition::Failed]),
+    (StateTransition::Completed, &[StateTransition::RollingBack]),
+    (
+        StateTransition::Failed,
+        &[
+            StateTransition::Running,
+            StateTransition::Cancelled,
+            StateTransition::RollingBack,
+            StateTransition::RecoveryRequired,
+        ],
+    ),
     (StateTransition::Cancelled, &[]),
-    (StateTransition::RolledBack, &[]),
+    (
+        StateTransition::RollingBack,
+        &[StateTransition::FullyRolledBack, StateTransition::PartiallyRolledBack, StateTransition::RecoveryRequired],
+    ),
+    (StateTransition::FullyRolledBack, &[]),
+    (StateTransition::PartiallyRolledBack, &[StateTransition::RecoveryRequired]),
+    (StateTransition::RecoveryRequired, &[]),
 ];
 
 pub fn is_valid_transition(from: &StateTransition, to: &StateTransition) -> bool {
@@ -703,18 +745,17 @@ impl StateMachine {
         new_state: &StateEntry,
     ) -> Result<bool, String> {
         let state_key = format!("{STATE_KEY_PREFIX}{key}");
-        let raw = self.backend.load(&state_key).await?;
-        let current: StateEntry = match raw {
-            Some(data) => serde_json::from_slice(&data).map_err(|e| e.to_string())?,
-            None => return Err(format!("State not found: {key}")),
+
+        let old_entry = StateEntry {
+            key: key.to_string(),
+            current_state: String::new(),
+            version: expected_version,
+            metadata: serde_json::Value::Null,
         };
+        let old_data = serde_json::to_vec(&old_entry).map_err(|e| e.to_string())?;
+        let new_data = serde_json::to_vec(new_state).map_err(|e| e.to_string())?;
 
-        if current.version != expected_version {
-            return Ok(false);
-        }
-
-        self.backend.save(&state_key, &serde_json::to_vec(new_state).map_err(|e| e.to_string())?).await?;
-        Ok(true)
+        self.backend.compare_and_swap(&state_key, Some(&old_data), &new_data).await
     }
 
     pub async fn delete_state(&self, key: &str) -> Result<(), String> {
@@ -1120,7 +1161,7 @@ mod tests {
         assert!(is_valid_transition(&StateTransition::Running, &StateTransition::Failed));
         assert!(is_valid_transition(&StateTransition::Paused, &StateTransition::Running));
         assert!(is_valid_transition(&StateTransition::Paused, &StateTransition::Cancelled));
-        assert!(is_valid_transition(&StateTransition::Completed, &StateTransition::RolledBack));
+        assert!(is_valid_transition(&StateTransition::Completed, &StateTransition::FullyRolledBack));
         assert!(is_valid_transition(&StateTransition::Failed, &StateTransition::Running));
         assert!(is_valid_transition(&StateTransition::Failed, &StateTransition::Cancelled));
     }
@@ -1131,7 +1172,8 @@ mod tests {
         assert!(!is_valid_transition(&StateTransition::Running, &StateTransition::Created));
         assert!(!is_valid_transition(&StateTransition::Completed, &StateTransition::Running));
         assert!(!is_valid_transition(&StateTransition::Cancelled, &StateTransition::Running));
-        assert!(!is_valid_transition(&StateTransition::RolledBack, &StateTransition::Created));
+        assert!(!is_valid_transition(&StateTransition::FullyRolledBack, &StateTransition::Created));
+        assert!(!is_valid_transition(&StateTransition::PartiallyRolledBack, &StateTransition::Running));
     }
 
     // --- Desensitization Engine Tests ---

@@ -5,8 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::correction::JointCorrectionPlan;
 use crate::data_compare::DataCompareFromTablesPreparation;
+use crate::dml_binding::{BindingEngine, BindingResult};
 use crate::models::connection::DatabaseType;
-use crate::schema_diff::{generate_schema_sync_sql, RollbackGraph, SchemaDiffPreparation, TableDiff};
+use crate::schema_diff::{
+    generate_schema_sync_sql, ColumnCompatibilityWarning, RollbackGraph, SchemaDiffPreparation, TableDiff,
+};
 use crate::sql_dialect::descriptor::{
     DialectCapabilityDescriptor, DialectKind, CAP_CREATE_OR_REPLACE, CAP_IF_NOT_EXISTS,
 };
@@ -123,6 +126,20 @@ impl ScriptTemplateEngine {
         env.add_template("joint_orchestration", JOINT_ORCHESTRATION_TEMPLATE).expect("joint_orchestration template");
         env.add_template("batch", BATCH_TEMPLATE).expect("batch template");
         Self { env }
+    }
+
+    pub fn from_dialect_yaml(dialect: &crate::sql_dialect::dialect_yaml::ScriptTemplatesYaml) -> Self {
+        let mut engine = Self::new();
+        if let Some(ref tmpl) = dialect.schema_sync {
+            engine.env.add_template("schema_sync", tmpl.as_str()).expect("schema_sync from yaml");
+        }
+        if let Some(ref tmpl) = dialect.joint_orchestration {
+            engine.env.add_template("joint_orchestration", tmpl.as_str()).expect("joint_orchestration from yaml");
+        }
+        if let Some(ref tmpl) = dialect.batch {
+            engine.env.add_template("batch", tmpl.as_str()).expect("batch from yaml");
+        }
+        engine
     }
 
     pub fn render_schema_sync(
@@ -1126,6 +1143,18 @@ pub fn generate_complete_script(
         lines.push(String::new());
     }
 
+    let dml_clean = generate_all_dml_clean_sql(schema_diff, 0.8);
+    if !dml_clean.is_empty() {
+        lines.push("-- ============================================================".to_string());
+        lines.push("-- SECTION 1b: DML Pre-Clean (lossy type mappings)".to_string());
+        lines.push("-- ============================================================".to_string());
+        lines.push(String::new());
+        for stmt in &dml_clean {
+            lines.push(format!("{stmt};"));
+        }
+        lines.push(String::new());
+    }
+
     if let Some(perm_sql) = &schema_diff.permission_sync_sql {
         if !perm_sql.is_empty() {
             lines.push("-- ============================================================".to_string());
@@ -1166,6 +1195,88 @@ pub fn generate_complete_script(
 
     lines.push("-- End of complete synchronization script".to_string());
     lines.join("\n")
+}
+
+// ============================================================================
+// Phase 14.6: DML Clean — pre-transform SQL for lossy type mappings
+// ============================================================================
+
+/// Generate DML clean SQL from compatibility warnings.
+/// Produces structure-data pre-clean statements (e.g. UPDATE ... SET ... = NULL).
+pub fn generate_dml_clean_sql(
+    warnings: &[ColumnCompatibilityWarning],
+    table_name: &str,
+    fidelity_threshold: f64,
+) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for warning in warnings {
+        let result = BindingEngine::bind(
+            &warning.source_type,
+            &warning.target_type,
+            table_name,
+            &warning.column_name,
+            fidelity_threshold,
+        );
+
+        if let Some(sql) = &result.pre_transform_sql {
+            if seen.insert(sql.clone()) {
+                statements.push(sql.clone());
+            }
+        }
+    }
+
+    statements
+}
+
+/// Generate DML clean SQL for ALL tables in a SchemaDiffPreparation.
+/// Iterates table diffs → modified columns → checks type compatibility → binds DML.
+pub fn generate_all_dml_clean_sql(schema_diff: &SchemaDiffPreparation, fidelity_threshold: f64) -> Vec<String> {
+    let mut all_statements = Vec::new();
+
+    for diff in &schema_diff.diffs {
+        let table_name = &diff.name;
+        if let Some(columns) = &diff.columns {
+            for col_diff in columns {
+                if col_diff.diff_type == "modified" {
+                    if let (Some(src), Some(tgt)) = (&col_diff.source, &col_diff.target) {
+                        let result = BindingEngine::bind(
+                            &src.data_type,
+                            &tgt.data_type,
+                            table_name,
+                            &col_diff.name,
+                            fidelity_threshold,
+                        );
+                        if let Some(sql) = result.pre_transform_sql {
+                            all_statements.push(sql);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    all_statements.dedup();
+    all_statements
+}
+
+// ============================================================================
+// Phase 15.7: Lock Timeout Injection
+// ============================================================================
+
+/// Return dialect-appropriate SET lock_timeout statement.
+pub fn lock_timeout_statement(db_type: DatabaseType) -> Option<&'static str> {
+    use crate::models::connection::DatabaseType::*;
+    match db_type {
+        Mysql | Doris | StarRocks | Goldendb | Sundb | Databend | Gbase => Some("SET SESSION lock_wait_timeout = 3;"),
+        Postgres | Gaussdb | Kwdb | OpenGauss | Highgo | Vastbase | Kingbase | Redshift | Vertica | Exasol => {
+            Some("SET lock_timeout = '3s';")
+        }
+        SqlServer | Access => Some("SET LOCK_TIMEOUT 3000;"),
+        Oracle | Dameng | OceanbaseOracle | Iris | Yashandb | Xugu => Some("SET lock_timeout = 3;"),
+        _ => None,
+    }
 }
 
 // ============================================================================
@@ -2001,5 +2112,57 @@ mod tests {
         let sql = "CREATE TABLE a (id INT);\nSELECT 1";
         let stmts = split_sql_statements(sql);
         assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn generate_dml_clean_integration() {
+        use crate::schema_diff::ColumnDiff;
+        use crate::types::ColumnInfo;
+
+        let col_diff = ColumnDiff {
+            diff_type: "modified".to_string(),
+            name: "large_val".to_string(),
+            source: Some(ColumnInfo {
+                name: "large_val".to_string(),
+                data_type: "BIGINT".to_string(),
+                is_nullable: true,
+                column_default: None,
+                is_primary_key: false,
+                extra: None,
+                comment: None,
+                numeric_precision: None,
+                numeric_scale: None,
+                character_maximum_length: None,
+            }),
+            target: Some(ColumnInfo {
+                name: "large_val".to_string(),
+                data_type: "INT".to_string(),
+                is_nullable: true,
+                column_default: None,
+                is_primary_key: false,
+                extra: None,
+                comment: None,
+                numeric_precision: None,
+                numeric_scale: None,
+                character_maximum_length: None,
+            }),
+            changes: vec!["data_type BIGINT → INT".to_string()],
+        };
+
+        let table_diff = TableDiff {
+            diff_type: "modified".to_string(),
+            object_type: Some("TABLE".to_string()),
+            name: "test_table".to_string(),
+            columns: Some(vec![col_diff]),
+            ..Default::default()
+        };
+
+        let prep = SchemaDiffPreparation { diffs: vec![table_diff], ..Default::default() };
+
+        let _ = crate::dml_binding::DmlCleanRuleRegistry::load_default();
+
+        let sql = generate_all_dml_clean_sql(&prep, 0.8);
+        assert!(!sql.is_empty(), "DML should be generated for BIGINT→INT");
+        assert!(sql[0].contains("2147483647"));
     }
 }

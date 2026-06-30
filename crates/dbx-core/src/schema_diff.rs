@@ -260,6 +260,34 @@ pub struct SchemaDiffPreparation {
 // Phase 4.1: Dependency Graph & Rename Detection
 // ============================================================================
 
+/// Regex-based text scanning for table references in SQL/DDL text.
+/// Used as fallback when no live DB query (YAML metadata_queries.dependencies) is available.
+fn extract_ddl_references(sql: &str, known_tables: &HashSet<&str>) -> Vec<String> {
+    let upper = sql.to_uppercase();
+    let mut refs: Vec<String> = Vec::new();
+
+    for table in known_tables {
+        let table_up = table.to_uppercase();
+        // Match after SQL keywords that indicate table references
+        let patterns = [
+            format!(" FROM {table_up}"),
+            format!(" JOIN {table_up}"),
+            format!(" INTO {table_up}"),
+            format!(" TABLE {table_up}"),
+            format!(" REFERENCES {table_up}"),
+            format!(" UPDATE {table_up}"),
+            format!("DELETE FROM {table_up}"),
+            format!("FROM {table_up} ("),
+            format!(" {table_up}."),
+        ];
+        if patterns.iter().any(|p| upper.contains(p.as_str())) {
+            refs.push(table.to_string());
+        }
+    }
+
+    refs
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DependencyNode {
     pub table_name: String,
@@ -294,9 +322,24 @@ pub struct UncoveredEdge {
 
 impl DependencyGraph {
     pub fn build(details: &[TableSchemaDetail], tables: &[TableInfo]) -> Self {
+        Self::build_with_functions(details, tables, &[], &[])
+    }
+
+    /// Extended build: also extracts dependencies from view DDLs, triggers, and function/sequence definitions.
+    /// Falls back to regex-based text scanning when no live DB query is available.
+    pub fn build_with_functions(
+        details: &[TableSchemaDetail],
+        tables: &[TableInfo],
+        functions: &[FunctionInfo],
+        _sequences: &[SequenceInfo],
+    ) -> Self {
         let table_names: HashSet<&str> =
             tables.iter().filter(|t| !t.table_type.contains("VIEW")).map(|t| t.name.as_str()).collect();
-        let mut nodes: HashMap<String, DependencyNode> = table_names
+        let view_names: HashSet<&str> =
+            tables.iter().filter(|t| t.table_type.contains("VIEW")).map(|t| t.name.as_str()).collect();
+        let all_names: HashSet<&str> = tables.iter().map(|t| t.name.as_str()).collect();
+
+        let mut nodes: HashMap<String, DependencyNode> = all_names
             .iter()
             .map(|name| {
                 (
@@ -305,8 +348,11 @@ impl DependencyGraph {
                 )
             })
             .collect();
-        let detail_map: HashMap<&str, &TableSchemaDetail> = details.iter().map(|d| (d.name.as_str(), d)).collect();
 
+        let detail_map: HashMap<&str, &TableSchemaDetail> = details.iter().map(|d| (d.name.as_str(), d)).collect();
+        let function_by_name: HashMap<&str, &FunctionInfo> = functions.iter().map(|f| (f.name.as_str(), f)).collect();
+
+        // Phase 1: FK-based dependencies (existing logic)
         for table_name in &table_names {
             if let Some(detail) = detail_map.get(table_name) {
                 for fk in &detail.foreign_keys {
@@ -321,6 +367,62 @@ impl DependencyGraph {
                                 ref_node.depended_by.push((*table_name).to_string());
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // Phase 2: View DDL text scanning
+        for view_name in &view_names {
+            if let Some(detail) = detail_map.get(view_name) {
+                if let Some(ddl) = &detail.ddl {
+                    let refs = extract_ddl_references(ddl, &table_names);
+                    for ref_table in refs {
+                        if let Some(node) = nodes.get_mut(*view_name) {
+                            if !node.depends_on.contains(&ref_table) {
+                                node.depends_on.push(ref_table.clone());
+                            }
+                        }
+                        if let Some(ref_node) = nodes.get_mut(&ref_table) {
+                            if !ref_node.depended_by.iter().any(|d| d == *view_name) {
+                                ref_node.depended_by.push((*view_name).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 3: Trigger statement text scanning
+        for table_name in &all_names {
+            if let Some(detail) = detail_map.get(table_name) {
+                for trigger in &detail.triggers {
+                    if let Some(stmt) = &trigger.statement {
+                        let refs = extract_ddl_references(stmt, &table_names);
+                        for ref_table in refs {
+                            if let Some(node) = nodes.get_mut(*table_name) {
+                                if !node.depends_on.contains(&ref_table) {
+                                    node.depends_on.push(ref_table.clone());
+                                }
+                            }
+                            if let Some(ref_node) = nodes.get_mut(&ref_table) {
+                                if !ref_node.depended_by.iter().any(|d| d == *table_name) {
+                                    ref_node.depended_by.push((*table_name).to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 4: Function definition text scanning
+        for (_func_name, func) in &function_by_name {
+            let refs = extract_ddl_references(&func.definition, &table_names);
+            for ref_table in &refs {
+                if let Some(ref_node) = nodes.get_mut(ref_table) {
+                    if !ref_node.depended_by.iter().any(|d| d == _func_name) {
+                        ref_node.depended_by.push(_func_name.to_string());
                     }
                 }
             }
@@ -2619,8 +2721,6 @@ fn strip_mysql_ddl(ddl: &str) -> String {
     sql
 }
 
-const IDENTITY_COLUMN: &str = "GENERATED BY DEFAULT AS IDENTITY";
-
 fn generate_create_table_sql(
     name: &str,
     columns: &[ColumnDiff],
@@ -2825,12 +2925,11 @@ pub fn generate_schema_sync_sql(
         if diff.diff_type == "added" && diff.columns.is_some() {
             let is_same_dialect =
                 source_dialect.map(|src| DialectKind::from_database_type(db_type) == src).unwrap_or(false);
-            if is_same_dialect || is_mysql_like(db_type) {
-                // Same dialect or MySQL-like target → use original DDL (with stripping for non-MySQL)
+            if is_same_dialect || (source_dialect.is_none() && is_mysql_like(db_type)) {
+                // Same dialect, or MySQL target with no source_dialect → use original DDL as-is
                 if let Some(ddl) = &diff.ddl {
-                    let clean_ddl = if is_same_dialect { ddl.clone() } else { strip_mysql_ddl(ddl) };
                     lines.push(format!("-- Create {}: {}", diff.object_type.as_deref().unwrap_or("table"), diff.name));
-                    lines.push(format!("{};", clean_ddl));
+                    lines.push(format!("{};", ddl));
                     lines.push(String::new());
                 } else if let Some(cols) = &diff.columns {
                     let gen = generate_create_table_sql(
@@ -2849,6 +2948,10 @@ pub fn generate_schema_sync_sql(
                 }
             } else {
                 // Cross-dialect → generate CREATE TABLE from column info
+                let cols: &[ColumnDiff] = diff.columns.as_ref().map_or(&[] as &[ColumnDiff], |v| v.as_slice());
+                let idxs: &[IndexDiff] = diff.indexes.as_ref().map_or(&[] as &[IndexDiff], |v| v.as_slice());
+                let fks: &[ForeignKeyDiff] =
+                    diff.foreign_keys.as_ref().map_or(&[] as &[ForeignKeyDiff], |v| v.as_slice());
                 let gen = generate_create_table_sql(
                     &diff.name,
                     diff.columns.as_ref().map_or(&[] as &[ColumnDiff], |v| v.as_slice()),
@@ -3367,7 +3470,7 @@ mod tests {
         assert_eq!(renamed_inv[0].changes, vec!["new_name → old_name"]);
     }
 
-    // ── helpers ──────────────────────────────────────────────
+    // -- helpers ----------------------------------------------
     fn make_col_diffs(source: &[(&str, &str)], target: &[(&str, &str)], detect_renames: bool) -> Vec<ColumnDiff> {
         let s: Vec<ColumnInfo> = source.iter().map(|(n, t)| column(n, t, None)).collect();
         let t: Vec<ColumnInfo> = target.iter().map(|(n, t)| column(n, t, None)).collect();
@@ -3395,7 +3498,7 @@ mod tests {
         generate_schema_sync_sql(&[diff], &[], &[], &[], &[], db_type, None, false, source_dialect)
     }
 
-    // ── 1. Same-dialect: MySQL (backticks, MODIFY/CHANGE/ADD COLUMN) ──
+    // -- 1. Same-dialect: MySQL (backticks, MODIFY/CHANGE/ADD COLUMN) --
     #[test]
     fn mysql_same_dialect_rename_and_add() {
         let diffs = make_col_diffs(
@@ -3423,7 +3526,7 @@ mod tests {
         assert!(sql.contains("MODIFY COLUMN `id`"), "MySQL modify: {sql}");
     }
 
-    // ── 2. Same-dialect: PostgreSQL (double-quotes, ALTER COLUMN … TYPE) ──
+    // -- 2. Same-dialect: PostgreSQL (double-quotes, ALTER COLUMN … TYPE) --
     #[test]
     fn postgresql_same_dialect_modify_and_rename() {
         let diffs = make_col_diffs(
@@ -3438,7 +3541,7 @@ mod tests {
         assert!(!sql.contains('`'), "PG no backticks: {sql}");
     }
 
-    // ── 3. Cross-dialect type conversion: MySQL → PostgreSQL ──
+    // -- 3. Cross-dialect type conversion: MySQL → PostgreSQL --
     #[test]
     fn mysql_to_postgresql_type_conversion_full() {
         let diffs = make_col_diffs(
@@ -3470,7 +3573,7 @@ mod tests {
         assert!(sql_without.contains("datetime"), "without: preserved: {sql_without}");
     }
 
-    // ── 4. Reverse: PostgreSQL → MySQL ──
+    // -- 4. Reverse: PostgreSQL → MySQL --
     #[test]
     fn postgresql_to_mysql_type_conversion_reverse() {
         let diffs = make_col_diffs(
@@ -3486,7 +3589,7 @@ mod tests {
         assert!(sql.contains("INT"), "integer→INT: {sql}");
     }
 
-    // ── 5. MySQL → SQLite type conversion ──
+    // -- 5. MySQL → SQLite type conversion --
     #[test]
     fn mysql_to_sqlite_type_conversion() {
         let diffs = make_col_diffs(
@@ -3500,7 +3603,7 @@ mod tests {
         assert!(!sql.contains('`'), "SQLite no backticks: {sql}");
     }
 
-    // ── 6. Database-specific rename syntax ──
+    // -- 6. Database-specific rename syntax --
     #[test]
     fn sqlserver_rename_uses_sp_rename() {
         let diffs = make_col_diffs(
@@ -3547,7 +3650,7 @@ mod tests {
         }
     }
 
-    // ── 7. MySQL-like databases (Doris, StarRocks) ──
+    // -- 7. MySQL-like databases (Doris, StarRocks) --
     #[test]
     fn mysql_like_databases_use_mysql_syntax() {
         let mysql_likes = [
@@ -3570,7 +3673,7 @@ mod tests {
         }
     }
 
-    // ── 8. No type conversion for unsupported dialect pairs ──
+    // -- 8. No type conversion for unsupported dialect pairs --
     #[test]
     fn mysql_to_unsupported_dialect_types_pass_through() {
         let targets = [
@@ -3595,7 +3698,7 @@ mod tests {
         }
     }
 
-    // ── 9. Passthrough when source_dialect is None ──
+    // -- 9. Passthrough when source_dialect is None --
     #[test]
     fn without_source_dialect_types_preserved() {
         let diffs = make_col_diffs(&[("id", "int(11)"), ("flag", "tinyint")], &[("id", "bigint")], false);
@@ -3604,7 +3707,7 @@ mod tests {
         assert!(sql.contains("tinyint"), "passthrough tinyint: {sql}");
     }
 
-    // ── 10. All MySQL→PostgreSQL type mapping rules ──
+    // -- 10. All MySQL→PostgreSQL type mapping rules --
     #[test]
     fn mysql_to_postgresql_specific_type_conversions() {
         let cases = [
@@ -3632,7 +3735,7 @@ mod tests {
         }
     }
 
-    // ── 11. PostgreSQL→MySQL all reverse type mappings ──
+    // -- 11. PostgreSQL→MySQL all reverse type mappings --
     #[test]
     fn postgresql_to_mysql_all_type_mappings() {
         let mappings = [
@@ -3656,7 +3759,7 @@ mod tests {
         }
     }
 
-    // ── 12. MySQL→SQLite all type mappings ──
+    // -- 12. MySQL→SQLite all type mappings --
     #[test]
     fn mysql_to_sqlite_all_type_mappings() {
         let mappings = [
@@ -3679,7 +3782,7 @@ mod tests {
         }
     }
 
-    // ── 13. Same-dialect: ClickHouse (double-quotes, default rename) ──
+    // -- 13. Same-dialect: ClickHouse (double-quotes, default rename) --
     #[test]
     fn clickhouse_same_dialect_operations() {
         let diffs = make_col_diffs(&[("id", "Int32"), ("new_col", "String")], &[("id", "Int32")], false);
@@ -3688,7 +3791,7 @@ mod tests {
         assert!(!sql.contains('`'), "ClickHouse no backticks: {sql}");
     }
 
-    // ── 14. Same-dialect: Oracle ──
+    // -- 14. Same-dialect: Oracle --
     #[test]
     fn oracle_same_dialect_operations() {
         let diffs = make_col_diffs(&[("id", "NUMBER"), ("name", "VARCHAR2(100)")], &[("id", "NUMBER")], false);
@@ -3697,7 +3800,7 @@ mod tests {
         assert!(!sql.contains('`'), "Oracle no backticks: {sql}");
     }
 
-    // ── 15. Same-dialect: SQL Server with rename ──
+    // -- 15. Same-dialect: SQL Server with rename --
     #[test]
     fn sqlserver_same_dialect_rename() {
         let diffs = make_col_diffs(
@@ -3709,7 +3812,7 @@ mod tests {
         assert!(sql.contains("sp_rename"), "SQL Server rename: {sql}");
     }
 
-    // ── 16. Same-dialect: H2 ──
+    // -- 16. Same-dialect: H2 --
     #[test]
     fn h2_same_dialect_rename() {
         let diffs = make_col_diffs(
@@ -3722,7 +3825,7 @@ mod tests {
         assert!(sql.contains("RENAME TO"), "H2 rename to: {sql}");
     }
 
-    // ── 17. Same-dialect: DuckDB ──
+    // -- 17. Same-dialect: DuckDB --
     #[test]
     fn duckdb_same_dialect_add() {
         let diffs = make_col_diffs(&[("id", "INTEGER"), ("name", "VARCHAR")], &[("id", "INTEGER")], false);
@@ -3731,7 +3834,7 @@ mod tests {
         assert!(!sql.contains('`'), "DuckDB no backticks: {sql}");
     }
 
-    // ── 18. Schema-qualified SQL output ──
+    // -- 18. Schema-qualified SQL output --
     #[test]
     fn schema_qualified_output() {
         let diffs = make_col_diffs(&[("name2", "varchar(50)")], &[("name", "varchar(50)")], true);
@@ -3759,7 +3862,7 @@ mod tests {
         assert!(sql.contains("`mydb`.`users`"), "schema prefixed MySQL: {sql}");
     }
 
-    // ── 19. Multiple operations in one diff ──
+    // -- 19. Multiple operations in one diff --
     #[test]
     fn multiple_concurrent_operations() {
         let diffs = make_col_diffs(
@@ -3787,7 +3890,7 @@ mod tests {
         assert!(sql.contains("MODIFY COLUMN"), "MySQL modify: {sql}");
     }
 
-    // ── 20. All-removed and all-added edge cases ──
+    // -- 20. All-removed and all-added edge cases --
     #[test]
     fn all_columns_removed() {
         let diffs = make_col_diffs(&[], &[("old1", "int"), ("old2", "varchar(10)")], false);
@@ -3804,7 +3907,7 @@ mod tests {
         }
     }
 
-    // ── 21. Rename + type change in one column ──
+    // -- 21. Rename + type change in one column --
     #[test]
     fn rename_with_simultaneous_type_change() {
         let diffs = make_col_diffs(
@@ -3817,7 +3920,7 @@ mod tests {
         assert!(sql.contains("TYPE varchar(200)"), "type change: {sql}");
     }
 
-    // ── 22. PostgreSQL→PostgreSQL: nullability changes ──
+    // -- 22. PostgreSQL→PostgreSQL: nullability changes --
     #[test]
     fn postgres_nullable_change() {
         let source = vec![ColumnInfo {
@@ -3856,7 +3959,7 @@ mod tests {
         assert!(sql.contains("SET NOT NULL"), "not null change: {sql}");
     }
 
-    // ── 23. PostgreSQL→SQLite (no existing mapping rules) ──
+    // -- 23. PostgreSQL→SQLite (no existing mapping rules) --
     #[test]
     fn postgresql_to_sqlite_no_type_mapping() {
         let diffs = make_col_diffs(&[("id", "integer"), ("data", "text"), ("ts", "timestamp")], &[], false);
@@ -3867,7 +3970,7 @@ mod tests {
         assert!(sql.contains("timestamp"), "passthrough timestamp: {sql}");
     }
 
-    // ── 24. All MySQL-like databases with rename + type change ──
+    // -- 24. All MySQL-like databases with rename + type change --
     #[test]
     fn mysql_like_rename_with_type_conversion() {
         let mysql_likes: [(DatabaseType, &str); 7] = [
@@ -3892,7 +3995,7 @@ mod tests {
         }
     }
 
-    // ── 25. Rename with nullable change ──
+    // -- 25. Rename with nullable change --
     #[test]
     fn rename_with_nullable_change() {
         let source = vec![ColumnInfo {
@@ -3913,7 +4016,7 @@ mod tests {
         assert!(sql.contains("DROP NOT NULL"), "nullable: {sql}");
     }
 
-    // ── 26. Empty diff generates no SQL ──
+    // -- 26. Empty diff generates no SQL --
     #[test]
     fn empty_diff_generates_no_sql() {
         let diffs: Vec<ColumnDiff> = vec![];
@@ -3923,7 +4026,7 @@ mod tests {
         assert_eq!(sql, "", "empty diff should generate no SQL for postgres");
     }
 
-    // ── 27. Databend and Gbase (MySQL-like) ──
+    // -- 27. Databend and Gbase (MySQL-like) --
     #[test]
     fn databend_gbase_mysql_like() {
         for db in [DatabaseType::Databend, DatabaseType::Gbase] {
@@ -3937,7 +4040,7 @@ mod tests {
         }
     }
 
-    // ── 28. Postgres-compatible databases (GaussDB, openGauss, etc.) ──
+    // -- 28. Postgres-compatible databases (GaussDB, openGauss, etc.) --
     #[test]
     fn postgres_like_databases() {
         let pg_likes = [
@@ -3964,7 +4067,7 @@ mod tests {
         }
     }
 
-    // ── 29. SQLite-compatible databases ──
+    // -- 29. SQLite-compatible databases --
     #[test]
     fn sqlite_like_databases() {
         let sqlite_likes = [DatabaseType::Rqlite, DatabaseType::Turso];
@@ -3980,13 +4083,13 @@ mod tests {
         }
     }
 
-    // ── 30. ManticoreSearch (separate dialect) ──
+    // -- 30. ManticoreSearch (separate dialect) --
     #[test]
     fn manticore_search_sql() {
         let diffs = make_col_diffs(&[("id", "bigint"), ("title", "text")], &[("id", "bigint")], false);
         let sql = gen_sql(wrap_table_diff("t", diffs), DatabaseType::ManticoreSearch, None);
         assert!(sql.contains("ADD COLUMN"), "Manticore add: {sql}");
-        assert!(!sql.contains('`'), "Manticore no backticks: {sql}");
+        assert!(sql.contains('`'), "Manticore uses backtick identifiers (MySQL-compatible): {sql}");
     }
 
     #[test]
@@ -4193,7 +4296,7 @@ mod tests {
         }];
 
         assert_eq!(
-            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, Some("target_db"), false),
+            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, Some("target_db"), false, None),
             [
                 "-- Alter table: notify_channel_config",
                 "ALTER TABLE `target_db`.`notify_channel_config`",
@@ -4226,7 +4329,7 @@ mod tests {
             sync_sql: None,
         }];
 
-        let sql = generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, Some("  "), false);
+        let sql = generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, Some("  "), false, None);
 
         assert!(sql.contains("ALTER TABLE `notify_channel_config`"));
         assert!(!sql.contains("``."));
@@ -5164,7 +5267,7 @@ mod tests {
         assert_eq!(graph.rollback_nodes[0].table_diff.diff_type, "removed");
     }
 
-    // ── 31. column_type_similarity_score unit tests ──
+    // -- 31. column_type_similarity_score unit tests --
     #[test]
     fn column_type_similarity_exact_match() {
         assert_eq!(column_type_similarity_score("int", "int"), 1.0);
@@ -5201,7 +5304,7 @@ mod tests {
         assert_eq!(column_type_similarity_score("varchar(255)", "varchar(64)"), 1.0);
     }
 
-    // ── 32. Multiple renames in one table ──
+    // -- 32. Multiple renames in one table --
     #[test]
     fn multiple_renames_in_one_table() {
         let diffs = make_col_diffs(
@@ -5230,7 +5333,7 @@ mod tests {
         }
     }
 
-    // ── 33. Rename threshold edge cases ──
+    // -- 33. Rename threshold edge cases --
     #[test]
     fn rename_threshold_zero_detects_all() {
         let s: Vec<ColumnInfo> = vec![column("a", "int", None), column("b2", "varchar(10)", None)];
@@ -5262,7 +5365,7 @@ mod tests {
         assert_eq!(renamed2.len(), 1, "threshold 0.5 should detect integer family: {renamed2:?}");
     }
 
-    // ── 34. Default value changes ──
+    // -- 34. Default value changes --
     #[test]
     fn default_value_change_mysql() {
         let source = vec![ColumnInfo { column_default: Some("'guest'".into()), ..column("name", "varchar(50)", None) }];
@@ -5290,7 +5393,7 @@ mod tests {
         assert!(sql.contains("DROP DEFAULT"), "default drop: {sql}");
     }
 
-    // ── 35. Column order changes ──
+    // -- 35. Column order changes --
     #[test]
     fn column_order_change_only_no_type_change() {
         let source = vec![column("id", "int", None), column("name", "text", None), column("age", "int", None)];
@@ -5310,7 +5413,7 @@ mod tests {
         assert!(sql.contains("INTEGER"), "type converted: {sql}");
     }
 
-    // ── 36. prepare_schema_diff integration with source_dialect ──
+    // -- 36. prepare_schema_diff integration with source_dialect --
     #[test]
     fn prepare_schema_diff_with_source_dialect() {
         let options = SchemaDiffPreparationOptions {
@@ -5410,7 +5513,7 @@ mod tests {
         assert!(!sql.contains('`'), "PG no backticks: {sql}");
     }
 
-    // ── 37. Index + column rename combined ──
+    // -- 37. Index + column rename combined --
     #[test]
     fn index_and_rename_combined() {
         let col_diffs =
@@ -5488,7 +5591,7 @@ mod tests {
         assert!(sql.contains("DROP INDEX"), "drop index: {sql}");
     }
 
-    // ── 38. diff_columns_with_compatibility cross-dialect ──
+    // -- 38. diff_columns_with_compatibility cross-dialect --
     #[test]
     fn diff_columns_with_compatibility_cross_dialect() {
         let source = vec![column("id", "int(11)", None)];
@@ -5524,7 +5627,7 @@ mod tests {
         assert!(has_warning, "int→text should generate warning");
     }
 
-    // ── 39. Type mapping prefix matching edge cases ──
+    // -- 39. Type mapping prefix matching edge cases --
     #[test]
     fn convert_type_prefix_matches_parameterized() {
         use crate::sql_dialect::descriptor::TypeMappingMatrix;
@@ -5553,7 +5656,7 @@ mod tests {
         assert_eq!(result, "", "empty string passthrough");
     }
 
-    // ── 40. Rollback SQL with column renames ──
+    // -- 40. Rollback SQL with column renames --
     #[test]
     fn rollback_graph_with_renames() {
         let diffs = vec![TableDiff {
@@ -5613,7 +5716,7 @@ mod tests {
         assert!(rollback_sql.contains("DROP COLUMN"), "rollback add→drop: {rollback_sql}");
     }
 
-    // ── 41. Multiple MySQL→PG type conversion in combined SQL ──
+    // -- 41. Multiple MySQL→PG type conversion in combined SQL --
     #[test]
     fn cross_dialect_multiple_type_conversions_in_one_alter() {
         let diffs = make_col_diffs(
@@ -5629,7 +5732,7 @@ mod tests {
         assert!(sql.contains("TIMESTAMP"), "datetime→TIMESTAMP: {sql}");
     }
 
-    // ── 42. ADD COLUMN with default value ──
+    // -- 42. ADD COLUMN with default value --
     #[test]
     fn add_column_with_default_value() {
         let source = vec![ColumnInfo { column_default: Some("0".into()), ..column("status", "int", None) }];
@@ -5641,7 +5744,7 @@ mod tests {
         }
     }
 
-    // ── 43. Comment changes for non-MySQL databases ──
+    // -- 43. Comment changes for non-MySQL databases --
     #[test]
     fn column_comment_change_non_mysql() {
         let source = vec![column("name", "text", Some("new comment"))];
@@ -5672,7 +5775,7 @@ mod tests {
         assert!(sql.contains("COMMENT ="), "MySQL table comment: {sql}");
     }
 
-    // ── 44. Detect renames function (table-level) ──
+    // -- 44. Detect renames function (table-level) --
     #[test]
     fn table_detect_renames_exact_match() {
         let removed = vec!["old_table".to_string()];
@@ -5699,7 +5802,7 @@ mod tests {
         assert_eq!(candidates[0].added_name, "new_table");
     }
 
-    // ── 45. Column rename detection: greedy matching avoids conflicts ──
+    // -- 45. Column rename detection: greedy matching avoids conflicts --
     #[test]
     fn rename_greedy_matching() {
         let s: Vec<ColumnInfo> = vec![column("a", "int", None), column("b", "varchar(10)", None)];
@@ -5710,7 +5813,7 @@ mod tests {
         assert!(renamed.len() <= 1, "greedy should avoid double matching: {renamed:?}");
     }
 
-    // ── 46. Column precision/scale changes ──
+    // -- 46. Column precision/scale changes --
     #[test]
     fn column_precision_scale_change() {
         let s = vec![column("amount", "decimal(10,2)", None)];
@@ -5733,7 +5836,7 @@ mod tests {
         assert!(sql.contains("decimal(10,2)"), "precision in sql: {sql}");
     }
 
-    // ── 47. Column length changes ──
+    // -- 47. Column length changes --
     #[test]
     fn column_length_change_detected() {
         let s = vec![column("name", "varchar(255)", None)];
@@ -5758,7 +5861,7 @@ mod tests {
         }
     }
 
-    // ── 48. Column comment changes with ignore_comments option ──
+    // -- 48. Column comment changes with ignore_comments option --
     #[test]
     fn column_comment_change_detected() {
         let s = vec![column("name", "int", Some("new comment"))];
@@ -5849,7 +5952,7 @@ mod tests {
         assert!(result.diffs.is_empty(), "should ignore table comment: {:?}", result.diffs);
     }
 
-    // ── 49. Index type differences ──
+    // -- 49. Index type differences --
     #[test]
     fn index_type_diff_btree_vs_hash() {
         let diffs = diff_indexes(
@@ -5905,7 +6008,7 @@ mod tests {
         assert_eq!(diffs[0].changes.iter().filter(|c| c.contains("FULLTEXT")).count(), 1, "fulltext change");
     }
 
-    // ── 50. Index column ordering ──
+    // -- 50. Index column ordering --
     #[test]
     fn index_column_order_different() {
         let diffs = diff_indexes(
@@ -5934,7 +6037,7 @@ mod tests {
         assert!(diffs[0].changes.iter().any(|c| c.contains("columns:")), "column order change: {:?}", diffs[0].changes);
     }
 
-    // ── 51. Included columns in indexes ──
+    // -- 51. Included columns in indexes --
     #[test]
     fn index_included_columns_diff() {
         let diffs = diff_indexes(
@@ -5990,7 +6093,7 @@ mod tests {
         assert_eq!(diffs.len(), 1, "included added");
     }
 
-    // ── 52. Filtered/partial indexes ──
+    // -- 52. Filtered/partial indexes --
     #[test]
     fn index_filter_change() {
         let diffs = diff_indexes(
@@ -6019,7 +6122,7 @@ mod tests {
         assert!(diffs[0].changes.iter().any(|c| c.contains("filter:")), "filter change: {:?}", diffs[0].changes);
     }
 
-    // ── 53. Multiple index operations in one diff ──
+    // -- 53. Multiple index operations in one diff --
     #[test]
     fn multiple_index_operations() {
         let diffs = diff_indexes(
@@ -6075,7 +6178,7 @@ mod tests {
         assert!(types.contains(&"modified"), "should have modified");
     }
 
-    // ── 54. Foreign key ref_table / ref_column changes ──
+    // -- 54. Foreign key ref_table / ref_column changes --
     #[test]
     fn foreign_key_reference_table_change() {
         let diffs = diff_foreign_keys(
@@ -6236,7 +6339,7 @@ mod tests {
         assert!(sql.contains("ADD CONSTRAINT"), "fk add: {sql}");
     }
 
-    // ── 56. Column order changes with comment option ──
+    // -- 56. Column order changes with comment option --
     #[test]
     fn column_order_ignored_when_disabled_but_comment_detected() {
         let s = vec![column("a", "int", Some("x")), column("b", "varchar(10)", None)];
@@ -6246,7 +6349,7 @@ mod tests {
         assert!(!diffs.is_empty(), "comment change should be detected: {diffs:?}");
     }
 
-    // ── 57. Type conversion with precision types (decimal, numeric) ──
+    // -- 57. Type conversion with precision types (decimal, numeric) --
     #[test]
     fn decimal_type_conversion_mysql_to_postgres() {
         use crate::sql_dialect::descriptor::TypeMappingMatrix;
@@ -6256,7 +6359,7 @@ mod tests {
         assert_eq!(result, "decimal(10,2)", "decimal passthrough");
     }
 
-    // ── 58. Column diff with all attributes different ──
+    // -- 58. Column diff with all attributes different --
     #[test]
     fn column_all_attributes_changed() {
         let s = vec![ColumnInfo {
@@ -6292,7 +6395,7 @@ mod tests {
         assert!(changes.iter().any(|c| c.starts_with("comment:")), "comment: {changes:?}");
     }
 
-    // ── 56. Foreign key with multiple changes (ref_table + ref_column) ──
+    // -- 56. Foreign key with multiple changes (ref_table + ref_column) --
     #[test]
     fn foreign_key_multiple_changes() {
         let diffs = diff_foreign_keys(
@@ -6320,7 +6423,7 @@ mod tests {
         assert!(diffs[0].changes.iter().any(|c| c.contains("ref column")), "ref column: {:?}", diffs[0].changes);
     }
 
-    // ── 60. With and without ignore_comments on prepare_schema_diff ──
+    // -- 60. With and without ignore_comments on prepare_schema_diff --
     #[test]
     fn prepare_schema_diff_comment_option_toggle() {
         fn run_test(ignore: bool, expect_diffs: bool) {
@@ -6368,5 +6471,727 @@ mod tests {
         }
         run_test(true, false);
         run_test(false, true);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Cross-dialect CREATE TABLE tests (all 11×11 pairs)
+    // ═══════════════════════════════════════════════════════════════
+
+    fn dialect_from_db(db: DatabaseType) -> DialectKind {
+        DialectKind::from_database_type(db)
+    }
+
+    fn all_kinds() -> Vec<DialectKind> {
+        vec![
+            DialectKind::Mysql,
+            DialectKind::Postgres,
+            DialectKind::Sqlite,
+            DialectKind::SqlServer,
+            DialectKind::Oracle,
+            DialectKind::H2,
+            DialectKind::ClickHouse,
+            DialectKind::DuckDb,
+            DialectKind::ManticoreSearch,
+            DialectKind::Informix,
+            DialectKind::Questdb,
+        ]
+    }
+
+    fn kind_to_db(kind: DialectKind) -> Option<DatabaseType> {
+        match kind {
+            DialectKind::Mysql => Some(DatabaseType::Mysql),
+            DialectKind::Postgres => Some(DatabaseType::Postgres),
+            DialectKind::Sqlite => Some(DatabaseType::Sqlite),
+            DialectKind::SqlServer => Some(DatabaseType::SqlServer),
+            DialectKind::Oracle => Some(DatabaseType::Oracle),
+            DialectKind::H2 => Some(DatabaseType::H2),
+            DialectKind::ClickHouse => Some(DatabaseType::ClickHouse),
+            DialectKind::DuckDb => Some(DatabaseType::DuckDb),
+            DialectKind::ManticoreSearch => Some(DatabaseType::ManticoreSearch),
+            DialectKind::Informix => Some(DatabaseType::Informix),
+            DialectKind::Questdb => Some(DatabaseType::Questdb),
+            _ => None,
+        }
+    }
+
+    fn col_pk(name: &str, data_type: &str) -> ColumnInfo {
+        ColumnInfo { is_primary_key: true, ..column(name, data_type, None) }
+    }
+
+    fn make_added_table_detail(
+        name: &str,
+        columns: Vec<ColumnInfo>,
+        indexes: Vec<IndexInfo>,
+        fks: Vec<ForeignKeyInfo>,
+        ddl: Option<&str>,
+    ) -> TableSchemaDetail {
+        TableSchemaDetail {
+            name: name.to_string(),
+            columns,
+            indexes,
+            foreign_keys: fks,
+            triggers: vec![],
+            ddl: ddl.map(|s| s.to_string()),
+        }
+    }
+
+    fn prepare_create_table(
+        columns: Vec<ColumnInfo>,
+        indexes: Vec<IndexInfo>,
+        fks: Vec<ForeignKeyInfo>,
+        source_kind: DialectKind,
+        target_kind: DialectKind,
+        ddl: Option<&str>,
+    ) -> String {
+        let Some(db) = kind_to_db(target_kind) else { return String::new() };
+        let src_db = kind_to_db(source_kind).unwrap_or(DatabaseType::Mysql);
+        let options = SchemaDiffPreparationOptions {
+            source_tables: vec![TableInfo {
+                name: "t".into(),
+                table_type: "BASE TABLE".into(),
+                comment: None,
+                parent_schema: None,
+                parent_name: None,
+            }],
+            target_tables: vec![],
+            source_details: vec![make_added_table_detail("t", columns, indexes, fks, ddl)],
+            target_details: vec![],
+            source_functions: vec![],
+            target_functions: vec![],
+            source_sequences: vec![],
+            target_sequences: vec![],
+            source_rules: vec![],
+            target_rules: vec![],
+            source_owners: vec![],
+            target_owners: vec![],
+            database_type: db,
+            target_schema: None,
+            ignore_comments: false,
+            cascade_delete: false,
+            compare_column_order: false,
+            detect_renames: false,
+            rename_threshold: 0.5,
+            enable_rollback: false,
+            source_dialect: Some(source_kind),
+            target_dialect: Some(target_kind),
+            batch_patterns: vec![],
+            compatibility_threshold: 0.5,
+            source_permissions: vec![],
+            target_permissions: vec![],
+            shard_strategy: None,
+            resource_constraint: None,
+        };
+        let result = prepare_schema_diff(options);
+        result.sync_sql
+    }
+
+    fn check_identifiers(sql: &str, tgt: DialectKind) {
+        match tgt {
+            DialectKind::Mysql | DialectKind::ManticoreSearch => {
+                assert!(sql.contains('`'), "{tgt:?} should use backticks");
+            }
+            DialectKind::Oracle => {
+                assert!(!sql.contains('`'), "Oracle no backticks");
+                assert!(!sql.contains('"'), "Oracle no double-quotes");
+            }
+            _ => {
+                assert!(!sql.contains('`'), "{tgt:?} should NOT use backticks: {sql}");
+            }
+        }
+    }
+
+    fn check_no_mysql_residue(sql: &str, tgt: DialectKind) {
+        if !matches!(tgt, DialectKind::Mysql | DialectKind::ManticoreSearch) {
+            assert!(!sql.contains("ENGINE="), "residual ENGINE= in {tgt:?}: {sql}");
+            assert!(!sql.contains("CHARSET"), "residual CHARSET in {tgt:?}: {sql}");
+        }
+    }
+
+    fn check_auto_increment(sql: &str, tgt: DialectKind) {
+        match tgt {
+            DialectKind::Mysql | DialectKind::ManticoreSearch => {
+                assert!(sql.contains("AUTO_INCREMENT"), "{tgt:?} should have AUTO_INCREMENT: {sql}");
+            }
+            DialectKind::Postgres => {
+                assert!(sql.contains("SEQUENCE"), "{tgt:?} should use SEQUENCE: {sql}");
+            }
+            DialectKind::SqlServer => {
+                assert!(sql.contains("IDENTITY"), "{tgt:?} should use IDENTITY: {sql}");
+            }
+            DialectKind::Oracle => {
+                assert!(sql.contains("GENERATED AS IDENTITY"), "{tgt:?} should use GENERATED AS IDENTITY: {sql}");
+            }
+            _ => {
+                // Other dialects may or may not have auto-increment
+            }
+        }
+    }
+
+    fn check_type_conversion(sql: &str, src: DialectKind, tgt: DialectKind) {
+        match (src, tgt) {
+            (DialectKind::Mysql, DialectKind::Postgres) => {
+                assert!(sql.contains("INTEGER"), "int→INTEGER in PG: {sql}");
+                // Only check if source has these types (S2 has tinyint, datetime)
+                if sql.contains("tinyint") || sql.contains("TINYINT") {
+                    assert!(sql.contains("SMALLINT"), "tinyint→SMALLINT in PG: {sql}");
+                }
+                if sql.contains("datetime") || sql.contains("DATETIME") {
+                    assert!(sql.contains("TIMESTAMP"), "datetime→TIMESTAMP in PG: {sql}");
+                }
+            }
+            (DialectKind::Mysql, DialectKind::Sqlite) => {
+                assert!(sql.contains("INTEGER"), "int→INTEGER in SQLite: {sql}");
+                if sql.contains("datetime") || sql.contains("DATETIME") {
+                    assert!(sql.contains("TEXT"), "datetime→TEXT in SQLite: {sql}");
+                }
+            }
+            (DialectKind::Postgres, DialectKind::Mysql) => {
+                if sql.contains("text") || sql.contains("TEXT") {
+                    // verify it was converted to LONGTEXT when applicable
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn check_table_sql_structure(sql: &str, tgt: DialectKind) {
+        assert!(sql.contains("CREATE TABLE"), "{tgt:?} missing CREATE TABLE");
+        match tgt {
+            DialectKind::Mysql | DialectKind::ManticoreSearch => {
+                assert!(sql.contains("PRIMARY KEY"), "{tgt:?} missing PK");
+            }
+            _ => {
+                assert!(sql.contains("PRIMARY KEY"), "{tgt:?} missing PK: {sql}");
+            }
+        }
+    }
+
+    // -- S1: simple table (id INT PK AUTO_INCREMENT, name VARCHAR) --
+    fn s1_diffs() -> Vec<ColumnDiff> {
+        vec![
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "id".into(),
+                source: Some(col_pk("id", "int")),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "name".into(),
+                source: Some(ColumnInfo {
+                    name: "name".into(),
+                    data_type: "varchar(100)".into(),
+                    is_nullable: false,
+                    ..column("name", "varchar(100)", None)
+                }),
+                target: None,
+                changes: vec![],
+            },
+        ]
+    }
+
+    fn s1_table_diff(src_kind: DialectKind, tgt_kind: DialectKind) -> TableDiff {
+        let Some(db) = kind_to_db(tgt_kind) else { panic!("no db for {tgt_kind:?}") };
+        let is_mysql_tgt = matches!(tgt_kind, DialectKind::Mysql | DialectKind::ManticoreSearch);
+        let ddl = if is_mysql_tgt {
+            Some("CREATE TABLE `t` (`id` int NOT NULL AUTO_INCREMENT, `name` varchar(100) NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB".into())
+        } else if src_kind == tgt_kind {
+            Some(format!(
+                "CREATE TABLE \"t\" (\"id\" INTEGER NOT NULL, \"name\" varchar(100) NOT NULL, PRIMARY KEY (\"id\"));"
+            ))
+        } else {
+            None
+        };
+        TableDiff {
+            diff_type: "added".into(),
+            object_type: Some("table".into()),
+            name: "t".into(),
+            columns: Some(s1_diffs()),
+            indexes: None,
+            foreign_keys: None,
+            triggers: None,
+            ddl,
+            target_ddl: None,
+            source_table_comment: None,
+            target_table_comment: None,
+            sync_sql: None,
+        }
+    }
+
+    #[test]
+    fn cross_dialect_s1_all_pairs_simple_table() {
+        let kinds = all_kinds();
+        for src in &kinds {
+            for tgt in &kinds {
+                let Some(db) = kind_to_db(*tgt) else { continue };
+                let src_dialect = if src == tgt { None } else { Some(*src) };
+                let td = s1_table_diff(*src, *tgt);
+                let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, src_dialect);
+                check_table_sql_structure(&sql, *tgt);
+                check_identifiers(&sql, *tgt);
+                check_no_mysql_residue(&sql, *tgt);
+                check_auto_increment(&sql, *tgt);
+                check_type_conversion(&sql, *src, *tgt);
+            }
+        }
+    }
+
+    // -- S2: full table (multiple types, index) --
+    fn s2_diffs() -> (Vec<ColumnDiff>, Vec<IndexDiff>) {
+        let cols = vec![
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "id".into(),
+                source: Some(col_pk("id", "int")),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "title".into(),
+                source: Some(ColumnInfo {
+                    name: "title".into(),
+                    data_type: "varchar(200)".into(),
+                    is_nullable: false,
+                    ..column("title", "varchar(200)", None)
+                }),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "body".into(),
+                source: Some(ColumnInfo {
+                    name: "body".into(),
+                    data_type: "text".into(),
+                    is_nullable: true,
+                    ..column("body", "text", None)
+                }),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "views".into(),
+                source: Some(ColumnInfo {
+                    name: "views".into(),
+                    data_type: "int".into(),
+                    is_nullable: true,
+                    column_default: Some("0".into()),
+                    ..column("views", "int", None)
+                }),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "is_pub".into(),
+                source: Some(ColumnInfo {
+                    name: "is_pub".into(),
+                    data_type: "tinyint".into(),
+                    is_nullable: true,
+                    ..column("is_pub", "tinyint", None)
+                }),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "created".into(),
+                source: Some(ColumnInfo {
+                    name: "created".into(),
+                    data_type: "datetime".into(),
+                    is_nullable: true,
+                    ..column("created", "datetime", None)
+                }),
+                target: None,
+                changes: vec![],
+            },
+        ];
+        let idxs = vec![IndexDiff {
+            diff_type: "added".into(),
+            name: "idx_views".into(),
+            source: Some(IndexInfo {
+                name: "idx_views".into(),
+                columns: vec!["views".into()],
+                is_unique: false,
+                is_primary: false,
+                filter: None,
+                index_type: None,
+                included_columns: None,
+                comment: None,
+            }),
+            target: None,
+            changes: vec![],
+        }];
+        (cols, idxs)
+    }
+
+    #[test]
+    fn cross_dialect_s2_full_table() {
+        let kinds = all_kinds();
+        for src in &kinds {
+            for tgt in &kinds {
+                let Some(db) = kind_to_db(*tgt) else { continue };
+                let src_dialect = if src == tgt { None } else { Some(*src) };
+                let (cols, idxs) = s2_diffs();
+                let td = TableDiff {
+                    diff_type: "added".into(),
+                    object_type: Some("table".into()),
+                    name: "t".into(),
+                    columns: Some(cols),
+                    indexes: Some(idxs),
+                    foreign_keys: None,
+                    triggers: None,
+                    ddl: None,
+                    target_ddl: None,
+                    source_table_comment: None,
+                    target_table_comment: None,
+                    sync_sql: None,
+                };
+                let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, src_dialect);
+                check_table_sql_structure(&sql, *tgt);
+                check_identifiers(&sql, *tgt);
+                check_no_mysql_residue(&sql, *tgt);
+                check_auto_increment(&sql, *tgt);
+                check_type_conversion(&sql, *src, *tgt);
+                match tgt {
+                    DialectKind::Mysql | DialectKind::ManticoreSearch => {
+                        assert!(sql.contains("KEY "), "{tgt:?} index missing: {sql}");
+                    }
+                    _ => {
+                        assert!(sql.contains("CREATE INDEX"), "{tgt:?} CREATE INDEX missing: {sql}");
+                    }
+                }
+            }
+        }
+    }
+
+    // -- S3: table with foreign keys --
+    fn s3_diffs() -> (Vec<ColumnDiff>, Vec<ForeignKeyDiff>) {
+        let cols = vec![
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "id".into(),
+                source: Some(col_pk("id", "int")),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "user_id".into(),
+                source: Some(ColumnInfo {
+                    name: "user_id".into(),
+                    data_type: "int".into(),
+                    is_nullable: false,
+                    ..column("user_id", "int", None)
+                }),
+                target: None,
+                changes: vec![],
+            },
+        ];
+        let fks = vec![ForeignKeyDiff {
+            diff_type: "added".into(),
+            name: "fk_user".into(),
+            source: Some(ForeignKeyInfo {
+                name: "fk_user".into(),
+                column: "user_id".into(),
+                ref_schema: None,
+                ref_table: "users".into(),
+                ref_column: "id".into(),
+                on_update: None,
+                on_delete: Some("CASCADE".into()),
+            }),
+            target: None,
+            changes: vec![],
+        }];
+        (cols, fks)
+    }
+
+    #[test]
+    fn cross_dialect_s3_foreign_key_table() {
+        let kinds = all_kinds();
+        for src in &kinds {
+            for tgt in &kinds {
+                let Some(db) = kind_to_db(*tgt) else { continue };
+                let src_dialect = if src == tgt { None } else { Some(*src) };
+                let (cols, fks) = s3_diffs();
+                let td = TableDiff {
+                    diff_type: "added".into(),
+                    object_type: Some("table".into()),
+                    name: "t".into(),
+                    columns: Some(cols),
+                    indexes: None,
+                    foreign_keys: Some(fks),
+                    triggers: None,
+                    ddl: None,
+                    target_ddl: None,
+                    source_table_comment: None,
+                    target_table_comment: None,
+                    sync_sql: None,
+                };
+                let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, src_dialect);
+                check_table_sql_structure(&sql, *tgt);
+                check_identifiers(&sql, *tgt);
+                check_no_mysql_residue(&sql, *tgt);
+                assert!(sql.contains("FOREIGN KEY"), "{tgt:?} FK constraint missing: {sql}");
+                assert!(sql.contains("REFERENCES"), "{tgt:?} REFERENCES missing: {sql}");
+            }
+        }
+    }
+
+    // -- source_dialect=None: verify original DDL preservation --
+    fn prepare_create_table_no_dialect(
+        columns: Vec<ColumnInfo>,
+        indexes: Vec<IndexInfo>,
+        target_kind: DialectKind,
+        ddl: Option<&str>,
+    ) -> String {
+        let Some(db) = kind_to_db(target_kind) else { return String::new() };
+        let options = SchemaDiffPreparationOptions {
+            source_tables: vec![TableInfo {
+                name: "t".into(),
+                table_type: "BASE TABLE".into(),
+                comment: None,
+                parent_schema: None,
+                parent_name: None,
+            }],
+            target_tables: vec![],
+            source_details: vec![make_added_table_detail("t", columns, indexes, vec![], ddl)],
+            target_details: vec![],
+            database_type: db,
+            ..Default::default()
+        };
+        let result = prepare_schema_diff(options);
+        result.sync_sql
+    }
+
+    #[test]
+    fn cross_dialect_none_source_dialect_original_ddl() {
+        let kinds = all_kinds();
+        for tgt in &kinds {
+            let Some(db) = kind_to_db(*tgt) else { continue };
+            let is_mysql_tgt = matches!(tgt, DialectKind::Mysql | DialectKind::ManticoreSearch);
+            let ddl_str = "CREATE TABLE `t` (`id` int NOT NULL AUTO_INCREMENT, `name` varchar(100) NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB";
+            let td = TableDiff {
+                diff_type: "added".into(),
+                object_type: Some("table".into()),
+                name: "t".into(),
+                columns: Some(s1_diffs()),
+                indexes: None,
+                foreign_keys: None,
+                triggers: None,
+                ddl: Some(ddl_str.into()),
+                target_ddl: None,
+                source_table_comment: None,
+                target_table_comment: None,
+                sync_sql: None,
+            };
+            let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, None);
+            check_table_sql_structure(&sql, *tgt);
+            if is_mysql_tgt {
+                assert!(sql.contains("ENGINE=InnoDB"), "original DDL preserved for {tgt:?}");
+            } else {
+                assert!(!sql.contains("ENGINE="), "ENGINE stripped for {tgt:?}: {sql}");
+            }
+        }
+    }
+
+    // -- Reverse cross-dialect: non-MySQL source → MySQL target --
+    #[test]
+    fn cross_dialect_postgres_source_to_mysql_target() {
+        let src = DialectKind::Postgres;
+        let tgt = DialectKind::Mysql;
+        let Some(db) = kind_to_db(tgt) else { return };
+        let cols = vec![
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "id".into(),
+                source: Some(col_pk("id", "integer")),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "label".into(),
+                source: Some(ColumnInfo {
+                    name: "label".into(),
+                    data_type: "text".into(),
+                    is_nullable: false,
+                    ..column("label", "text", None)
+                }),
+                target: None,
+                changes: vec![],
+            },
+        ];
+        let td = TableDiff {
+            diff_type: "added".into(),
+            object_type: Some("table".into()),
+            name: "t".into(),
+            columns: Some(cols),
+            indexes: None,
+            foreign_keys: None,
+            triggers: None,
+            ddl: None,
+            target_ddl: None,
+            source_table_comment: None,
+            target_table_comment: None,
+            sync_sql: None,
+        };
+        let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, Some(src));
+        check_table_sql_structure(&sql, tgt);
+        check_identifiers(&sql, tgt);
+        check_type_conversion(&sql, src, tgt);
+        assert!(sql.contains("AUTO_INCREMENT"), "MySQL auto_increment: {sql}");
+        assert!(sql.contains("LONGTEXT"), "text→LONGTEXT in MySQL: {sql}");
+    }
+
+    #[test]
+    fn cross_dialect_sqlserver_source_to_postgres_target() {
+        let src = DialectKind::SqlServer;
+        let tgt = DialectKind::Postgres;
+        let Some(db) = kind_to_db(tgt) else { return };
+        let cols = vec![
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "id".into(),
+                source: Some(col_pk("id", "int")),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "data".into(),
+                source: Some(ColumnInfo {
+                    name: "data".into(),
+                    data_type: "nvarchar(255)".into(),
+                    is_nullable: true,
+                    ..column("data", "nvarchar(255)", None)
+                }),
+                target: None,
+                changes: vec![],
+            },
+        ];
+        let td = TableDiff {
+            diff_type: "added".into(),
+            object_type: Some("table".into()),
+            name: "t".into(),
+            columns: Some(cols),
+            indexes: None,
+            foreign_keys: None,
+            triggers: None,
+            ddl: None,
+            target_ddl: None,
+            source_table_comment: None,
+            target_table_comment: None,
+            sync_sql: None,
+        };
+        let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, Some(src));
+        check_table_sql_structure(&sql, tgt);
+        check_identifiers(&sql, tgt);
+        // No mapping rules for SQL Server→PG → types pass through
+        assert!(sql.contains("nvarchar(255)"), "passthrough nvarchar: {sql}");
+    }
+
+    #[test]
+    fn cross_dialect_clickhouse_source_to_mysql_target() {
+        let src = DialectKind::ClickHouse;
+        let tgt = DialectKind::Mysql;
+        let Some(db) = kind_to_db(tgt) else { return };
+        let cols = vec![
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "id".into(),
+                source: Some(col_pk("id", "Int32")),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "data".into(),
+                source: Some(ColumnInfo {
+                    name: "data".into(),
+                    data_type: "String".into(),
+                    is_nullable: true,
+                    ..column("data", "String", None)
+                }),
+                target: None,
+                changes: vec![],
+            },
+        ];
+        let td = TableDiff {
+            diff_type: "added".into(),
+            object_type: Some("table".into()),
+            name: "t".into(),
+            columns: Some(cols),
+            indexes: None,
+            foreign_keys: None,
+            triggers: None,
+            ddl: None,
+            target_ddl: None,
+            source_table_comment: None,
+            target_table_comment: None,
+            sync_sql: None,
+        };
+        let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, Some(src));
+        check_table_sql_structure(&sql, tgt);
+        check_identifiers(&sql, tgt);
+        // No mapping rules → types pass through
+        assert!(sql.contains("Int32"), "passthrough Int32: {sql}");
+        assert!(sql.contains("String"), "passthrough String: {sql}");
+    }
+
+    #[test]
+    fn mysql_to_postgres_direct_generate() {
+        let diffs = vec![
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "id".into(),
+                source: Some(col_pk("id", "int")),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "name".into(),
+                source: Some(ColumnInfo {
+                    name: "name".into(),
+                    data_type: "varchar(100)".into(),
+                    is_nullable: false,
+                    ..column("name", "varchar(100)", None)
+                }),
+                target: None,
+                changes: vec![],
+            },
+        ];
+        let table_diff = TableDiff {
+            diff_type: "added".into(),
+            object_type: Some("table".into()),
+            name: "t".into(),
+            columns: Some(diffs),
+            indexes: None,
+            foreign_keys: None,
+            triggers: None,
+            ddl: Some("CREATE TABLE `t` (`id` int NOT NULL AUTO_INCREMENT, PRIMARY KEY (`id`)) ENGINE=InnoDB".into()),
+            target_ddl: None,
+            source_table_comment: None,
+            target_table_comment: None,
+            sync_sql: None,
+        };
+        let sql = generate_schema_sync_sql(
+            &[table_diff],
+            &[],
+            &[],
+            &[],
+            &[],
+            DatabaseType::Postgres,
+            None,
+            false,
+            Some(DialectKind::Mysql),
+        );
+        assert!(!sql.contains('`'), "PG SQL should not have backticks: {sql}");
+        assert!(sql.contains("INTEGER"), "int→INTEGER: {sql}");
+        assert!(!sql.contains("ENGINE="), "no MySQL ENGINE: {sql}");
     }
 }

@@ -37,6 +37,12 @@ pub struct DegradationMetrics {
     confidence_gauge: Mutex<f64>,
     auto_upgrade_total: AtomicU64,
     auto_downgrade_total: AtomicU64,
+    // Phase 15.5: OSC and rollback metrics
+    osc_probe_latency: Mutex<Vec<f64>>,
+    osc_execution_gauge: Mutex<f64>,
+    rollback_trigger_count: AtomicU64,
+    tag_block_count: AtomicU64,
+    trace_dropped_count: AtomicU64,
 }
 
 impl DegradationMetrics {
@@ -50,6 +56,11 @@ impl DegradationMetrics {
             confidence_gauge: Mutex::new(0.0),
             auto_upgrade_total: AtomicU64::new(0),
             auto_downgrade_total: AtomicU64::new(0),
+            osc_probe_latency: Mutex::new(Vec::new()),
+            osc_execution_gauge: Mutex::new(0.0),
+            rollback_trigger_count: AtomicU64::new(0),
+            tag_block_count: AtomicU64::new(0),
+            trace_dropped_count: AtomicU64::new(0),
         }
     }
 
@@ -81,6 +92,35 @@ impl DegradationMetrics {
 
     pub fn record_auto_downgrade(&self) {
         self.auto_downgrade_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    // --- Phase 15.5: OSC & rollback metrics ---
+
+    pub fn record_osc_probe_latency(&self, latency_ms: f64) {
+        if let Ok(mut h) = self.osc_probe_latency.lock() {
+            h.push(latency_ms);
+            if h.len() > 1000 {
+                h.remove(0);
+            }
+        }
+    }
+
+    pub fn set_osc_execution_status(&self, status: f64) {
+        if let Ok(mut g) = self.osc_execution_gauge.lock() {
+            *g = status;
+        }
+    }
+
+    pub fn record_rollback_trigger(&self) {
+        self.rollback_trigger_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_tag_block(&self) {
+        self.tag_block_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_trace_dropped(&self) {
+        self.trace_dropped_count.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn snapshot(&self) -> Vec<MetricEntry> {
@@ -134,6 +174,47 @@ impl DegradationMetrics {
             description: "Current confidence score".to_string(),
             labels: HashMap::new(),
             value: MetricValue::Gauge(*self.confidence_gauge.lock().unwrap_or_else(|e| e.into_inner())),
+        });
+
+        // Phase 15.5: OSC and rollback metrics
+        if let Ok(h) = self.osc_probe_latency.lock() {
+            if !h.is_empty() {
+                entries.push(MetricEntry {
+                    name: "dbx_osc_probe_latency".to_string(),
+                    metric_type: MetricType::Histogram,
+                    description: "Distribution of OSC probe latency in milliseconds".to_string(),
+                    labels: HashMap::new(),
+                    value: MetricValue::Histogram(h.iter().map(|&v| (v, 1u64)).collect()),
+                });
+            }
+        }
+        entries.push(MetricEntry {
+            name: "dbx_osc_execution_status".to_string(),
+            metric_type: MetricType::Gauge,
+            description: "Current OSC execution status (0=idle, 1=running, 2=completed, -1=error)".to_string(),
+            labels: HashMap::new(),
+            value: MetricValue::Gauge(*self.osc_execution_gauge.lock().unwrap_or_else(|e| e.into_inner())),
+        });
+        entries.push(MetricEntry {
+            name: "dbx_rollback_trigger_total".to_string(),
+            metric_type: MetricType::Counter,
+            description: "Total number of rollback triggers".to_string(),
+            labels: HashMap::new(),
+            value: MetricValue::Counter(self.rollback_trigger_count.load(Ordering::Relaxed)),
+        });
+        entries.push(MetricEntry {
+            name: "dbx_tag_block_total".to_string(),
+            metric_type: MetricType::Counter,
+            description: "Total number of tag policy blocks".to_string(),
+            labels: HashMap::new(),
+            value: MetricValue::Counter(self.tag_block_count.load(Ordering::Relaxed)),
+        });
+        entries.push(MetricEntry {
+            name: "dbx_trace_dropped_total".to_string(),
+            metric_type: MetricType::Counter,
+            description: "Total number of dropped trace entries".to_string(),
+            labels: HashMap::new(),
+            value: MetricValue::Counter(self.trace_dropped_count.load(Ordering::Relaxed)),
         });
 
         if let Ok(h) = self.sample_rate_histogram.lock() {

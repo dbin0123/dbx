@@ -110,7 +110,7 @@ impl TypeInferenceEngine for DefaultTypeInferenceEngine {
         let source_parsed = ColumnType::parse(source_type);
         let mapped_base = self.map_type_name(&source_parsed.base_type, source_dialect, target_dialect);
 
-        let target_caps = DialectCapabilityDescriptor::for_dialect(target_dialect);
+        let target_caps = crate::sql_dialect::resolve(target_dialect);
         let needs_precision = mapped_base.to_ascii_lowercase().contains("decimal")
             || mapped_base.to_ascii_lowercase().contains("numeric")
             || mapped_base.to_ascii_lowercase().contains("varchar");
