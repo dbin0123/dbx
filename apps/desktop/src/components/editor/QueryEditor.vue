@@ -10,7 +10,8 @@ import SqlExecutionTargetPicker from "./SqlExecutionTargetPicker.vue";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { copyToClipboard } from "@/lib/clipboard";
 import { resolveExecutableSql, type SqlExecutionSnapshot, type SqlExecutionOverride, type SqlExecutionCandidate } from "@/lib/sqlExecutionTarget";
-import { buildExecutionCandidates, executableStatementRanges, hasMultipleExecutionTargets, supportsExecutionTargetPicker, type SqlTextRange } from "@/lib/sqlStatementRanges";
+import { buildExecutionCandidates, hasMultipleExecutionTargets, supportsExecutionTargetPicker, type SqlTextRange } from "@/lib/sqlStatementRanges";
+import { executableStatementRangeCacheForDoc, executableStatementRangeStartingAt as executableStatementRangeStartingAtLine, type ExecutableStatementRangeCache } from "@/lib/executableStatementRangeCache";
 import { formatSqlText, type SqlFormatDialect } from "@/lib/sqlFormatter";
 import { formatMongoShellText } from "@/lib/mongoFormatter";
 import { useConnectionStore } from "@/stores/connectionStore";
@@ -213,6 +214,7 @@ let editorIsActive = true;
 let tableReferenceDropListenerRegistered = false;
 let imeCompositionActive = false;
 let pendingImeModelEmit = false;
+let executableStatementRangeCache: ExecutableStatementRangeCache | null = null;
 const tableNavigationHoverClass = "query-editor--table-navigation-hover";
 
 function editorThemeAppearance() {
@@ -512,7 +514,8 @@ function openTableDdlFromContextMenu() {
 }
 
 function executableStatementRangeStartingAt(currentView: EditorViewType, lineFrom: number) {
-  return executableStatementRanges(currentView.state.doc.toString(), props.databaseType).find((range) => range.from === lineFrom) ?? null;
+  executableStatementRangeCache = executableStatementRangeCacheForDoc(executableStatementRangeCache, currentView.state.doc, props.databaseType);
+  return executableStatementRangeStartingAtLine(executableStatementRangeCache, lineFrom);
 }
 
 function executeSqlStatementFromGutter(currentView: EditorViewType, line: { from: number; to: number }, event: Event): boolean {
@@ -923,6 +926,17 @@ function setSemanticDiagnostics(next: SqlSemanticDiagnostic[]) {
   reconfigureDiagnostics();
 }
 
+function clearScheduledSemanticDiagnostics() {
+  semanticDiagnosticRunId++;
+  if (semanticDiagnosticTimer) clearTimeout(semanticDiagnosticTimer);
+  semanticDiagnosticTimer = null;
+  pendingSemanticDiagnosticPreserveOutsideRanges = false;
+}
+
+function shouldSkipSqlSemanticDiagnostics() {
+  return props.databaseType !== "redis" && !settingsStore.editorSettings.sqlSemanticDiagnosticsEnabled;
+}
+
 function rangesOverlap(left: { from: number; to: number }, right: { from: number; to: number }): boolean {
   return left.from < right.to && right.from < left.to;
 }
@@ -1043,6 +1057,10 @@ async function refreshSemanticDiagnostics(options: { preserveOutsideRanges?: boo
     setSemanticDiagnostics(buildRedisSyntaxDiagnostics(sql));
     return;
   }
+  if (shouldSkipSqlSemanticDiagnostics()) {
+    setSemanticDiagnostics([]);
+    return;
+  }
   if (!shouldRunSqlSemanticDiagnostics(sql, currentView.state.selection.main.head, { databaseType: props.databaseType })) {
     scheduleSemanticDiagnostics(1200, { preserveOutsideRanges: options.preserveOutsideRanges });
     return;
@@ -1099,6 +1117,11 @@ async function refreshSemanticDiagnostics(options: { preserveOutsideRanges?: boo
 
 function scheduleSemanticDiagnostics(delay = 500, options: { preserveOutsideRanges?: boolean } = {}) {
   if (!editorIsActive) return;
+  if (shouldSkipSqlSemanticDiagnostics()) {
+    clearScheduledSemanticDiagnostics();
+    setSemanticDiagnostics([]);
+    return;
+  }
   pendingSemanticDiagnosticPreserveOutsideRanges = !!options.preserveOutsideRanges;
   if (semanticDiagnosticTimer) clearTimeout(semanticDiagnosticTimer);
   semanticDiagnosticTimer = setTimeout(() => {
@@ -2050,25 +2073,18 @@ onMounted(async () => {
   const theme = await loadEditorTheme(initialSettings.theme, editorThemeAppearance(), getCurrentCustomThemeColors());
 
   class RunStatementGutterMarker extends GutterMarker {
-    constructor(private readonly isExecutable: boolean) {
-      super();
-    }
-
     toDOM() {
-      const marker = document.createElement(this.isExecutable ? "button" : "span");
-      marker.className = this.isExecutable ? "cm-run-statement-marker cm-run-statement-marker--active" : "cm-run-statement-marker";
-      if (this.isExecutable) {
-        marker.setAttribute("type", "button");
-        marker.setAttribute("aria-label", "Execute statement");
-      }
+      const marker = document.createElement("button");
+      marker.className = "cm-run-statement-marker cm-run-statement-marker--active";
+      marker.setAttribute("type", "button");
+      marker.setAttribute("aria-label", "Execute statement");
       marker.innerHTML =
         '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"></path></svg>';
       return marker;
     }
   }
 
-  const executableStatementMarker = new RunStatementGutterMarker(true);
-  const inactiveStatementMarker = new RunStatementGutterMarker(false);
+  const executableStatementMarker = new RunStatementGutterMarker();
 
   const activeLineHighlighter = ViewPlugin.fromClass(
     class {
@@ -2112,7 +2128,7 @@ onMounted(async () => {
       gutter({
         class: "cm-run-statement-gutter",
         lineMarker(currentView, line) {
-          return executableStatementRangeStartingAt(currentView, line.from) ? executableStatementMarker : inactiveStatementMarker;
+          return executableStatementRangeStartingAt(currentView, line.from) ? executableStatementMarker : null;
         },
         domEventHandlers: {
           mousedown: executeSqlStatementFromGutter,
@@ -2516,14 +2532,25 @@ watch(
   { deep: true },
 );
 
+watch(
+  () => settingsStore.editorSettings.sqlSemanticDiagnosticsEnabled,
+  (enabled) => {
+    if (props.databaseType === "redis") return;
+    if (!shouldSkipSqlSemanticDiagnostics() && enabled) {
+      scheduleSemanticDiagnostics(0);
+      return;
+    }
+    clearScheduledSemanticDiagnostics();
+    setSemanticDiagnostics([]);
+  },
+);
+
 function pauseQueryEditorBackgroundWork() {
   flushEditorViewport();
   flushEditorSelection();
   clearTableNavigationHover();
   editorIsActive = false;
-  semanticDiagnosticRunId++;
-  if (semanticDiagnosticTimer) clearTimeout(semanticDiagnosticTimer);
-  semanticDiagnosticTimer = null;
+  clearScheduledSemanticDiagnostics();
   completionEpoch++;
   unregisterTableReferenceDropListener();
 }

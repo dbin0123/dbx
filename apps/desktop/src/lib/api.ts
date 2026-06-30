@@ -361,7 +361,9 @@ export const mqListPermissions = forward("mqListPermissions");
 export const mqIssueToken = forward("mqIssueToken");
 export const mqListTokenRecords = forward("mqListTokenRecords");
 export const mqGetBacklog = forward("mqGetBacklog");
+export const mqGetClusterInfo = forward("mqGetClusterInfo");
 export const mqRawRequest = forward("mqRawRequest");
+export const mqSendMessage = forward("mqSendMessage");
 
 // MongoDB
 export const mongoListDatabases = forward("mongoListDatabases");

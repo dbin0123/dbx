@@ -66,6 +66,7 @@ export interface AgentDriverInfo {
   installed: boolean;
   installed_version: string | null;
   update_available: boolean;
+  requires_java_runtime?: boolean;
   jre: string;
   jre_installed: boolean;
 }
@@ -1465,8 +1466,8 @@ export async function elasticsearchListIndices(connectionId: string): Promise<st
   return collections.map((c) => c.name);
 }
 
-export async function vectorListCollections(connectionId: string): Promise<CollectionInfo[]> {
-  return mongoListCollections(connectionId, "default");
+export async function vectorListCollections(connectionId: string, database?: string): Promise<CollectionInfo[]> {
+  return mongoListCollections(connectionId, database || "default");
 }
 
 export async function mongoFindDocuments(connectionId: string, database: string, collection: string, skip: number, limit: number, filter?: string, projection?: string, sort?: string, executionId?: string): Promise<MongoDocumentResult> {

@@ -34,7 +34,7 @@ import { canUseKeylessRowPredicate, editableRowIdentifierColumns } from "@/lib/t
 import { TABLE_DATA_EXPORT_PAGE_SIZE } from "@/lib/tableDataExport";
 import { tableMetaForDataTab } from "@/lib/tableDataTabMeta";
 import { quoteTableIdentifier } from "@/lib/tableSelectSql";
-import { connectionUsesDatabaseObjectTreeMode, connectionUsesSchemaExecutionContext, effectiveDatabaseTypeForConnection } from "@/lib/jdbcDialect";
+import { connectionUsesDatabaseObjectTreeMode, connectionUsesSchemaExecutionContext, effectiveDatabaseTypeForConnection, metadataSchemaForConnection } from "@/lib/jdbcDialect";
 import { queryTimeoutSecsForConnection } from "@/lib/queryTimeout";
 import { sortDataGridRows, type DataGridSortDirection } from "@/lib/dataGridSort";
 import { normalizeResultPageSize } from "@/lib/paginationPageSize";
@@ -684,10 +684,11 @@ export const useQueryStore = defineStore("query", () => {
     return id;
   }
 
-  function openMqAdmin(connectionId: string, target?: { tenant?: string }) {
+  function openMqAdmin(connectionId: string, target?: { tenant?: string; initialTab?: QueryTab["mqInitialTab"] }) {
     const existing = tabs.value.find((tab) => tab.mode === "mq" && tab.connectionId === connectionId);
     if (existing) {
       if (target?.tenant) existing.mqTenant = target.tenant;
+      if (target?.initialTab) existing.mqInitialTab = target.initialTab;
       activeTabId.value = existing.id;
       return existing.id;
     }
@@ -705,6 +706,7 @@ export const useQueryStore = defineStore("query", () => {
       isExplaining: false,
       mode: "mq",
       mqTenant: target?.tenant,
+      mqInitialTab: target?.initialTab,
     };
     tabs.value.push(tab);
     activeTabId.value = id;
@@ -910,6 +912,7 @@ export const useQueryStore = defineStore("query", () => {
       explainExecutionId: undefined,
       mode: original.mode,
       mqTenant: original.mqTenant,
+      mqInitialTab: original.mqInitialTab,
       nacosNamespace: original.nacosNamespace,
       nacosNamespaceName: original.nacosNamespaceName,
       structureTableName: original.structureTableName,
@@ -1285,7 +1288,8 @@ export const useQueryStore = defineStore("query", () => {
       if (dbType === "postgres" || dbType === "kwdb") schema = "public";
       else schema = "";
     }
-    const metadataSchema = normalizeOracleLikeMetadataIdentifier(dbType, schema || undefined, analysis.schema ? analysis.schemaQuoted : false) || "";
+    const resolvedSchema = metadataSchemaForConnection(conn, tab.database, schema || undefined);
+    const metadataSchema = normalizeOracleLikeMetadataIdentifier(dbType, resolvedSchema || undefined, analysis.schema ? analysis.schemaQuoted : false) || "";
     const metadataTableName = normalizeOracleLikeMetadataIdentifier(dbType, analysis.tableName, analysis.tableNameQuoted)!;
     const metadataAnalysis = normalizeOracleLikeQueryAnalysis(dbType, analysis, metadataSchema || undefined, metadataTableName);
 

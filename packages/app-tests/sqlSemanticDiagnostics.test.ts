@@ -50,6 +50,22 @@ test("flags confirmed missing tables", () => {
   assert.equal(diagnostics[0]?.severity, "error");
 });
 
+test("trims whitespace from missing table diagnostic spans", () => {
+  const analysis: SqlReferenceAnalysis = {
+    tables: [{ name: "t_00011", span: span(32, 39) }],
+    columns: [],
+  };
+
+  const diagnostics = buildSqlSemanticDiagnostics(analysis, {
+    tables: [],
+    columnsByTable: new Map(),
+    missingTables: new Set(["t_00011"]),
+    sql: "SELECT * FROM demo_2000_tables.t_00011 AS t0",
+  });
+
+  assert.deepEqual(diagnostics[0]?.span, span(32, 38));
+});
+
 test("flags missing columns when column metadata is cached with a schema key", () => {
   const analysis: SqlReferenceAnalysis = {
     tables: [{ name: "t_10001", span: span(24, 32) }],
@@ -162,6 +178,88 @@ test("resolves qualified aliases against the table in the same statement", () =>
   assert.deepEqual(
     diagnostics.map((diagnostic) => diagnostic.message),
     ["Unknown column x.bad"],
+  );
+});
+
+test("resolves correlated subquery columns against the visible query scopes", () => {
+  const analysis: SqlReferenceAnalysis = {
+    tables: [
+      { name: "mds_base_house", alias: "aa", span: span(1, 14), scope_id: 0 },
+      { name: "mds_base_owner", span: span(1, 14), scope_id: 1 },
+      { name: "FDS_PAY_ORDER", span: span(1, 13), scope_id: 2 },
+      { name: "ac_fund_acct", span: span(1, 12), scope_id: 3 },
+    ],
+    columns: [
+      { name: "house_id", qualifier: "aa", span: span(8, 15), scope_id: 0 },
+      { name: "hou_add", qualifier: "aa", span: span(18, 24), scope_id: 0 },
+      { name: "contract_code", qualifier: "aa", span: span(27, 39), scope_id: 0 },
+      { name: "pay_type", qualifier: "aa", span: span(42, 49), scope_id: 0 },
+      { name: "HOU_PAY_AMT", qualifier: "aa", span: span(52, 62), scope_id: 0 },
+      { name: "OWNER_NAME", span: span(8, 17), scope_id: 1 },
+      { name: "HOUSE_ID", span: span(8, 15), scope_id: 1 },
+      { name: "HOUSE_ID", qualifier: "aa", span: span(8, 15), scope_id: 1 },
+      { name: "PAY_DATA", span: span(8, 15), scope_id: 2 },
+      { name: "contract_code", qualifier: "aa", span: span(8, 20), scope_id: 2 },
+      { name: "owner_id", span: span(8, 15), scope_id: 3 },
+      { name: "house_id", qualifier: "aa", span: span(8, 15), scope_id: 3 },
+    ],
+    scopes: [
+      { id: 0, parent_id: null },
+      { id: 1, parent_id: 0 },
+      { id: 2, parent_id: 0 },
+      { id: 3, parent_id: 0 },
+    ],
+  };
+
+  const diagnostics = buildSqlSemanticDiagnostics(analysis, {
+    tables: [
+      { name: "mds_base_house", type: "table" },
+      { name: "mds_base_owner", type: "table" },
+      { name: "FDS_PAY_ORDER", type: "table" },
+      { name: "ac_fund_acct", type: "table" },
+    ],
+    columnsByTable: new Map([
+      ["mds_base_house", ["house_id", "hou_add", "contract_code", "pay_type", "HOU_PAY_AMT"].map((name) => ({ name, table: "mds_base_house" }))],
+      ["mds_base_owner", ["OWNER_NAME", "HOUSE_ID"].map((name) => ({ name, table: "mds_base_owner" }))],
+      ["FDS_PAY_ORDER", [{ name: "PAY_DATA", table: "FDS_PAY_ORDER" }]],
+      ["ac_fund_acct", [{ name: "owner_id", table: "ac_fund_acct" }]],
+    ]),
+  });
+
+  assert.deepEqual(diagnostics, []);
+});
+
+test("keeps missing-column diagnostics inside nested query scopes", () => {
+  const analysis: SqlReferenceAnalysis = {
+    tables: [
+      { name: "parent_table", alias: "p", span: span(1, 12), scope_id: 0 },
+      { name: "child_table", alias: "c", span: span(1, 11), scope_id: 1 },
+    ],
+    columns: [
+      { name: "id", qualifier: "p", span: span(8, 9), scope_id: 0 },
+      { name: "missing", qualifier: "c", span: span(8, 15), scope_id: 1 },
+      { name: "id", qualifier: "p", span: span(8, 9), scope_id: 1 },
+    ],
+    scopes: [
+      { id: 0, parent_id: null },
+      { id: 1, parent_id: 0 },
+    ],
+  };
+
+  const diagnostics = buildSqlSemanticDiagnostics(analysis, {
+    tables: [
+      { name: "parent_table", type: "table" },
+      { name: "child_table", type: "table" },
+    ],
+    columnsByTable: new Map([
+      ["parent_table", [{ name: "id", table: "parent_table" }]],
+      ["child_table", [{ name: "id", table: "child_table" }]],
+    ]),
+  });
+
+  assert.deepEqual(
+    diagnostics.map((diagnostic) => diagnostic.message),
+    ["Unknown column c.missing"],
   );
 });
 

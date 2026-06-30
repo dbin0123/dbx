@@ -190,6 +190,16 @@ test("normalizes data grid render mode", () => {
   assert.equal(normalizeEditorSettings({ dataGridRenderMode: "unknown" as any }).dataGridRenderMode, "canvas");
 });
 
+test("normalizes table font size", () => {
+  assert.equal(DEFAULT_EDITOR_SETTINGS.tableFontSize, 13);
+  assert.equal(normalizeEditorSettings({}).tableFontSize, 13);
+  assert.equal(normalizeEditorSettings({ tableFontSize: 12 }).tableFontSize, 12);
+  assert.equal(normalizeEditorSettings({ tableFontSize: 14.6 }).tableFontSize, 15);
+  assert.equal(normalizeEditorSettings({ tableFontSize: 8 }).tableFontSize, 12);
+  assert.equal(normalizeEditorSettings({ tableFontSize: 20 }).tableFontSize, 16);
+  assert.equal(normalizeEditorSettings({ tableFontSize: "large" as any }).tableFontSize, 13);
+});
+
 test("normalizes table structure editor density", () => {
   assert.equal(DEFAULT_EDITOR_SETTINGS.structureEditorDensity, "compact");
   assert.equal(normalizeEditorSettings({}).structureEditorDensity, "compact");
@@ -255,7 +265,7 @@ test("defaults column formatters to an empty record", () => {
 test("keeps only valid saved column formatter configs", () => {
   const settings = normalizeEditorSettings({
     columnFormatters: {
-      "conn::db::public::users::created_at": { kind: "datetime", unit: "auto" },
+      "conn::db::public::users::created_at": { kind: "datetime", unit: "auto", pattern: "YYYY-MM-DD HH:mm:ss" },
       "conn::db::public::users::bad_date": { kind: "datetime", unit: "bogus" },
       "conn::db::public::users::name": { kind: "mask", prefix: 2, suffix: 2 },
       "conn::db::public::users::payload": { kind: "json-path", path: "$.user.name" },
@@ -270,7 +280,7 @@ test("keeps only valid saved column formatter configs", () => {
   } as any);
 
   assert.deepEqual(settings.columnFormatters, {
-    "conn::db::public::users::created_at": { kind: "datetime", unit: "auto" },
+    "conn::db::public::users::created_at": { kind: "datetime", unit: "auto", pattern: "YYYY-MM-DD HH:mm:ss" },
     "conn::db::public::users::name": { kind: "mask", prefix: 2, suffix: 2 },
     "conn::db::public::users::payload": { kind: "json-path", path: "$.user.name" },
     "conn::db::public::users::status": { kind: "custom-ref", formatterId: "fmt_1" },

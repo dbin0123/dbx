@@ -369,6 +369,7 @@ async function previewDocumentChanges(changes: DocumentGridChanges): Promise<str
 const customSaveHandler = computed<CustomSaveHandler>(() => ({
   save: gridSave,
   preview: previewDocumentChanges,
+  supportsInsert: true,
 }));
 
 function stopDocumentLoadingTimer() {

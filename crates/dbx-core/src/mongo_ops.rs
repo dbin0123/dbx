@@ -78,7 +78,7 @@ pub async fn mongo_list_collections_core(
             let names = sort_names(elasticsearch_driver::list_indices(client).await?);
             Ok(names.into_iter().map(|n| CollectionInfo { name: n.clone(), id: n, dimension: None }).collect())
         }
-        PoolKind::VectorDb(client) => vector_driver::list_collections(client).await,
+        PoolKind::VectorDb(client) => vector_driver::list_collections_with_db(&client, database).await,
         PoolKind::Agent(client) => {
             let mut client = client.lock().await;
             let names = sort_names(client.mongo_list_collections(database).await?);
