@@ -57,6 +57,7 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 sysinfo = { version = "0.32", features = ["system"] }
 minijinja = "2"
 notify = { version = "7", default-features = false, features = ["macos_kqueue"] }
+arc-swap = "1"
 
 [dev-dependencies]
 insta = { version = "1", features = ["json", "glob"] }

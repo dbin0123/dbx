@@ -284,6 +284,60 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         auto_resolved INTEGER NOT NULL DEFAULT 1,
         notes TEXT NOT NULL DEFAULT ''
     )",
+    "CREATE TABLE IF NOT EXISTS config_audit_log (
+        id TEXT PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        operator TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        key_path TEXT NOT NULL,
+        change_diff TEXT NOT NULL DEFAULT '{}',
+        config_snapshot TEXT NOT NULL DEFAULT '{}'
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_config_audit_key_path
+        ON config_audit_log (key_path, timestamp DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_config_audit_operator
+        ON config_audit_log (operator, timestamp DESC)",
+    "CREATE TABLE IF NOT EXISTS config_version_snapshots (
+        id TEXT PRIMARY KEY,
+        key_path TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        checksum TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(key_path, version)
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_config_snapshots_key_path
+        ON config_version_snapshots (key_path, version DESC)",
+    "CREATE TABLE IF NOT EXISTS config_approval_records (
+        id TEXT PRIMARY KEY,
+        config_domain TEXT NOT NULL,
+        change_description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'draft',
+        requester TEXT NOT NULL,
+        reviewer TEXT,
+        reviewed_at TEXT,
+        webhook_url TEXT,
+        draft_config_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_config_approval_domain
+        ON config_approval_records (config_domain, status, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_config_approval_status
+        ON config_approval_records (status, created_at DESC)",
+    "CREATE TABLE IF NOT EXISTS config_drift_alerts (
+        id TEXT PRIMARY KEY,
+        source_env TEXT NOT NULL DEFAULT '',
+        target_env TEXT NOT NULL DEFAULT '',
+        config_key TEXT NOT NULL,
+        expected_checksum TEXT NOT NULL DEFAULT '',
+        actual_checksum TEXT NOT NULL DEFAULT '',
+        details_json TEXT NOT NULL DEFAULT '{}',
+        detected_at TEXT NOT NULL,
+        acknowledged INTEGER NOT NULL DEFAULT 0
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_config_drift_alerts_ack
+        ON config_drift_alerts (acknowledged, detected_at DESC)",
 ];
 
 impl Storage {
@@ -1927,6 +1981,461 @@ impl Storage {
         let id = id.to_string();
         self.with_conn(move |conn| {
             conn.execute("DELETE FROM rebase_history WHERE id = ?1", [id]).map(|_| ()).map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    // ---- Governance: Config Audit ----
+
+    pub async fn save_audit_entry(&self, entry: &crate::config::governance::ConfigAuditEntry) -> Result<(), String> {
+        let entry = entry.clone();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO config_audit_log (id, timestamp, operator, reason, key_path, change_diff, config_snapshot) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    entry.id,
+                    entry.timestamp,
+                    entry.operator,
+                    entry.reason,
+                    entry.key_path,
+                    serde_json::to_string(&entry.change_diff).map_err(|e| e.to_string())?,
+                    serde_json::to_string(&entry.config_snapshot).map_err(|e| e.to_string())?,
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn query_audit_entries(
+        &self,
+        query: &crate::config::governance::AuditQuery,
+    ) -> Result<crate::config::governance::AuditSummary, String> {
+        let key_path = query.key_path.clone();
+        let operator = query.operator.clone();
+        let limit = query.limit.unwrap_or(50) as i64;
+        let offset = query.offset.unwrap_or(0) as i64;
+
+        self.with_conn(move |conn| {
+            let (where_clause, total): (String, i64) = match (&key_path, &operator) {
+                (Some(kp), Some(op)) => {
+                    let total: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM config_audit_log WHERE key_path = ?1 AND operator = ?2",
+                            params![kp, op],
+                            |row| row.get(0),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    ("WHERE key_path = ?1 AND operator = ?2".to_string(), total)
+                }
+                (Some(kp), None) => {
+                    let total: i64 = conn
+                        .query_row("SELECT COUNT(*) FROM config_audit_log WHERE key_path = ?1", params![kp], |row| {
+                            row.get(0)
+                        })
+                        .map_err(|e| e.to_string())?;
+                    ("WHERE key_path = ?1".to_string(), total)
+                }
+                (None, Some(op)) => {
+                    let total: i64 = conn
+                        .query_row("SELECT COUNT(*) FROM config_audit_log WHERE operator = ?1", params![op], |row| {
+                            row.get(0)
+                        })
+                        .map_err(|e| e.to_string())?;
+                    ("WHERE operator = ?1".to_string(), total)
+                }
+                (None, None) => {
+                    let total: i64 = conn
+                        .query_row("SELECT COUNT(*) FROM config_audit_log", [], |row| row.get(0))
+                        .map_err(|e| e.to_string())?;
+                    (String::new(), total)
+                }
+            };
+
+            let sql = format!(
+                "SELECT id, timestamp, operator, reason, key_path, change_diff, config_snapshot \
+                 FROM config_audit_log {where_clause} ORDER BY timestamp DESC LIMIT ?{limit_idx} OFFSET ?{offset_idx}",
+                limit_idx = if where_clause.is_empty() { 1 } else { 3 },
+                offset_idx = if where_clause.is_empty() { 2 } else { 4 },
+            );
+
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let rows = match (&key_path, &operator) {
+                (Some(kp), Some(op)) => stmt
+                    .query_map(params![kp, op, limit, offset], Self::map_audit_row)
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?,
+                (Some(kp), None) => stmt
+                    .query_map(params![kp, limit, offset], Self::map_audit_row)
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?,
+                (None, Some(op)) => stmt
+                    .query_map(params![op, limit, offset], Self::map_audit_row)
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?,
+                (None, None) => stmt
+                    .query_map(params![limit, offset], Self::map_audit_row)
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?,
+            };
+
+            Ok(crate::config::governance::AuditSummary { total_entries: total as usize, entries: rows })
+        })
+        .await
+    }
+
+    fn map_audit_row(row: &rusqlite::Row) -> rusqlite::Result<crate::config::governance::ConfigAuditEntry> {
+        let change_diff_str: String = row.get(5)?;
+        let config_snapshot_str: String = row.get(6)?;
+        Ok(crate::config::governance::ConfigAuditEntry {
+            id: row.get(0)?,
+            timestamp: row.get(1)?,
+            operator: row.get(2)?,
+            reason: row.get(3)?,
+            key_path: row.get(4)?,
+            change_diff: serde_json::from_str(&change_diff_str).unwrap_or_default(),
+            config_snapshot: serde_json::from_str(&config_snapshot_str).unwrap_or_default(),
+        })
+    }
+
+    // ---- Governance: Config Version Snapshots ----
+
+    pub async fn next_config_version(&self, key_path: &str) -> Result<u64, String> {
+        let kp = key_path.to_string();
+        self.with_conn(move |conn| {
+            let max_version: Option<u64> = conn
+                .query_row("SELECT MAX(version) FROM config_version_snapshots WHERE key_path = ?1", [&kp], |row| {
+                    row.get(0)
+                })
+                .optional()
+                .map_err(|e| e.to_string())?;
+            Ok(max_version.unwrap_or(0) + 1)
+        })
+        .await
+    }
+
+    pub async fn save_config_snapshot(
+        &self,
+        snap: &crate::config::governance::ConfigVersionSnapshot,
+    ) -> Result<(), String> {
+        let snap = snap.clone();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO config_version_snapshots (id, key_path, version, snapshot_json, checksum, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    snap.id,
+                    snap.key_path,
+                    snap.version,
+                    serde_json::to_string(&snap.snapshot_json).map_err(|e| e.to_string())?,
+                    snap.checksum,
+                    snap.created_at,
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn load_config_snapshot(
+        &self,
+        key_path: &str,
+        version: u64,
+    ) -> Result<Option<crate::config::governance::ConfigVersionSnapshot>, String> {
+        let kp = key_path.to_string();
+        self.with_conn(move |conn| {
+            let result = conn
+                .query_row(
+                    "SELECT id, key_path, version, snapshot_json, checksum, created_at \
+                     FROM config_version_snapshots WHERE key_path = ?1 AND version = ?2",
+                    params![kp, version],
+                    |row| {
+                        let json_str: String = row.get(3)?;
+                        Ok(crate::config::governance::ConfigVersionSnapshot {
+                            id: row.get(0)?,
+                            key_path: row.get(1)?,
+                            version: row.get(2)?,
+                            snapshot_json: serde_json::from_str(&json_str).unwrap_or_default(),
+                            checksum: row.get(4)?,
+                            created_at: row.get(5)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            Ok(result)
+        })
+        .await
+    }
+
+    pub async fn list_config_snapshots(
+        &self,
+        key_path: &str,
+    ) -> Result<Vec<crate::config::governance::ConfigVersionSnapshot>, String> {
+        let kp = key_path.to_string();
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, key_path, version, snapshot_json, checksum, created_at \
+                     FROM config_version_snapshots WHERE key_path = ?1 ORDER BY version DESC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([kp], |row| {
+                    let json_str: String = row.get(3)?;
+                    Ok(crate::config::governance::ConfigVersionSnapshot {
+                        id: row.get(0)?,
+                        key_path: row.get(1)?,
+                        version: row.get(2)?,
+                        snapshot_json: serde_json::from_str(&json_str).unwrap_or_default(),
+                        checksum: row.get(4)?,
+                        created_at: row.get(5)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    // ---- Governance: Approval Records ----
+
+    pub async fn save_approval_record(&self, record: &crate::config::governance::ApprovalRecord) -> Result<(), String> {
+        let record = record.clone();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO config_approval_records \
+                 (id, config_domain, change_description, status, requester, reviewer, reviewed_at, webhook_url, draft_config_json, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    record.id,
+                    record.config_domain,
+                    record.change_description,
+                    serde_json::to_string(&record.status).map_err(|e| e.to_string())?,
+                    record.requester,
+                    record.reviewer,
+                    record.reviewed_at,
+                    record.webhook_url,
+                    serde_json::to_string(&record.draft_config_json).map_err(|e| e.to_string())?,
+                    record.created_at,
+                    record.updated_at,
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn load_approval_record(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::config::governance::ApprovalRecord>, String> {
+        let id = id.to_string();
+        self.with_conn(move |conn| {
+            let result = conn
+                .query_row(
+                    "SELECT id, config_domain, change_description, status, requester, reviewer, reviewed_at, webhook_url, draft_config_json, created_at, updated_at \
+                     FROM config_approval_records WHERE id = ?1",
+                    [id],
+                    |row| {
+                        let status_str: String = row.get(3)?;
+                        let draft_json_str: String = row.get(8)?;
+                        Ok(crate::config::governance::ApprovalRecord {
+                            id: row.get(0)?,
+                            config_domain: row.get(1)?,
+                            change_description: row.get(2)?,
+                            status: serde_json::from_str(&status_str).unwrap_or(crate::config::governance::ApprovalStatus::Draft),
+                            requester: row.get(4)?,
+                            reviewer: row.get(5)?,
+                            reviewed_at: row.get(6)?,
+                            webhook_url: row.get(7)?,
+                            draft_config_json: serde_json::from_str(&draft_json_str).unwrap_or_default(),
+                            created_at: row.get(9)?,
+                            updated_at: row.get(10)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            Ok(result)
+        })
+        .await
+    }
+
+    pub async fn query_approval_records(
+        &self,
+        status_filter: Option<crate::config::governance::ApprovalStatus>,
+    ) -> Result<Vec<crate::config::governance::ApprovalRecord>, String> {
+        self.with_conn(move |conn| {
+            let (sql, params): (String, Vec<Box<dyn ToSql + Send>>) = match &status_filter {
+                Some(s) => {
+                    let status_str = serde_json::to_string(s).unwrap_or_default();
+                    (
+                        "SELECT id, config_domain, change_description, status, requester, reviewer, reviewed_at, webhook_url, draft_config_json, created_at, updated_at \
+                         FROM config_approval_records WHERE status = ?1 ORDER BY created_at DESC".to_string(),
+                        vec![Box::new(status_str) as Box<dyn ToSql + Send>],
+                    )
+                }
+                None => (
+                    "SELECT id, config_domain, change_description, status, requester, reviewer, reviewed_at, webhook_url, draft_config_json, created_at, updated_at \
+                     FROM config_approval_records ORDER BY created_at DESC".to_string(),
+                    vec![],
+                ),
+            };
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())), |row| {
+                    let status_str: String = row.get(3)?;
+                    let draft_json_str: String = row.get(8)?;
+                    Ok(crate::config::governance::ApprovalRecord {
+                        id: row.get(0)?,
+                        config_domain: row.get(1)?,
+                        change_description: row.get(2)?,
+                        status: serde_json::from_str(&status_str).unwrap_or(crate::config::governance::ApprovalStatus::Draft),
+                        requester: row.get(4)?,
+                        reviewer: row.get(5)?,
+                        reviewed_at: row.get(6)?,
+                        webhook_url: row.get(7)?,
+                        draft_config_json: serde_json::from_str(&draft_json_str).unwrap_or_default(),
+                        created_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    pub async fn query_approval_records_by_domain(
+        &self,
+        domain: &str,
+    ) -> Result<Vec<crate::config::governance::ApprovalRecord>, String> {
+        let domain = domain.to_string();
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, config_domain, change_description, status, requester, reviewer, reviewed_at, webhook_url, draft_config_json, created_at, updated_at \
+                     FROM config_approval_records WHERE config_domain = ?1 ORDER BY created_at DESC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([domain], |row| {
+                    let status_str: String = row.get(3)?;
+                    let draft_json_str: String = row.get(8)?;
+                    Ok(crate::config::governance::ApprovalRecord {
+                        id: row.get(0)?,
+                        config_domain: row.get(1)?,
+                        change_description: row.get(2)?,
+                        status: serde_json::from_str(&status_str).unwrap_or(crate::config::governance::ApprovalStatus::Draft),
+                        requester: row.get(4)?,
+                        reviewer: row.get(5)?,
+                        reviewed_at: row.get(6)?,
+                        webhook_url: row.get(7)?,
+                        draft_config_json: serde_json::from_str(&draft_json_str).unwrap_or_default(),
+                        created_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    // ---- Governance: Drift Alerts ----
+
+    pub async fn save_drift_alert(&self, alert: &crate::config::governance::DriftAlert) -> Result<(), String> {
+        let alert = alert.clone();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO config_drift_alerts \
+                 (id, source_env, target_env, config_key, expected_checksum, actual_checksum, details_json, detected_at, acknowledged) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    alert.id,
+                    alert.source_env,
+                    alert.target_env,
+                    alert.config_key,
+                    alert.expected_checksum,
+                    alert.actual_checksum,
+                    serde_json::to_string(&alert.details_json).map_err(|e| e.to_string())?,
+                    alert.detected_at,
+                    alert.acknowledged,
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn acknowledge_drift_alert(&self, id: &str) -> Result<(), String> {
+        let id = id.to_string();
+        self.with_conn(move |conn| {
+            conn.execute("UPDATE config_drift_alerts SET acknowledged = 1 WHERE id = ?1", [id])
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn query_drift_alerts(
+        &self,
+        acknowledged: Option<bool>,
+    ) -> Result<Vec<crate::config::governance::DriftAlert>, String> {
+        self.with_conn(move |conn| {
+            let (sql, params): (String, Vec<Box<dyn ToSql + Send>>) = match acknowledged {
+                Some(true) => (
+                    "SELECT id, source_env, target_env, config_key, expected_checksum, actual_checksum, details_json, detected_at, acknowledged \
+                     FROM config_drift_alerts WHERE acknowledged = 1 ORDER BY detected_at DESC".to_string(),
+                    vec![],
+                ),
+                Some(false) => (
+                    "SELECT id, source_env, target_env, config_key, expected_checksum, actual_checksum, details_json, detected_at, acknowledged \
+                     FROM config_drift_alerts WHERE acknowledged = 0 ORDER BY detected_at DESC".to_string(),
+                    vec![],
+                ),
+                None => (
+                    "SELECT id, source_env, target_env, config_key, expected_checksum, actual_checksum, details_json, detected_at, acknowledged \
+                     FROM config_drift_alerts ORDER BY detected_at DESC".to_string(),
+                    vec![],
+                ),
+            };
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())), |row| {
+                    let details_str: String = row.get(6)?;
+                    Ok(crate::config::governance::DriftAlert {
+                        id: row.get(0)?,
+                        source_env: row.get(1)?,
+                        target_env: row.get(2)?,
+                        config_key: row.get(3)?,
+                        expected_checksum: row.get(4)?,
+                        actual_checksum: row.get(5)?,
+                        details_json: serde_json::from_str(&details_str).unwrap_or_default(),
+                        detected_at: row.get(7)?,
+                        acknowledged: row.get::<_, i32>(8)? != 0,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            Ok(rows)
         })
         .await
     }
