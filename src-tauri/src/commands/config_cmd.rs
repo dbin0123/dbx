@@ -1,9 +1,8 @@
+use dbx_core::config::ConfigTree;
 use dbx_core::config::{
-    compute_config_checksum, detect_drift, ApprovalRecord, ApprovalStatus, AuditQuery, AuditSummary, ConfigApproval,
-    ConfigAuditEntry, ConfigAuditor, ConfigSnapshot, ConfigVersionSnapshot, DriftAlert, DriftDetector, DriftReport,
-    TraceEntry, TraceRingBuffer,
+    compute_config_checksum, detect_drift, ApprovalRecord, AuditQuery, AuditSummary, ConfigApproval, ConfigAuditEntry,
+    ConfigAuditor, ConfigVersionSnapshot, DriftAlert, DriftDetector, DriftReport, TraceEntry, TraceRingBuffer,
 };
-use dbx_core::config::{ConfigTree, LayerConfig};
 use dbx_core::storage::Storage;
 use std::sync::Arc;
 use tauri::State;

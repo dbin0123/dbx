@@ -2056,30 +2056,40 @@ impl Storage {
 
             let sql = format!(
                 "SELECT id, timestamp, operator, reason, key_path, change_diff, config_snapshot \
-                 FROM config_audit_log {where_clause} ORDER BY timestamp DESC LIMIT ?{limit_idx} OFFSET ?{offset_idx}",
-                limit_idx = if where_clause.is_empty() { 1 } else { 3 },
-                offset_idx = if where_clause.is_empty() { 2 } else { 4 },
+                 FROM config_audit_log {where_clause} ORDER BY timestamp DESC LIMIT ? OFFSET ?"
             );
 
             let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-            let rows = match (&key_path, &operator) {
+            let rows: Vec<crate::config::governance::ConfigAuditEntry> = match (&key_path, &operator) {
                 (Some(kp), Some(op)) => stmt
-                    .query_map(params![kp, op, limit, offset], Self::map_audit_row)
+                    .query_map(
+                        rusqlite::params_from_iter([kp.as_str(), op.as_str(), &limit.to_string(), &offset.to_string()]),
+                        Self::map_audit_row,
+                    )
                     .map_err(|e| e.to_string())?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| e.to_string())?,
                 (Some(kp), None) => stmt
-                    .query_map(params![kp, limit, offset], Self::map_audit_row)
+                    .query_map(
+                        rusqlite::params_from_iter([kp.as_str(), &limit.to_string(), &offset.to_string()]),
+                        Self::map_audit_row,
+                    )
                     .map_err(|e| e.to_string())?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| e.to_string())?,
                 (None, Some(op)) => stmt
-                    .query_map(params![op, limit, offset], Self::map_audit_row)
+                    .query_map(
+                        rusqlite::params_from_iter([op.as_str(), &limit.to_string(), &offset.to_string()]),
+                        Self::map_audit_row,
+                    )
                     .map_err(|e| e.to_string())?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| e.to_string())?,
                 (None, None) => stmt
-                    .query_map(params![limit, offset], Self::map_audit_row)
+                    .query_map(
+                        rusqlite::params_from_iter([&limit.to_string(), &offset.to_string()]),
+                        Self::map_audit_row,
+                    )
                     .map_err(|e| e.to_string())?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| e.to_string())?,
@@ -2109,13 +2119,14 @@ impl Storage {
     pub async fn next_config_version(&self, key_path: &str) -> Result<u64, String> {
         let kp = key_path.to_string();
         self.with_conn(move |conn| {
-            let max_version: Option<u64> = conn
-                .query_row("SELECT MAX(version) FROM config_version_snapshots WHERE key_path = ?1", [&kp], |row| {
-                    row.get(0)
-                })
-                .optional()
-                .map_err(|e| e.to_string())?;
-            Ok(max_version.unwrap_or(0) + 1)
+            let max_version: u64 = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(version), 0) FROM config_version_snapshots WHERE key_path = ?1",
+                    [&kp],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("get max version: {e}"))?;
+            Ok(max_version + 1)
         })
         .await
     }

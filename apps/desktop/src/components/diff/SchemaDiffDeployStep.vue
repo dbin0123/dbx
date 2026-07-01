@@ -10,7 +10,9 @@ import { loadEditorTheme, editorFontTheme } from "@/lib/editorThemes";
 import { createDbxCodeMirrorSqlDialect } from "@/lib/codemirrorSqlDialect";
 import { Splitpanes, Pane } from "splitpanes";
 import type { SchemaDiffObject, DiffOperationType, DiffObjectKind, CompatibilityWarning, RenameCandidate } from "@/lib/schemaDiff";
-import { ArrowLeft, Copy, Download, Play, Loader2, PlusCircle, XCircle, ArrowRightLeft, Table, Eye, FunctionSquare, ListOrdered, ScrollText, UserCog, ListTree, Link2, Zap, AlertTriangle } from "@lucide/vue";
+import ImpactReportPanel from "@/components/diff/ImpactReportPanel.vue";
+import type { ImpactReport } from "@/types/governance";
+import { ArrowLeft, Copy, Download, Play, Loader2, PlusCircle, XCircle, ArrowRightLeft, Table, Eye, FunctionSquare, ListOrdered, ScrollText, UserCog, ListTree, Link2, Zap, AlertTriangle, ShieldCheck } from "@lucide/vue";
 
 const { t } = useI18n();
 const { toast } = useToast();
@@ -28,6 +30,7 @@ const props = defineProps<{
   deploySqlMode?: "forward" | "rollback";
   compatibilityWarnings?: CompatibilityWarning[];
   renameCandidates?: RenameCandidate[];
+  impactReport?: ImpactReport | null;
 }>();
 
 const emit = defineEmits<{
@@ -105,6 +108,8 @@ const riskLevel = computed(() => {
 });
 
 const renameCount = computed(() => props.renameCandidates?.length ?? 0);
+
+const showImpactReport = ref(false);
 
 const effectiveSql = computed(() => {
   if (props.deploySqlMode === "rollback" && props.rollbackSql) {
@@ -303,6 +308,18 @@ function getObjectIconColor(kind: DiffObjectKind): string {
         <span class="text-blue-500">{{ t("diff.modify") }}: {{ operationCounts.modify }}</span>
         <span class="text-red-500">{{ t("diff.delete") }}: {{ operationCounts.delete }}</span>
         <span v-if="renameCount > 0" class="text-purple-500">{{ t("diff.renameCount", { count: renameCount }) }}</span>
+      </div>
+    </div>
+
+    <!-- Impact Report toggle -->
+    <div v-if="impactReport" class="border-b shrink-0">
+      <button class="flex items-center gap-2 w-full px-3 py-1.5 text-xs hover:bg-accent/50 transition-colors" @click="showImpactReport = !showImpactReport">
+        <ShieldCheck class="w-3.5 h-3.5" :class="impactReport.overallRisk === 'safe' ? 'text-green-500' : impactReport.overallRisk === 'caution' ? 'text-yellow-500' : impactReport.overallRisk === 'dangerous' ? 'text-orange-500' : 'text-red-500'" />
+        <span class="font-medium">{{ t("impact.title") }}</span>
+        <span class="ml-auto text-muted-foreground">{{ showImpactReport ? "▲" : "▼" }}</span>
+      </button>
+      <div v-if="showImpactReport" class="border-t">
+        <ImpactReportPanel :report="impactReport" />
       </div>
     </div>
 

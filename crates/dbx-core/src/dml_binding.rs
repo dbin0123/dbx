@@ -68,9 +68,9 @@ impl DmlCleanRuleRegistry {
     }
 
     pub fn load(path: &Path) -> Result<Vec<DmlCleanRule>, String> {
-        let content = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {path}: {e}"))?;
+        let content = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
         let parsed: DmlCleanRulesFile =
-            serde_yaml::from_str(&content).map_err(|e| format!("YAML parse error in {path}: {e}"))?;
+            serde_yaml::from_str(&content).map_err(|e| format!("YAML parse error in {}: {e}", path.display()))?;
         Ok(parsed.rules)
     }
 
@@ -278,7 +278,7 @@ impl MappingCacheFile {
 
         let path = Self::cache_path(source, target);
         let yaml_str = serde_yaml::to_string(&cache).map_err(|e| format!("YAML serialize: {e}"))?;
-        std::fs::write(&path, &yaml_str).map_err(|e| format!("Write cache {path}: {e}"))?;
+        std::fs::write(&path, &yaml_str).map_err(|e| format!("Write cache {}: {e}", path.display()))?;
         Ok(())
     }
 }

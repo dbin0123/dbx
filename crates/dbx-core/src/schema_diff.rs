@@ -123,7 +123,7 @@ pub struct OwnerDiff {
     pub changes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TableDiff {
     #[serde(rename = "type")]

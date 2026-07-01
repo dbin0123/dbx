@@ -117,7 +117,7 @@ identifier_rules:
   quote_char: "{quote}"
   max_length: {max_len}
 "#,
-        versions = if name == &name.to_uppercase() { "".to_string() } else { "".to_string() }
+        versions = if name == name.to_uppercase() { "".to_string() } else { "".to_string() }
     );
 
     std::fs::write(&file_path, &content).map_err(|e| format!("Failed to write {file_name}: {e}"))?;

@@ -8,7 +8,7 @@ use crate::state_persistence::StateMachine;
 // ============================================================================
 
 /// Status of an external online schema change tool execution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OscExecutionStatus {
     Preparing,

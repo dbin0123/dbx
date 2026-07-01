@@ -2013,5 +2013,68 @@ export async function exportQueryResultMarkdown(filePath: string, columns: strin
   });
 }
 
+// ---- Governance: Config Audit ----
+export async function configAuditRecord(operator: string, reason: string, keyPath: string, changeDiff: unknown, configSnapshot: unknown): Promise<import("@/types/governance").ConfigAuditEntry> {
+  return invoke("config_audit_record_command", { operator, reason, keyPath, changeDiff, configSnapshot });
+}
+
+export async function configAuditQuery(keyPath?: string, operator?: string, limit?: number, offset?: number): Promise<import("@/types/governance").AuditSummary> {
+  return invoke("config_audit_query_command", { keyPath, operator, limit, offset });
+}
+
+export async function configSnapshotSave(keyPath: string, treeJson: unknown): Promise<import("@/types/governance").ConfigVersionSnapshot> {
+  return invoke("config_snapshot_save_command", { keyPath, treeJson });
+}
+
+export async function configSnapshotList(keyPath: string): Promise<import("@/types/governance").ConfigVersionSnapshot[]> {
+  return invoke("config_snapshot_list_command", { keyPath });
+}
+
+export async function configRollback(keyPath: string, version: number, operator: string, reason: string): Promise<unknown> {
+  return invoke("config_rollback_command", { keyPath, version, operator, reason });
+}
+
+// ---- Governance: Approval ----
+export async function configApprovalSubmit(domain: string, description: string, requester: string, draftConfig: unknown, webhookUrl?: string): Promise<import("@/types/governance").ApprovalRecord> {
+  return invoke("config_approval_submit_command", { domain, description, requester, draftConfig, webhookUrl });
+}
+
+export async function configApprovalApprove(id: string, reviewer: string): Promise<import("@/types/governance").ApprovalRecord> {
+  return invoke("config_approval_approve_command", { id, reviewer });
+}
+
+export async function configApprovalReject(id: string, reviewer: string): Promise<import("@/types/governance").ApprovalRecord> {
+  return invoke("config_approval_reject_command", { id, reviewer });
+}
+
+export async function configApprovalListPending(): Promise<import("@/types/governance").ApprovalRecord[]> {
+  return invoke("config_approval_list_pending_command");
+}
+
+export async function configApprovalCheckEffective(domain: string): Promise<boolean> {
+  return invoke("config_approval_check_effective_command", { domain });
+}
+
+// ---- Governance: Drift Detection ----
+export async function configChecksum(treeJson: unknown): Promise<string> {
+  return invoke("config_checksum_command", { treeJson });
+}
+
+export async function configDetectDrift(sourceTreeJson: unknown, targetTreeJson: unknown, keyPath: string): Promise<import("@/types/governance").DriftReport | null> {
+  return invoke("config_detect_drift_command", { sourceTreeJson, targetTreeJson, keyPath });
+}
+
+export async function configDriftAlertRecord(alert: import("@/types/governance").DriftAlert): Promise<void> {
+  return invoke("config_drift_alert_record_command", { alert });
+}
+
+export async function configDriftAlertAcknowledge(id: string): Promise<void> {
+  return invoke("config_drift_alert_acknowledge_command", { id });
+}
+
+export async function configDriftAlertList(acknowledged?: boolean): Promise<import("@/types/governance").DriftAlert[]> {
+  return invoke("config_drift_alert_list_command", { acknowledged });
+}
+
 export * from "./mq-tauri";
 export * from "./nacos-tauri";

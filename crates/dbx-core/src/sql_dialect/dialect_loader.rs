@@ -193,7 +193,7 @@ impl DialectPluginLoader {
 
                 match Self::load_file(&path) {
                     Ok((kind, yaml, descriptor)) => {
-                        registry.register(kind, descriptor, yaml, Some(path.clone()));
+                        registry.register(file_name, kind, descriptor, yaml, Some(path.clone()));
                         result.loaded.push(kind);
                     }
                     Err(e) => {

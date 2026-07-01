@@ -130,14 +130,17 @@ impl ScriptTemplateEngine {
 
     pub fn from_dialect_yaml(dialect: &crate::sql_dialect::dialect_yaml::ScriptTemplatesYaml) -> Self {
         let mut engine = Self::new();
-        if let Some(ref tmpl) = dialect.schema_sync {
-            engine.env.add_template("schema_sync", tmpl.as_str()).expect("schema_sync from yaml");
+        if let Some(tmpl) = &dialect.schema_sync {
+            let leaked: &'static str = Box::leak(tmpl.clone().into_boxed_str());
+            engine.env.add_template("schema_sync", leaked).expect("schema_sync from yaml");
         }
-        if let Some(ref tmpl) = dialect.joint_orchestration {
-            engine.env.add_template("joint_orchestration", tmpl.as_str()).expect("joint_orchestration from yaml");
+        if let Some(tmpl) = &dialect.joint_orchestration {
+            let leaked: &'static str = Box::leak(tmpl.clone().into_boxed_str());
+            engine.env.add_template("joint_orchestration", leaked).expect("joint_orchestration from yaml");
         }
-        if let Some(ref tmpl) = dialect.batch {
-            engine.env.add_template("batch", tmpl.as_str()).expect("batch from yaml");
+        if let Some(tmpl) = &dialect.batch {
+            let leaked: &'static str = Box::leak(tmpl.clone().into_boxed_str());
+            engine.env.add_template("batch", leaked).expect("batch from yaml");
         }
         engine
     }

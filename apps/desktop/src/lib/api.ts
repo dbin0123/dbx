@@ -136,6 +136,27 @@ export const listOwners = forward("listOwners");
 export const prepareSchemaDiff = forward("prepareSchemaDiff");
 export const generateSchemaSyncSql = forward("generateSchemaSyncSql");
 
+// Governance - Config Audit
+export const configAuditRecord = forward("configAuditRecord");
+export const configAuditQuery = forward("configAuditQuery");
+export const configSnapshotSave = forward("configSnapshotSave");
+export const configSnapshotList = forward("configSnapshotList");
+export const configRollback = forward("configRollback");
+
+// Governance - Approval
+export const configApprovalSubmit = forward("configApprovalSubmit");
+export const configApprovalApprove = forward("configApprovalApprove");
+export const configApprovalReject = forward("configApprovalReject");
+export const configApprovalListPending = forward("configApprovalListPending");
+export const configApprovalCheckEffective = forward("configApprovalCheckEffective");
+
+// Governance - Drift Detection
+export const configChecksum = forward("configChecksum");
+export const configDetectDrift = forward("configDetectDrift");
+export const configDriftAlertRecord = forward("configDriftAlertRecord");
+export const configDriftAlertAcknowledge = forward("configDriftAlertAcknowledge");
+export const configDriftAlertList = forward("configDriftAlertList");
+
 // Query
 export const executeQuery = forward("executeQuery");
 export const executeMulti = forward("executeMulti");
@@ -481,3 +502,25 @@ export type {
   QueryResultExportRequest,
   AgentEvent,
 } from "./tauri";
+
+export type {
+  ConfigAuditEntry,
+  ConfigVersionSnapshot,
+  AuditQuery,
+  AuditSummary,
+  ApprovalStatus,
+  ApprovalRecord,
+  DriftAlert,
+  DriftReport,
+  DdlRiskLevel,
+  ExecStrategy,
+  LockInfo,
+  ImpactReport,
+  OscExecutionStatus,
+  OscStatus,
+  DegradationLevel,
+  BusinessTag,
+  ConflictItem,
+  RebasePlan,
+  ConfigDriftSummary,
+} from "@/types/governance";

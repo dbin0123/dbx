@@ -5,7 +5,9 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::config::layer::{ConfigTree, LayerConfig};
+use crate::config::layer::ConfigTree;
+#[cfg(test)]
+use crate::config::layer::LayerConfig;
 use crate::storage::Storage;
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -331,7 +333,10 @@ pub fn detect_drift(source: &ConfigTree, target: &ConfigTree, key_path: &str) ->
 
     let mismatched: Vec<String> = all_keys
         .into_iter()
-        .filter(|k| source_vals.get(k).and_then(|v| target_vals.get(k)).map_or(true, |(sv, tv)| sv != tv))
+        .filter(|k| match (source_vals.get(k), target_vals.get(k)) {
+            (Some(sv), Some(tv)) => sv != tv,
+            _ => true,
+        })
         .map(|k| {
             let s = source_vals.get(k).map(|v| v.to_string()).unwrap_or_default();
             let t = target_vals.get(k).map(|v| v.to_string()).unwrap_or_default();
@@ -468,11 +473,11 @@ mod tests {
     use crate::config::layer::ConfigLayer;
     use std::sync::Arc;
 
-    fn make_test_storage() -> Arc<Storage> {
+    async fn make_test_storage() -> Arc<Storage> {
         let tmp = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&tmp).unwrap();
         let db_path = tmp.join("test_governance.db");
-        let storage = Arc::new(tokio::runtime::Runtime::new().unwrap().block_on(Storage::open(&db_path)).unwrap());
+        let storage = Arc::new(Storage::open(&db_path).await.unwrap());
         std::mem::forget(tmp);
         storage
     }
@@ -496,7 +501,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_audit_record_and_query() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let auditor = ConfigAuditor::new(storage.clone());
 
         auditor
@@ -543,7 +548,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_audit_multiple_entries() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let auditor = ConfigAuditor::new(storage.clone());
 
         for i in 0..3 {
@@ -571,7 +576,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_snapshot_save_and_rollback() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let auditor = ConfigAuditor::new(storage.clone());
         let tree = make_test_tree();
 
@@ -588,7 +593,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_snapshot_version_increment() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let auditor = ConfigAuditor::new(storage.clone());
 
         let tree = make_test_tree();
@@ -604,7 +609,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_restores_snapshot() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let auditor = ConfigAuditor::new(storage.clone());
 
         let mut tree = make_test_tree();
@@ -638,7 +643,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_nonexistent_version() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let auditor = ConfigAuditor::new(storage.clone());
         let result = auditor.rollback("app.config", 99, "alice", "test").await;
         assert!(result.is_err());
@@ -665,7 +670,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_change_sensitive_domain() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let approval = ConfigApproval::new(storage.clone());
 
         let record = approval
@@ -684,7 +689,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_change_non_sensitive_domain() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let approval = ConfigApproval::new(storage.clone());
 
         let record = approval
@@ -696,7 +701,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_approve_workflow() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let approval = ConfigApproval::new(storage.clone());
 
         let record = approval
@@ -717,7 +722,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reject_workflow() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let approval = ConfigApproval::new(storage.clone());
 
         let record = approval
@@ -737,7 +742,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_approve_invalid_state() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let approval = ConfigApproval::new(storage.clone());
 
         let record = approval
@@ -752,7 +757,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_effective() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let approval = ConfigApproval::new(storage.clone());
 
         assert!(!approval.check_effective("allow_destructive").await.unwrap());
@@ -771,7 +776,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_pending() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let approval = ConfigApproval::new(storage.clone());
 
         approval.submit_change("mapping_rules", "rule1", "alice", serde_json::json!({"r": 1}), None).await.unwrap();
@@ -793,9 +798,10 @@ mod tests {
 
     #[test]
     fn test_checksum_deterministic() {
-        let tree1 = make_test_tree();
-        let tree2 = make_test_tree();
-        assert_eq!(compute_config_checksum(&tree1), compute_config_checksum(&tree2));
+        let tree = make_test_tree();
+        let ck1 = compute_config_checksum(&tree);
+        let ck2 = compute_config_checksum(&tree);
+        assert_eq!(ck1, ck2);
     }
 
     #[test]
@@ -856,7 +862,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_drift_alert_persistence() {
-        let storage = make_test_storage();
+        let storage = make_test_storage().await;
         let detector = DriftDetector::new(storage.clone());
 
         let alert = DriftAlert {
@@ -896,9 +902,9 @@ mod tests {
         assert_eq!(merged.values.get("host").unwrap(), &serde_json::Value::String("db.example.com".to_string()));
     }
 
-    #[test]
-    fn test_config_snapshot_apply_modification() {
-        let storage = make_test_storage_for_snapshot();
+    #[tokio::test]
+    async fn test_config_snapshot_apply_modification() {
+        let storage = make_test_storage().await;
         let auditor = Arc::new(ConfigAuditor::new(storage));
         let tree = make_test_tree();
         let snapshot = ConfigSnapshot::new(tree, "app.config", auditor);
