@@ -136,6 +136,27 @@ export const listOwners = forward("listOwners");
 export const prepareSchemaDiff = forward("prepareSchemaDiff");
 export const generateSchemaSyncSql = forward("generateSchemaSyncSql");
 
+// Governance - Config Audit
+export const configAuditRecord = forward("configAuditRecord");
+export const configAuditQuery = forward("configAuditQuery");
+export const configSnapshotSave = forward("configSnapshotSave");
+export const configSnapshotList = forward("configSnapshotList");
+export const configRollback = forward("configRollback");
+
+// Governance - Approval
+export const configApprovalSubmit = forward("configApprovalSubmit");
+export const configApprovalApprove = forward("configApprovalApprove");
+export const configApprovalReject = forward("configApprovalReject");
+export const configApprovalListPending = forward("configApprovalListPending");
+export const configApprovalCheckEffective = forward("configApprovalCheckEffective");
+
+// Governance - Drift Detection
+export const configChecksum = forward("configChecksum");
+export const configDetectDrift = forward("configDetectDrift");
+export const configDriftAlertRecord = forward("configDriftAlertRecord");
+export const configDriftAlertAcknowledge = forward("configDriftAlertAcknowledge");
+export const configDriftAlertList = forward("configDriftAlertList");
+
 // Query
 export const executeQuery = forward("executeQuery");
 export const executeMulti = forward("executeMulti");
@@ -168,7 +189,6 @@ export const buildDropDatabaseSql = forward("buildDropDatabaseSql");
 export const buildCreateSchemaSql = forward("buildCreateSchemaSql");
 export const buildDropSchemaSql = forward("buildDropSchemaSql");
 export const buildDuplicateTableStructureSql = forward("buildDuplicateTableStructureSql");
-export const buildCopyTableDataSql = forward("buildCopyTableDataSql");
 export const buildExecutableObjectSourceStatements = forward("buildExecutableObjectSourceStatements");
 export const buildExecutableObjectSourceSql = forward("buildExecutableObjectSourceSql");
 export const buildEditableObjectSource = forward("buildEditableObjectSource");
@@ -367,9 +387,7 @@ export const mqRawRequest = forward("mqRawRequest");
 export const mqSendMessage = forward("mqSendMessage");
 
 // MongoDB
-export const documentListDatabases = forward("documentListDatabases");
 export const mongoListDatabases = forward("mongoListDatabases");
-export const documentListCollections = forward("documentListCollections");
 export const mongoListCollections = forward("mongoListCollections");
 export const mongoCreateDatabase = forward("mongoCreateDatabase");
 export const mongoDropDatabase = forward("mongoDropDatabase");
@@ -378,15 +396,10 @@ export const documentFindDocuments = forward("documentFindDocuments");
 export const mongoFindDocuments = forward("mongoFindDocuments");
 export const mongoServerVersion = forward("mongoServerVersion");
 export const mongoAggregateDocuments = forward("mongoAggregateDocuments");
-export const mongoCreateIndex = forward("mongoCreateIndex");
-export const mongoDropIndexes = forward("mongoDropIndexes");
-export const documentInsertDocument = forward("documentInsertDocument");
 export const mongoInsertDocument = forward("mongoInsertDocument");
 export const mongoInsertDocuments = forward("mongoInsertDocuments");
-export const documentUpdateDocument = forward("documentUpdateDocument");
 export const mongoUpdateDocument = forward("mongoUpdateDocument");
 export const mongoUpdateDocuments = forward("mongoUpdateDocuments");
-export const documentDeleteDocument = forward("documentDeleteDocument");
 export const mongoDeleteDocument = forward("mongoDeleteDocument");
 export const mongoDeleteDocuments = forward("mongoDeleteDocuments");
 
@@ -489,3 +502,25 @@ export type {
   QueryResultExportRequest,
   AgentEvent,
 } from "./tauri";
+
+export type {
+  ConfigAuditEntry,
+  ConfigVersionSnapshot,
+  AuditQuery,
+  AuditSummary,
+  ApprovalStatus,
+  ApprovalRecord,
+  DriftAlert,
+  DriftReport,
+  DdlRiskLevel,
+  ExecStrategy,
+  LockInfo,
+  ImpactReport,
+  OscExecutionStatus,
+  OscStatus,
+  DegradationLevel,
+  BusinessTag,
+  ConflictItem,
+  RebasePlan,
+  ConfigDriftSummary,
+} from "@/types/governance";

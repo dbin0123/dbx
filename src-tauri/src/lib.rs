@@ -582,7 +582,7 @@ pub fn run() {
             open_connection_deep_links(app.handle(), startup_links);
 
             let app_handle = app.handle().clone();
-            commands::mcp_bridge::start(app_handle, state, data_dir);
+            commands::mcp_bridge::start(app_handle, state);
             eprintln!("[STARTUP] setup complete in {:?} (total {:?})", setup_start.elapsed(), startup_begin.elapsed());
 
             if let Some(decorations) = native_window_decorations_override(std::env::consts::OS) {
@@ -741,7 +741,6 @@ pub fn run() {
             commands::query::build_create_schema_sql,
             commands::query::build_drop_schema_sql,
             commands::query::build_duplicate_table_structure_sql,
-            commands::query::build_copy_table_data_sql,
             commands::query::build_executable_object_source_statements,
             commands::query::build_executable_object_source_sql,
             commands::query::build_editable_object_source,
@@ -847,21 +846,14 @@ pub fn run() {
             commands::mongo_cmd::mongo_create_database,
             commands::mongo_cmd::mongo_drop_database,
             commands::mongo_cmd::mongo_drop_collection,
-            commands::document_cmd::document_list_databases,
-            commands::document_cmd::document_list_collections,
-            commands::document_cmd::document_find_documents,
+            commands::mongo_cmd::document_find_documents,
             commands::mongo_cmd::mongo_find_documents,
             commands::mongo_cmd::mongo_server_version,
             commands::mongo_cmd::mongo_aggregate_documents,
-            commands::mongo_cmd::mongo_create_index,
-            commands::mongo_cmd::mongo_drop_indexes,
-            commands::document_cmd::document_insert_document,
             commands::mongo_cmd::mongo_insert_document,
             commands::mongo_cmd::mongo_insert_documents,
-            commands::document_cmd::document_update_document,
             commands::mongo_cmd::mongo_update_document,
             commands::mongo_cmd::mongo_update_documents,
-            commands::document_cmd::document_delete_document,
             commands::mongo_cmd::mongo_delete_document,
             commands::mongo_cmd::mongo_delete_documents,
             #[cfg(feature = "mq-admin")]
@@ -990,6 +982,10 @@ pub fn run() {
             commands::agents::import_agents_from_zip,
             commands::agents::import_agent_jar_cmd,
             commands::system_fonts::list_system_fonts,
+            commands::dialect_cmd::dialect_check_command,
+            commands::dialect_cmd::dialect_check_all_command,
+            commands::config_cmd::trace_export_command,
+            commands::config_cmd::trace_stats_command,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

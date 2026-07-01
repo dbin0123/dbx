@@ -55,7 +55,7 @@ import type { BuildEditableObjectSourceSqlInput, BuildRoutineRenameObjectSourceI
 import type { BuildViewDdlInput } from "@/lib/viewDdl";
 import type { BuildRenameObjectSqlOptions } from "@/lib/objectRenameSql";
 import type { CreateDatabaseSqlOptions } from "@/lib/createDatabaseSql";
-import type { DatabaseNameSqlOptions, DropTableChildObjectSqlOptions, DropObjectSqlOptions, DuplicateTableStructureSqlOptions, CopyTableDataSqlOptions, SchemaNameSqlOptions, TableAdminSqlOptions } from "@/lib/dbAdminSql";
+import type { DatabaseNameSqlOptions, DropTableChildObjectSqlOptions, DropObjectSqlOptions, DuplicateTableStructureSqlOptions, SchemaNameSqlOptions, TableAdminSqlOptions } from "@/lib/dbAdminSql";
 import type { BuildDatabaseSqlExportOptions, BuildExportInsertStatementsOptions } from "@/lib/databaseExport";
 
 export interface AgentDriverInfo {
@@ -747,10 +747,6 @@ export async function buildDuplicateTableStructureSql(options: DuplicateTableStr
   return invoke("build_duplicate_table_structure_sql", { options });
 }
 
-export async function buildCopyTableDataSql(options: CopyTableDataSqlOptions): Promise<string> {
-  return invoke("build_copy_table_data_sql", { options });
-}
-
 export async function buildExecutableObjectSourceStatements(input: BuildEditableObjectSourceSqlInput): Promise<string[]> {
   return invoke("build_executable_object_source_statements", { input });
 }
@@ -1141,13 +1137,11 @@ export interface UpdateDownloadProgress {
 export interface McpServerStatus {
   installed: boolean;
   npm_available: boolean;
-  node_path: string | null;
   node_version: string | null;
   current_version: string | null;
   latest_version: string | null;
   update_available: boolean;
   bin_path: string | null;
-  script_path: string | null;
   install_command: string;
   update_command: string;
   error: string | null;
@@ -1447,20 +1441,12 @@ export interface MongoDocumentResult {
   total: number;
 }
 
-export async function documentListDatabases(connectionId: string): Promise<string[]> {
-  return invoke("document_list_databases", { connectionId });
-}
-
 export async function mongoListDatabases(connectionId: string): Promise<string[]> {
-  return documentListDatabases(connectionId);
-}
-
-export async function documentListCollections(connectionId: string, database: string): Promise<CollectionInfo[]> {
-  return invoke("document_list_collections", { connectionId, database });
+  return invoke("mongo_list_databases", { connectionId });
 }
 
 export async function mongoListCollections(connectionId: string, database: string): Promise<CollectionInfo[]> {
-  return documentListCollections(connectionId, database);
+  return invoke("mongo_list_collections", { connectionId, database });
 }
 
 export async function mongoCreateDatabase(connectionId: string, database: string): Promise<void> {
@@ -1476,16 +1462,16 @@ export async function mongoDropCollection(connectionId: string, database: string
 }
 
 export async function elasticsearchListIndices(connectionId: string): Promise<string[]> {
-  const collections = await documentListCollections(connectionId, "default");
+  const collections = await mongoListCollections(connectionId, "default");
   return collections.map((c) => c.name);
 }
 
 export async function vectorListCollections(connectionId: string, database?: string): Promise<CollectionInfo[]> {
-  return documentListCollections(connectionId, database || "default");
+  return mongoListCollections(connectionId, database || "default");
 }
 
 export async function mongoFindDocuments(connectionId: string, database: string, collection: string, skip: number, limit: number, filter?: string, projection?: string, sort?: string, executionId?: string): Promise<MongoDocumentResult> {
-  return documentFindDocuments(connectionId, database, collection, skip, limit, filter, projection, sort, executionId);
+  return invoke("mongo_find_documents", { connectionId, database, collection, skip, limit, filter, projection, sort, executionId });
 }
 
 export async function documentFindDocuments(connectionId: string, database: string, collection: string, skip: number, limit: number, filter?: string, projection?: string, sort?: string, executionId?: string): Promise<MongoDocumentResult> {
@@ -1500,20 +1486,8 @@ export async function mongoAggregateDocuments(connectionId: string, database: st
   return invoke("mongo_aggregate_documents", { connectionId, database, collection, pipelineJson, maxRows, executionId });
 }
 
-export async function mongoCreateIndex(connectionId: string, database: string, collection: string, keysJson: string, optionsJson?: string): Promise<{ name: string }> {
-  return invoke("mongo_create_index", { connectionId, database, collection, keysJson, optionsJson });
-}
-
-export async function mongoDropIndexes(connectionId: string, database: string, collection: string, indexesJson?: string, single = false): Promise<{ dropped_names: string[]; affected_rows: number }> {
-  return invoke("mongo_drop_indexes", { connectionId, database, collection, indexesJson, single });
-}
-
 export async function mongoInsertDocument(connectionId: string, database: string, collection: string, docJson: string): Promise<string> {
-  return documentInsertDocument(connectionId, database, collection, docJson);
-}
-
-export async function documentInsertDocument(connectionId: string, database: string, collection: string, docJson: string): Promise<string> {
-  return invoke("document_insert_document", { connectionId, database, collection, docJson });
+  return invoke("mongo_insert_document", { connectionId, database, collection, docJson });
 }
 
 export async function mongoInsertDocuments(connectionId: string, database: string, collection: string, docsJson: string): Promise<{ affected_rows: number }> {
@@ -1521,12 +1495,8 @@ export async function mongoInsertDocuments(connectionId: string, database: strin
   return { affected_rows: affectedRows };
 }
 
-export async function mongoUpdateDocument(connectionId: string, database: string, collection: string, id: string, docJson: string, routing?: string): Promise<number> {
-  return documentUpdateDocument(connectionId, database, collection, id, docJson, routing);
-}
-
-export async function documentUpdateDocument(connectionId: string, database: string, collection: string, id: string, docJson: string, routing?: string): Promise<number> {
-  return invoke("document_update_document", { connectionId, database, collection, id, docJson, routing });
+export async function mongoUpdateDocument(connectionId: string, database: string, collection: string, id: string, docJson: string): Promise<number> {
+  return invoke("mongo_update_document", { connectionId, database, collection, id, docJson });
 }
 
 export async function mongoUpdateDocuments(connectionId: string, database: string, collection: string, filterJson: string, updateJson: string, many: boolean): Promise<{ affected_rows: number }> {
@@ -1541,12 +1511,8 @@ export async function mongoUpdateDocuments(connectionId: string, database: strin
   return { affected_rows: affectedRows };
 }
 
-export async function mongoDeleteDocument(connectionId: string, database: string, collection: string, id: string, routing?: string): Promise<number> {
-  return documentDeleteDocument(connectionId, database, collection, id, routing);
-}
-
-export async function documentDeleteDocument(connectionId: string, database: string, collection: string, id: string, routing?: string): Promise<number> {
-  return invoke("document_delete_document", { connectionId, database, collection, id, routing });
+export async function mongoDeleteDocument(connectionId: string, database: string, collection: string, id: string): Promise<number> {
+  return invoke("mongo_delete_document", { connectionId, database, collection, id });
 }
 
 export async function mongoDeleteDocuments(connectionId: string, database: string, collection: string, filterJson: string, many: boolean): Promise<{ affected_rows: number }> {
@@ -2045,6 +2011,69 @@ export async function exportQueryResultMarkdown(filePath: string, columns: strin
       rows,
     },
   });
+}
+
+// ---- Governance: Config Audit ----
+export async function configAuditRecord(operator: string, reason: string, keyPath: string, changeDiff: unknown, configSnapshot: unknown): Promise<import("@/types/governance").ConfigAuditEntry> {
+  return invoke("config_audit_record_command", { operator, reason, keyPath, changeDiff, configSnapshot });
+}
+
+export async function configAuditQuery(keyPath?: string, operator?: string, limit?: number, offset?: number): Promise<import("@/types/governance").AuditSummary> {
+  return invoke("config_audit_query_command", { keyPath, operator, limit, offset });
+}
+
+export async function configSnapshotSave(keyPath: string, treeJson: unknown): Promise<import("@/types/governance").ConfigVersionSnapshot> {
+  return invoke("config_snapshot_save_command", { keyPath, treeJson });
+}
+
+export async function configSnapshotList(keyPath: string): Promise<import("@/types/governance").ConfigVersionSnapshot[]> {
+  return invoke("config_snapshot_list_command", { keyPath });
+}
+
+export async function configRollback(keyPath: string, version: number, operator: string, reason: string): Promise<unknown> {
+  return invoke("config_rollback_command", { keyPath, version, operator, reason });
+}
+
+// ---- Governance: Approval ----
+export async function configApprovalSubmit(domain: string, description: string, requester: string, draftConfig: unknown, webhookUrl?: string): Promise<import("@/types/governance").ApprovalRecord> {
+  return invoke("config_approval_submit_command", { domain, description, requester, draftConfig, webhookUrl });
+}
+
+export async function configApprovalApprove(id: string, reviewer: string): Promise<import("@/types/governance").ApprovalRecord> {
+  return invoke("config_approval_approve_command", { id, reviewer });
+}
+
+export async function configApprovalReject(id: string, reviewer: string): Promise<import("@/types/governance").ApprovalRecord> {
+  return invoke("config_approval_reject_command", { id, reviewer });
+}
+
+export async function configApprovalListPending(): Promise<import("@/types/governance").ApprovalRecord[]> {
+  return invoke("config_approval_list_pending_command");
+}
+
+export async function configApprovalCheckEffective(domain: string): Promise<boolean> {
+  return invoke("config_approval_check_effective_command", { domain });
+}
+
+// ---- Governance: Drift Detection ----
+export async function configChecksum(treeJson: unknown): Promise<string> {
+  return invoke("config_checksum_command", { treeJson });
+}
+
+export async function configDetectDrift(sourceTreeJson: unknown, targetTreeJson: unknown, keyPath: string): Promise<import("@/types/governance").DriftReport | null> {
+  return invoke("config_detect_drift_command", { sourceTreeJson, targetTreeJson, keyPath });
+}
+
+export async function configDriftAlertRecord(alert: import("@/types/governance").DriftAlert): Promise<void> {
+  return invoke("config_drift_alert_record_command", { alert });
+}
+
+export async function configDriftAlertAcknowledge(id: string): Promise<void> {
+  return invoke("config_drift_alert_acknowledge_command", { id });
+}
+
+export async function configDriftAlertList(acknowledged?: boolean): Promise<import("@/types/governance").DriftAlert[]> {
+  return invoke("config_drift_alert_list_command", { acknowledged });
 }
 
 export * from "./mq-tauri";
