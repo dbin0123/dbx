@@ -331,6 +331,7 @@ async fn main() {
         .route("/query/build-create-schema-sql", post(routes::query::build_create_schema_sql))
         .route("/query/build-drop-schema-sql", post(routes::query::build_drop_schema_sql))
         .route("/query/build-duplicate-table-structure-sql", post(routes::query::build_duplicate_table_structure_sql))
+        .route("/query/build-copy-table-data-sql", post(routes::query::build_copy_table_data_sql))
         .route(
             "/query/build-executable-object-source-statements",
             post(routes::query::build_executable_object_source_statements),
@@ -444,10 +445,17 @@ async fn main() {
         .route("/mongo/create-database", post(routes::mongo::create_database))
         .route("/mongo/drop-database", post(routes::mongo::drop_database))
         .route("/mongo/drop-collection", post(routes::mongo::drop_collection))
-        .route("/document-store/find-documents", post(routes::mongo::document_find_documents))
+        .route("/document-store/list-databases", post(routes::document_store::list_databases))
+        .route("/document-store/list-collections", post(routes::document_store::list_collections))
+        .route("/document-store/find-documents", post(routes::document_store::find_documents))
+        .route("/document-store/insert-document", post(routes::document_store::insert_document))
+        .route("/document-store/update-document", post(routes::document_store::update_document))
+        .route("/document-store/delete-document", post(routes::document_store::delete_document))
         .route("/mongo/find-documents", post(routes::mongo::find_documents))
         .route("/mongo/server-version", post(routes::mongo::server_version))
         .route("/mongo/aggregate-documents", post(routes::mongo::aggregate_documents))
+        .route("/mongo/create-index", post(routes::mongo::create_index))
+        .route("/mongo/drop-indexes", post(routes::mongo::drop_indexes))
         .route("/mongo/insert-document", post(routes::mongo::insert_document))
         .route("/mongo/insert-documents", post(routes::mongo::insert_documents))
         .route("/mongo/update-document", post(routes::mongo::update_document))

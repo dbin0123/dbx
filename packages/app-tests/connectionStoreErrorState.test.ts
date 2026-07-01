@@ -161,6 +161,7 @@ test("known backend connection errors mark the connection disconnected", async (
     "ORA-02396: exceeded maximum idle time, please connect again",
     "Agent stdin not available",
     "Failed to write to agent stdin",
+    "MySQL connection failed: Input/output error: No route to host (os error 65)",
   ];
 
   try {
@@ -500,9 +501,9 @@ test("empty root metadata does not replace existing databases with only user adm
 test.each([
   ["redis", "loadRedisDatabases", "/api/redis/list-databases", "Redis databases"],
   ["mq", "loadMqTenants", "/api/mq/tenants/list", "message queue tenants"],
-  ["mongodb", "loadMongoDatabases", "/api/mongo/list-databases", "MongoDB databases"],
-  ["elasticsearch", "loadElasticsearchIndices", "/api/mongo/list-collections", "Elasticsearch indices"],
-  ["qdrant", "loadVectorCollections", "/api/mongo/list-collections", "vector collections"],
+  ["mongodb", "loadMongoDatabases", "/api/document-store/list-databases", "MongoDB databases"],
+  ["elasticsearch", "loadElasticsearchIndices", "/api/document-store/list-collections", "Elasticsearch indices"],
+  ["qdrant", "loadVectorCollections", "/api/document-store/list-collections", "vector collections"],
 ] as const)("hanging %s root metadata load times out and clears loading state", async (dbType, loader, endpoint, label) => {
   vi.useFakeTimers();
   const restoreStorage = installMemoryStorage();
@@ -510,6 +511,10 @@ test.each([
   globalThis.fetch = (async (input) => {
     if (String(input) === endpoint) {
       return new Promise<Response>(() => {});
+    }
+    // Marking a connection lost also cleans up any query client sessions.
+    if (String(input) === "/api/query/close-client-session") {
+      return jsonResponse(true);
     }
     return new Response("unexpected request", { status: 500 });
   }) as typeof fetch;

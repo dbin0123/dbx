@@ -107,14 +107,14 @@ fn builds_mysql_column_and_index_changes() {
 
     assert_eq!(result.warnings, Vec::<String>::new());
     assert_eq!(
-            result.statements,
-            vec![
-                "ALTER TABLE `users` CHANGE COLUMN `name` `display_name` varchar(120) NOT NULL DEFAULT 'guest' COMMENT 'Shown name';",
-                "ALTER TABLE `users` ADD COLUMN `email` varchar(255) NOT NULL;",
-                "DROP INDEX `idx_old` ON `users`;",
-                "CREATE UNIQUE INDEX `uniq_users_email` ON `users` (`email`);",
-            ]
-        );
+        result.statements,
+        vec![
+            "ALTER TABLE `users` CHANGE COLUMN `name` `display_name` varchar(120) NOT NULL DEFAULT 'guest' COMMENT 'Shown name';",
+            "ALTER TABLE `users` ADD COLUMN `email` varchar(255) NOT NULL;",
+            "DROP INDEX `idx_old` ON `users`;",
+            "CREATE UNIQUE INDEX `uniq_users_email` ON `users` (`email`);",
+        ]
+    );
 }
 
 #[test]
@@ -242,6 +242,52 @@ fn builds_informix_column_and_index_changes() {
             "ALTER TABLE gbasedbt.users DROP (old_col);",
             "DROP INDEX gbasedbt.idx_old;",
             "CREATE UNIQUE INDEX uniq_users_email ON gbasedbt.users (email);",
+        ]
+    );
+}
+
+#[test]
+fn oracle_does_not_generate_drop_sql_for_all_columns() {
+    let mut id = column("id");
+    id.marked_for_drop = true;
+    id.original = Some(ColumnInfo {
+        name: "id".to_string(),
+        data_type: "varchar2(255)".to_string(),
+        is_nullable: true,
+        column_default: None,
+        is_primary_key: false,
+        extra: None,
+        comment: None,
+    });
+    let mut name = column("name");
+    name.marked_for_drop = true;
+    name.original = Some(ColumnInfo {
+        name: "name".to_string(),
+        data_type: "varchar2(255)".to_string(),
+        is_nullable: true,
+        column_default: None,
+        is_primary_key: false,
+        extra: None,
+        comment: None,
+    });
+
+    let result = build_table_structure_change_sql(TableStructureSqlOptions {
+        database_type: Some(DatabaseType::Oracle),
+        schema: Some("DBX_TEST".to_string()),
+        table_name: "test".to_string(),
+        columns: vec![id, name],
+        indexes: Vec::new(),
+        foreign_keys: Vec::new(),
+        triggers: Vec::new(),
+        table_comment: None,
+        original_table_comment: None,
+    });
+
+    assert_eq!(result.statements, Vec::<String>::new());
+    assert_eq!(
+        result.warnings,
+        vec![
+            "Oracle does not allow dropping all columns from a table. Keep at least one column or drop the table instead."
         ]
     );
 }
@@ -437,6 +483,60 @@ fn gbase8a_uses_limited_mysql_ddl() {
         result.warnings,
         vec!["Editing existing indexes is not supported for gbase from this editor.".to_string()]
     );
+}
+
+#[test]
+fn gbase8a_allows_mysql_style_column_reorder() {
+    let mut id = column("id");
+    id.original_position = Some(0);
+    id.original = Some(ColumnInfo {
+        name: "id".to_string(),
+        data_type: "varchar(255)".to_string(),
+        is_nullable: true,
+        column_default: None,
+        is_primary_key: false,
+        extra: None,
+        comment: None,
+    });
+
+    let mut name = column("name");
+    name.original_position = Some(1);
+    name.original = Some(ColumnInfo {
+        name: "name".to_string(),
+        data_type: "varchar(255)".to_string(),
+        is_nullable: true,
+        column_default: None,
+        is_primary_key: false,
+        extra: None,
+        comment: None,
+    });
+
+    let mut email = column("email");
+    email.original_position = Some(2);
+    email.original = Some(ColumnInfo {
+        name: "email".to_string(),
+        data_type: "varchar(255)".to_string(),
+        is_nullable: true,
+        column_default: None,
+        is_primary_key: false,
+        extra: None,
+        comment: None,
+    });
+
+    let result = build_table_structure_change_sql(TableStructureSqlOptions {
+        database_type: Some(DatabaseType::Gbase),
+        schema: None,
+        table_name: "users".to_string(),
+        columns: vec![id, email, name],
+        indexes: Vec::new(),
+        foreign_keys: Vec::new(),
+        triggers: Vec::new(),
+        table_comment: None,
+        original_table_comment: None,
+    });
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(result.statements, vec!["ALTER TABLE `users` MODIFY COLUMN `name` varchar(255) AFTER `email`;"]);
 }
 
 #[test]
@@ -881,10 +981,7 @@ fn builds_mysql_column_reorder_statements() {
     assert_eq!(result.warnings, Vec::<String>::new());
     assert_eq!(
         result.statements,
-        vec![
-            "ALTER TABLE `users` MODIFY COLUMN `email` varchar(255) AFTER `id`;",
-            "ALTER TABLE `users` CHANGE COLUMN `name` `display_name` varchar(120);",
-        ]
+        vec!["ALTER TABLE `users` CHANGE COLUMN `name` `display_name` varchar(120) AFTER `email`;"]
     );
 }
 
@@ -990,7 +1087,75 @@ fn mysql_existing_column_reorder_does_not_reorder_columns_shifted_by_prior_move(
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
-    assert_eq!(result.statements, vec!["ALTER TABLE `users` MODIFY COLUMN `email` varchar(255) AFTER `id`;"]);
+    assert_eq!(result.statements, vec!["ALTER TABLE `users` MODIFY COLUMN `name` varchar(255) AFTER `email`;"]);
+}
+
+#[test]
+fn mysql_moving_first_column_to_end_uses_single_reorder_statement() {
+    let mut col_0 = column("col_0");
+    col_0.data_type = "int(11)".to_string();
+    col_0.is_nullable = false;
+    col_0.original_position = Some(0);
+    col_0.original = Some(ColumnInfo {
+        name: "col_0".to_string(),
+        data_type: "int(11)".to_string(),
+        is_nullable: false,
+        column_default: None,
+        is_primary_key: false,
+        extra: None,
+        comment: None,
+    });
+
+    let mut col_1 = column("col_1");
+    col_1.original_position = Some(1);
+    col_1.original = Some(ColumnInfo {
+        name: "col_1".to_string(),
+        data_type: "varchar(255)".to_string(),
+        is_nullable: true,
+        column_default: None,
+        is_primary_key: false,
+        extra: None,
+        comment: None,
+    });
+
+    let mut col_2 = column("col_2");
+    col_2.original_position = Some(2);
+    col_2.original = Some(ColumnInfo {
+        name: "col_2".to_string(),
+        data_type: "varchar(255)".to_string(),
+        is_nullable: true,
+        column_default: None,
+        is_primary_key: false,
+        extra: None,
+        comment: None,
+    });
+
+    let mut col_3 = column("col_3");
+    col_3.original_position = Some(3);
+    col_3.original = Some(ColumnInfo {
+        name: "col_3".to_string(),
+        data_type: "varchar(255)".to_string(),
+        is_nullable: true,
+        column_default: None,
+        is_primary_key: false,
+        extra: None,
+        comment: None,
+    });
+
+    let result = build_table_structure_change_sql(TableStructureSqlOptions {
+        database_type: Some(DatabaseType::Mysql),
+        schema: None,
+        table_name: "users".to_string(),
+        columns: vec![col_1, col_2, col_3, col_0],
+        indexes: Vec::new(),
+        foreign_keys: Vec::new(),
+        triggers: Vec::new(),
+        table_comment: None,
+        original_table_comment: None,
+    });
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(result.statements, vec!["ALTER TABLE `users` MODIFY COLUMN `col_0` int(11) NOT NULL AFTER `col_3`;"]);
 }
 
 #[test]
@@ -1125,6 +1290,63 @@ fn sqlserver_unchanged_foreign_key_does_not_warn_when_saving_other_changes() {
 
     assert_eq!(result.warnings, Vec::<String>::new());
     assert_eq!(result.statements, vec!["ALTER TABLE [dbo].[orders] ADD [email] nvarchar(255) NOT NULL;"]);
+}
+
+#[test]
+fn sqlserver_add_column_with_identity() {
+    let mut id = column("id");
+    id.data_type = "int".to_string();
+    id.is_nullable = false;
+    id.extra = Some(ColumnExtra {
+        auto_increment: Some(true),
+        identity: Some(ColumnIdentity { generation: None, seed: Some(10), increment: Some(2) }),
+        ..Default::default()
+    });
+
+    let result = build_table_structure_change_sql(TableStructureSqlOptions {
+        database_type: Some(DatabaseType::SqlServer),
+        schema: Some("dbo".to_string()),
+        table_name: "orders".to_string(),
+        columns: vec![id],
+        indexes: Vec::new(),
+        foreign_keys: Vec::new(),
+        triggers: Vec::new(),
+        table_comment: None,
+        original_table_comment: None,
+    });
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(result.statements, vec!["ALTER TABLE [dbo].[orders] ADD [id] int NOT NULL IDENTITY(10, 2);"]);
+}
+
+#[test]
+fn sqlserver_rejects_identity_on_incompatible_type() {
+    let mut column = column("test");
+    column.data_type = "varchar(255)".to_string();
+    column.is_nullable = false;
+    column.extra = Some(ColumnExtra {
+        auto_increment: Some(true),
+        identity: Some(ColumnIdentity { generation: None, seed: Some(1), increment: Some(1) }),
+        ..Default::default()
+    });
+
+    let result = build_table_structure_change_sql(TableStructureSqlOptions {
+        database_type: Some(DatabaseType::SqlServer),
+        schema: Some("core".to_string()),
+        table_name: "products".to_string(),
+        columns: vec![column],
+        indexes: Vec::new(),
+        foreign_keys: Vec::new(),
+        triggers: Vec::new(),
+        table_comment: None,
+        original_table_comment: None,
+    });
+
+    assert_eq!(result.statements, Vec::<String>::new());
+    assert_eq!(
+        result.warnings,
+        vec!["SQL Server identity column \"test\" must use tinyint, smallint, int, bigint, or decimal/numeric with scale 0."]
+    );
 }
 
 #[test]
@@ -1270,12 +1492,12 @@ fn builds_duckdb_create_table_statements() {
 
     assert_eq!(result.warnings, Vec::<String>::new());
     assert_eq!(
-            result.statements,
-            vec![
-                "CREATE TABLE \"events\" (\n  \"name\" VARCHAR NOT NULL,\n  \"created_at\" TIMESTAMP DEFAULT current_timestamp\n);",
-                "CREATE INDEX \"idx_events_name\" ON \"events\" (\"name\");",
-            ]
-        );
+        result.statements,
+        vec![
+            "CREATE TABLE \"events\" (\n  \"name\" VARCHAR NOT NULL,\n  \"created_at\" TIMESTAMP DEFAULT current_timestamp\n);",
+            "CREATE INDEX \"idx_events_name\" ON \"events\" (\"name\");",
+        ]
+    );
 }
 
 #[test]

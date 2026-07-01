@@ -644,7 +644,8 @@ Section Install
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
-  File /a "/oname=WebView2Loader.dll" "${WEBVIEW2LOADERSRCPATH}"
+  ; MSVC links WebView2Loader statically, while GNU builds may emit a DLL next to the binary.
+  File /nonfatal /a "/oname=WebView2Loader.dll" "${WEBVIEW2LOADERSRCPATH}"
 
   ; Copy resources
   {{#each resources_dirs}}

@@ -27,7 +27,7 @@ import { PRESET_FIELDS_TEMPLATE_ID, createTableColumnTemplateDrafts } from "@/li
 import { getTableMetadataCapabilities } from "@/lib/tableMetadataCapabilities";
 import { canAddTableStructureColumn, getTableStructureCapabilities } from "@/lib/tableStructureCapabilities";
 import { connectionObjectTreeQuerySchema, tableStructureDatabaseTypeForConnection } from "@/lib/jdbcDialect";
-import type { TableStructureEditorDraft } from "@/types/database";
+import type { TableInfoTab, TableStructureEditorDraft } from "@/types/database";
 import {
   buildStructureTargetLabel,
   combineDataTypeForDatabase,
@@ -42,8 +42,10 @@ import {
   getDataTypeOptions,
   getDefaultLengthForType,
   isDataTypeLengthDisabled,
+  isSqlServerIdentityCompatibleDataType,
   isProtectedManticoreIdColumn,
   parseExtraToColumnExtra,
+  rehydrateColumnDraftsFromMetadata,
   splitDataType,
   toColumnNames,
   applyManticoreDdlColumnExtras,
@@ -80,6 +82,8 @@ const props = defineProps<{
   database: string;
   schema?: string;
   tableName: string;
+  initialTab?: TableInfoTab;
+  initialTabRequestId?: number;
   draft?: TableStructureEditorDraft;
 }>();
 
@@ -90,7 +94,7 @@ const emit = defineEmits<{
   openSettings: [initialTab?: string, initialSection?: string];
 }>();
 
-const activeTab = ref("columns");
+const activeTab = ref<TableInfoTab>("columns");
 const loading = ref(false);
 const saving = ref(false);
 const postSaveRefreshing = ref(false);
@@ -224,6 +228,7 @@ const structureDensityMetrics: Record<
     indexes: number[];
     minColumnWidth: number;
     minIndexColumnWidth: number;
+    actionButtonWidth: number;
     fontSize: number;
     shellPadding: number;
     cellPaddingX: number;
@@ -241,6 +246,7 @@ const structureDensityMetrics: Record<
     indexes: [120, 180, 60, 88, 124, 144, 120, 70],
     minColumnWidth: 24,
     minIndexColumnWidth: 48,
+    actionButtonWidth: 24,
     fontSize: 11,
     shellPadding: 10,
     cellPaddingX: 6,
@@ -257,6 +263,7 @@ const structureDensityMetrics: Record<
     indexes: [148, 224, 72, 108, 148, 180, 148, 84],
     minColumnWidth: 28,
     minIndexColumnWidth: 60,
+    actionButtonWidth: 28,
     fontSize: 12,
     shellPadding: 12,
     cellPaddingX: 8,
@@ -273,6 +280,7 @@ const structureDensityMetrics: Record<
     indexes: [176, 260, 84, 124, 176, 216, 176, 104],
     minColumnWidth: 32,
     minIndexColumnWidth: 64,
+    actionButtonWidth: 32,
     fontSize: 13,
     shellPadding: 16,
     cellPaddingX: 10,
@@ -546,8 +554,15 @@ const showExtendedProperties = computed(() => {
   return dt === "mysql" || dt === "manticoresearch" || isPostgresIdentityType(dt) || dt === "sqlserver";
 });
 const extendedPropertiesColumnIndex = 8;
+const actionButtonGap = 2;
+const columnActionButtonCount = computed(() => (canShowColumnDragControls.value ? 2 : 1));
+const columnActionsWidth = computed(() => {
+  const metric = structureDensityMetric.value;
+  const count = columnActionButtonCount.value;
+  return metric.actionButtonWidth * count + actionButtonGap * Math.max(0, count - 1) + metric.cellPaddingX * 2;
+});
 const visibleColumnIndexes = computed(() => colLabels.value.map((column) => column.widthIndex));
-const visibleColWidths = computed(() => visibleColumnIndexes.value.map((index) => colWidths.value[index] ?? structureDensityMetric.value.minColumnWidth));
+const visibleColWidths = computed(() => colLabels.value.map((column) => (column.key === "actions" ? columnActionsWidth.value : (colWidths.value[column.widthIndex] ?? structureDensityMetric.value.minColumnWidth))));
 
 function columnWidthIndex(visibleIndex: number) {
   return visibleColumnIndexes.value[visibleIndex] ?? visibleIndex;
@@ -604,6 +619,7 @@ let skipNextRefreshVersion = false;
 let restoringDraft = false;
 let syncingDraft = false;
 let draftHydrated = false;
+let hydratingRestoredDraft = false;
 
 function cloneDraftValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -633,6 +649,7 @@ function syncDraftToParent() {
 
 function restoreDraft(draft: TableStructureEditorDraft) {
   restoringDraft = true;
+  draftHydrated = false;
   activeTab.value = draft.activeTab || "columns";
   newTableName.value = draft.newTableName || "";
   tableComment.value = draft.tableComment || "";
@@ -642,7 +659,45 @@ function restoreDraft(draft: TableStructureEditorDraft) {
   foreignKeys.value = cloneDraftValue(draft.foreignKeys || []);
   triggers.value = cloneDraftValue(draft.triggers || []);
   restoringDraft = false;
-  draftHydrated = true;
+  draftHydrated = !needsColumnDraftMetadataHydration();
+}
+
+function needsColumnDraftMetadataHydration() {
+  return !isCreateMode.value && columns.value.some((column) => !column.original && !column.id.startsWith("new:") && !!column.name.trim());
+}
+
+async function hydrateRestoredDraftFromDatabase() {
+  if (!needsColumnDraftMetadataHydration() || hydratingRestoredDraft) return;
+  const connectionId = props.connectionId;
+  const database = props.database;
+  const schema = metadataSchema.value;
+  const tableName = props.tableName;
+  if (!connectionId || !database || !tableName) return;
+
+  hydratingRestoredDraft = true;
+  let shouldRefreshPreview = false;
+  try {
+    await store.ensureConnected(connectionId);
+    let nextColumns = await api.getColumns(connectionId, database, schema, tableName);
+    if (databaseType.value === "manticoresearch" && tableMetadataCapabilities.value.ddl) {
+      try {
+        const ddl = await api.getTableDdl(connectionId, database, schema, tableName);
+        ddlContent.value = await formatSqlForDisplay(ddl, sqlFormatDialectForDbType(databaseType.value), settingsStore.editorSettings.sqlFormatter);
+        ddlFetched.value = true;
+        nextColumns = applyManticoreDdlColumnExtras(nextColumns, ddl);
+      } catch {
+        /* ignore — Manticore column properties can still come from SHOW COLUMNS when available */
+      }
+    }
+    columns.value = rehydrateColumnDraftsFromMetadata(columns.value, nextColumns, databaseType.value);
+    markDraftHydratedAndSync();
+    shouldRefreshPreview = true;
+  } catch (e: any) {
+    console.warn("[DBX][structure-editor:draft-hydration-failed]", e);
+  } finally {
+    hydratingRestoredDraft = false;
+    if (shouldRefreshPreview) scheduleSqlPreviewRefresh();
+  }
 }
 
 function markDraftHydratedAndSync() {
@@ -722,6 +777,18 @@ async function loadDynamicDataTypeOptions() {
 }
 
 function scheduleSqlPreviewRefresh() {
+  if (hydratingRestoredDraft || needsColumnDraftMetadataHydration()) {
+    if (sqlPreviewDebounceTimer) {
+      clearTimeout(sqlPreviewDebounceTimer);
+      sqlPreviewDebounceTimer = undefined;
+    }
+    sqlPreviewRequestId++;
+    deferredSqlPreviewRefresh = false;
+    pendingStatements.value = [];
+    warnings.value = [];
+    sqlPreviewLoading.value = true;
+    return;
+  }
   if (!hasPendingStructureChanges()) {
     clearSqlPreviewState();
     return;
@@ -983,7 +1050,6 @@ function canDragColumn(index: number): boolean {
   if (!Number.isInteger(index) || index < 0 || index >= columns.value.length) return false;
   const column = columns.value[index];
   if (!column || column.markedForDrop) return false;
-  if (!column.original) return true;
   return canShowColumnDragControls.value;
 }
 
@@ -1001,6 +1067,74 @@ function canDropColumnAt(sourceIndex: number, insertionIndex: number): boolean {
 }
 
 const canShowColumnDragControls = computed(() => isCreateMode.value || structureCapabilities.value.reorderColumn);
+
+function isSqlServerIdentityChecked(column: EditableStructureColumn): boolean {
+  return !!column.extra.autoIncrement || !!column.extra.identity;
+}
+
+function canEditSqlServerIdentity(column: EditableStructureColumn): boolean {
+  return !column.original && !column.markedForDrop && isSqlServerIdentityCompatibleDataType(column.dataType);
+}
+
+function clearSqlServerIdentity(column: EditableStructureColumn) {
+  column.extra.autoIncrement = false;
+  column.extra.identity = undefined;
+}
+
+function syncSqlServerIdentityForDataType(column: EditableStructureColumn) {
+  if (databaseType.value !== "sqlserver") return;
+  if (!isSqlServerIdentityChecked(column)) return;
+  if (isSqlServerIdentityCompatibleDataType(column.dataType)) return;
+  clearSqlServerIdentity(column);
+}
+
+function ensureSqlServerIdentity(column: EditableStructureColumn) {
+  column.extra.autoIncrement = true;
+  column.extra.identity = {
+    seed: column.extra.identity?.seed ?? 1,
+    increment: column.extra.identity?.increment ?? 1,
+  };
+}
+
+function setSqlServerIdentity(column: EditableStructureColumn, checked: boolean) {
+  if (!canEditSqlServerIdentity(column)) return;
+  if (checked) {
+    ensureSqlServerIdentity(column);
+    column.isNullable = false;
+  } else {
+    clearSqlServerIdentity(column);
+  }
+}
+
+function parseOptionalNumberInput(value: string | number): number | undefined {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+function updateSqlServerIdentitySeed(column: EditableStructureColumn, value: string | number) {
+  if (!canEditSqlServerIdentity(column)) return;
+  ensureSqlServerIdentity(column);
+  column.extra.identity!.seed = parseOptionalNumberInput(value);
+}
+
+function updateSqlServerIdentityIncrement(column: EditableStructureColumn, value: string | number) {
+  if (!canEditSqlServerIdentity(column)) return;
+  ensureSqlServerIdentity(column);
+  column.extra.identity!.increment = parseOptionalNumberInput(value);
+}
+
+function updateColumnDataType(column: EditableStructureColumn, baseType: string) {
+  column.dataType = combineDataTypeForDatabase(databaseType.value, baseType, getDefaultLengthForType(databaseType.value, baseType));
+  syncSqlServerIdentityForDataType(column);
+}
+
+function updateColumnDataTypeLength(column: EditableStructureColumn, value: string | number) {
+  column.dataType = combineDataTypeForDatabase(databaseType.value, splitDataType(column.dataType).baseType, String(value));
+  syncSqlServerIdentityForDataType(column);
+}
 
 function moveColumnTo(index: number, insertionIndex: number) {
   if (!canDropColumnAt(index, insertionIndex)) return;
@@ -1502,10 +1636,13 @@ function unregisterStructureEditorShortcuts() {
 
 onMounted(() => {
   resetState();
+  applyInitialStructureTab();
   registerStructureEditorShortcuts();
   void loadDynamicDataTypeOptions();
   if (props.draft?.initialized) {
     restoreDraft(props.draft);
+    applyInitialStructureTab();
+    void hydrateRestoredDraftFromDatabase();
   } else if (isCreateMode.value) {
     markDraftHydratedAndSync();
   } else {
@@ -1518,6 +1655,7 @@ onActivated(() => {
   void loadDynamicDataTypeOptions();
   if (props.draft?.initialized && !draftHydrated) {
     restoreDraft(props.draft);
+    void hydrateRestoredDraftFromDatabase();
   }
 });
 onDeactivated(unregisterStructureEditorShortcuts);
@@ -1537,14 +1675,27 @@ function firstStructureMetadataTab(capabilities = tableMetadataCapabilities.valu
   return "columns";
 }
 
+function isStructureMetadataTabSupported(tab: TableInfoTab, capabilities = tableMetadataCapabilities.value) {
+  return (tab === "columns" && capabilities.columns) || (tab === "indexes" && capabilities.indexes) || (tab === "foreignKeys" && capabilities.foreignKeys) || (tab === "triggers" && capabilities.triggers) || (tab === "ddl" && capabilities.ddl && !isCreateMode.value);
+}
+
+function resolveStructureMetadataTab(tab: TableInfoTab | undefined, capabilities = tableMetadataCapabilities.value): TableInfoTab {
+  if (tab && isStructureMetadataTabSupported(tab, capabilities)) return tab;
+  return firstStructureMetadataTab(capabilities);
+}
+
+function applyInitialStructureTab() {
+  if (!props.initialTab) return;
+  activeTab.value = resolveStructureMetadataTab(props.initialTab);
+}
+
 watch(tableMetadataCapabilities, (capabilities) => {
-  const supported =
-    (activeTab.value === "columns" && capabilities.columns) ||
-    (activeTab.value === "indexes" && capabilities.indexes) ||
-    (activeTab.value === "foreignKeys" && capabilities.foreignKeys) ||
-    (activeTab.value === "triggers" && capabilities.triggers) ||
-    (activeTab.value === "ddl" && capabilities.ddl && !isCreateMode.value);
-  if (!supported) activeTab.value = firstStructureMetadataTab(capabilities);
+  if (!isStructureMetadataTabSupported(activeTab.value, capabilities)) activeTab.value = firstStructureMetadataTab(capabilities);
+});
+
+watch([() => props.initialTab, () => props.initialTabRequestId], () => {
+  if (!props.initialTab) return;
+  applyInitialStructureTab();
 });
 
 watch([() => props.connectionId, () => props.database, databaseType], () => {
@@ -1740,17 +1891,12 @@ watch(activeTab, (tab) => {
                       :loading-text="t('common.loading')"
                       :allow-custom="true"
                       :trigger-class="[structureMonoControlClass, 'w-full']"
-                      @update:model-value="(v: string) => (column.dataType = combineDataTypeForDatabase(databaseType, v, getDefaultLengthForType(databaseType, v)))"
+                      @update:model-value="(v: string) => updateColumnDataType(column, v)"
                     />
                     <Input v-else :model-value="splitDataType(column.dataType).baseType" :class="[structureMonoControlClass, 'w-full']" disabled />
                   </td>
                   <td v-if="columnEditorControls.length" :class="structureCellClass">
-                    <Input
-                      :model-value="dataTypeLengthInputValue(databaseType, column.dataType)"
-                      :class="structureMonoControlClass"
-                      :disabled="isColumnLengthDisabled(column)"
-                      @update:model-value="column.dataType = combineDataTypeForDatabase(databaseType, splitDataType(column.dataType).baseType, String($event))"
-                    />
+                    <Input :model-value="dataTypeLengthInputValue(databaseType, column.dataType)" :class="structureMonoControlClass" :disabled="isColumnLengthDisabled(column)" @update:model-value="updateColumnDataTypeLength(column, $event)" />
                   </td>
                   <td v-if="columnEditorControls.nullable" :class="structureCellClass">
                     <label class="flex items-center gap-1.5">
@@ -1910,43 +2056,35 @@ watch(activeTab, (tab) => {
                       </template>
                       <!-- SQL Server: IDENTITY -->
                       <template v-else-if="structureDialect === 'sqlserver'">
-                        <label :class="structurePropertyLabelClass" :title="t('structureEditor.identity')">
-                          <input v-model="column.extra.autoIncrement" type="checkbox" :class="[structureCheckboxClass, 'shrink-0']" />
-                          <span class="min-w-0 truncate">{{ t("structureEditor.identity") }}</span>
+                        <label :class="structurePropertyLabelClass" :title="canEditSqlServerIdentity(column) || isSqlServerIdentityChecked(column) ? t('structureEditor.identity') : t('structureEditor.sqlServerIdentityTypeHint')">
+                          <input :checked="isSqlServerIdentityChecked(column)" type="checkbox" :class="[structureCheckboxClass, 'shrink-0']" :disabled="!canEditSqlServerIdentity(column)" @change="setSqlServerIdentity(column, ($event.target as HTMLInputElement).checked)" />
+                          <span class="min-w-0 truncate">{{ t("structureEditor.autoIncrement") }}</span>
                         </label>
-                        <template v-if="column.extra.autoIncrement">
+                        <template v-if="isSqlServerIdentityChecked(column)">
                           <Input
                             :model-value="column.extra.identity?.seed?.toString() ?? '1'"
                             type="number"
                             :class="[structureControlClass, 'w-14']"
                             :placeholder="t('structureEditor.identitySeed')"
-                            @update:model-value="
-                              (v) => {
-                                if (!column.extra.identity) column.extra.identity = {};
-                                column.extra.identity.seed = v ? Number(v) : undefined;
-                              }
-                            "
+                            :disabled="!canEditSqlServerIdentity(column)"
+                            @update:model-value="(v) => updateSqlServerIdentitySeed(column, v)"
                           />
                           <Input
                             :model-value="column.extra.identity?.increment?.toString() ?? '1'"
                             type="number"
                             :class="[structureControlClass, 'w-14']"
                             :placeholder="t('structureEditor.identityIncrement')"
-                            @update:model-value="
-                              (v) => {
-                                if (!column.extra.identity) column.extra.identity = {};
-                                column.extra.identity.increment = v ? Number(v) : undefined;
-                              }
-                            "
+                            :disabled="!canEditSqlServerIdentity(column)"
+                            @update:model-value="(v) => updateSqlServerIdentityIncrement(column, v)"
                           />
                         </template>
                       </template>
                     </div>
                   </td>
                   <td :class="structureLastCellClass">
-                    <div class="flex min-w-0 items-center justify-start gap-0.5 overflow-hidden">
+                    <div class="flex min-w-0 items-center justify-start gap-0.5">
                       <Button
-                        v-if="canShowColumnDragControls || !column.original"
+                        v-if="canShowColumnDragControls"
                         type="button"
                         variant="ghost"
                         size="icon"
