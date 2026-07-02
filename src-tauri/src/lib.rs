@@ -582,7 +582,7 @@ pub fn run() {
             open_connection_deep_links(app.handle(), startup_links);
 
             let app_handle = app.handle().clone();
-            commands::mcp_bridge::start(app_handle, state);
+            commands::mcp_bridge::start(app_handle, state, data_dir.clone());
             eprintln!("[STARTUP] setup complete in {:?} (total {:?})", setup_start.elapsed(), startup_begin.elapsed());
 
             if let Some(decorations) = native_window_decorations_override(std::env::consts::OS) {
@@ -846,7 +846,7 @@ pub fn run() {
             commands::mongo_cmd::mongo_create_database,
             commands::mongo_cmd::mongo_drop_database,
             commands::mongo_cmd::mongo_drop_collection,
-            commands::mongo_cmd::document_find_documents,
+            commands::document_cmd::document_find_documents,
             commands::mongo_cmd::mongo_find_documents,
             commands::mongo_cmd::mongo_server_version,
             commands::mongo_cmd::mongo_aggregate_documents,
@@ -984,6 +984,7 @@ pub fn run() {
             commands::system_fonts::list_system_fonts,
             commands::dialect_cmd::dialect_check_command,
             commands::dialect_cmd::dialect_check_all_command,
+            commands::dialect_cmd::list_dialect_data_types,
             commands::config_cmd::trace_export_command,
             commands::config_cmd::trace_stats_command,
         ])
