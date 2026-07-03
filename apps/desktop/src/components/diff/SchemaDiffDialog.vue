@@ -449,7 +449,13 @@ async function handleCompare() {
       sourceDialect: opts?.sourceDialect || sourceConfig?.db_type || undefined,
       targetDialect: opts?.targetDialect || targetConfig?.db_type || undefined,
       compatibilityThreshold: opts?.compatibilityThreshold ?? 0.5,
-      fieldMappings: opts?.fieldMappings?.map((m: FieldMappingEntry) => ({ sourceType: m.sourceType, targetType: m.targetType })) || [],
+      fieldMappings:
+        opts?.fieldMappings?.map((m: FieldMappingEntry) => ({
+          sourceType: m.sourceType,
+          targetType: m.targetType,
+          paramStrategy: m.paramStrategy ?? "preserve",
+          customParams: m.customParams,
+        })) || [],
     });
 
     // Extract new result fields
