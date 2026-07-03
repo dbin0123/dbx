@@ -7319,4 +7319,94 @@ mod tests {
         assert!(sql.contains("INTEGER"), "int→INTEGER: {sql}");
         assert!(!sql.contains("ENGINE="), "no MySQL ENGINE: {sql}");
     }
+
+    // -- FieldMapping apply_with_params tests --
+
+    fn register_oracle_dialect() {
+        use crate::sql_dialect::descriptor::DialectCapabilityDescriptor;
+        use crate::sql_dialect::dialect_loader::DialectRegistry;
+        use crate::sql_dialect::dialect_yaml::{DialectMeta, DialectType, DialectYaml};
+
+        let yaml = DialectYaml {
+            dialect: DialectMeta {
+                name: "Oracle".to_string(),
+                display_name: Some("Oracle".to_string()),
+                versions: vec![],
+            },
+            types: vec![DialectType {
+                name: "VARCHAR2".to_string(),
+                category: "STRING".to_string(),
+                has_length: true,
+                aliases: vec![],
+                max_precision: Some(4000),
+                precision_range: None,
+                has_precision: false,
+                semantic_fidelity_base: 1.0,
+            }],
+            ..Default::default()
+        };
+        let descriptor = DialectCapabilityDescriptor { dialect: DialectKind::Oracle, ..Default::default() };
+        DialectRegistry::global().register_descriptor("oracle", descriptor, yaml);
+    }
+
+    #[test]
+    fn field_mapping_preserve_params() {
+        register_oracle_dialect();
+        let mappings = vec![FieldMapping {
+            source_type: "VARCHAR".into(),
+            target_type: "VARCHAR2".into(),
+            param_strategy: ParamStrategy::Preserve,
+            custom_params: None,
+        }];
+        let result = FieldMapping::apply_with_params(&mappings, "VARCHAR(255)", DialectKind::Oracle);
+        assert_eq!(result, Some("VARCHAR2(255)".to_string()));
+    }
+
+    #[test]
+    fn field_mapping_strip_params() {
+        let mappings = vec![FieldMapping {
+            source_type: "VARCHAR".into(),
+            target_type: "TEXT".into(),
+            param_strategy: ParamStrategy::Strip,
+            custom_params: None,
+        }];
+        let result = FieldMapping::apply_with_params(&mappings, "VARCHAR(255)", DialectKind::Oracle);
+        assert_eq!(result, Some("TEXT".to_string()));
+    }
+
+    #[test]
+    fn field_mapping_custom_params() {
+        let mappings = vec![FieldMapping {
+            source_type: "VARCHAR".into(),
+            target_type: "VARCHAR2".into(),
+            param_strategy: ParamStrategy::Custom,
+            custom_params: Some("(500)".to_string()),
+        }];
+        let result = FieldMapping::apply_with_params(&mappings, "VARCHAR(255)", DialectKind::Oracle);
+        assert_eq!(result, Some("VARCHAR2(500)".to_string()));
+    }
+
+    #[test]
+    fn field_mapping_custom_empty_params_falls_back() {
+        let mappings = vec![FieldMapping {
+            source_type: "VARCHAR".into(),
+            target_type: "TEXT".into(),
+            param_strategy: ParamStrategy::Custom,
+            custom_params: Some("".to_string()),
+        }];
+        let result = FieldMapping::apply_with_params(&mappings, "VARCHAR(255)", DialectKind::Oracle);
+        assert_eq!(result, Some("TEXT".to_string()));
+    }
+
+    #[test]
+    fn field_mapping_no_match_returns_none() {
+        let mappings = vec![FieldMapping {
+            source_type: "INT".into(),
+            target_type: "INTEGER".into(),
+            param_strategy: ParamStrategy::Preserve,
+            custom_params: None,
+        }];
+        let result = FieldMapping::apply_with_params(&mappings, "VARCHAR(255)", DialectKind::Oracle);
+        assert_eq!(result, None);
+    }
 }
