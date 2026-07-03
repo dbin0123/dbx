@@ -167,6 +167,21 @@ pub struct TableSchemaDetail {
     pub ddl: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ParamStrategy {
+    #[serde(rename = "preserve")]
+    Preserve,
+    #[serde(rename = "strip")]
+    Strip,
+    #[serde(rename = "custom")]
+    Custom,
+}
+
+fn default_param_strategy() -> ParamStrategy {
+    ParamStrategy::Preserve
+}
+
 /// A custom field type mapping override: source_type → target_type.
 /// Used when source and target database types differ.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +189,10 @@ pub struct TableSchemaDetail {
 pub struct FieldMapping {
     pub source_type: String,
     pub target_type: String,
+    #[serde(default = "default_param_strategy")]
+    pub param_strategy: ParamStrategy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_params: Option<String>,
 }
 
 impl FieldMapping {
