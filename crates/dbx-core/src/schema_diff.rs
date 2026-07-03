@@ -200,12 +200,22 @@ impl FieldMapping {
 
     pub fn apply_with_params(mappings: &[FieldMapping], source_type: &str, target_kind: DialectKind) -> Option<String> {
         let base_type = source_type.split('(').next().unwrap_or(source_type).trim();
-        let params = &source_type[base_type.len()..];
+        let source_params = &source_type[base_type.len()..];
         let matched = mappings.iter().find(|m| m.source_type.eq_ignore_ascii_case(base_type))?;
-        if !params.is_empty() && type_supports_params(target_kind, &matched.target_type) {
-            Some(format!("{}{}", matched.target_type, params))
-        } else {
-            Some(matched.target_type.clone())
+
+        match matched.param_strategy {
+            ParamStrategy::Strip => Some(matched.target_type.clone()),
+            ParamStrategy::Custom => match &matched.custom_params {
+                Some(params) if !params.is_empty() => Some(format!("{}{}", matched.target_type, params)),
+                _ => Some(matched.target_type.clone()),
+            },
+            ParamStrategy::Preserve => {
+                if !source_params.is_empty() && type_supports_params(target_kind, &matched.target_type) {
+                    Some(format!("{}{}", matched.target_type, source_params))
+                } else {
+                    Some(matched.target_type.clone())
+                }
+            }
         }
     }
 }
