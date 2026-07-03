@@ -170,11 +170,8 @@ pub struct TableSchemaDetail {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ParamStrategy {
-    #[serde(rename = "preserve")]
     Preserve,
-    #[serde(rename = "strip")]
     Strip,
-    #[serde(rename = "custom")]
     Custom,
 }
 
