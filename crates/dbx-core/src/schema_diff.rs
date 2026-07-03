@@ -199,8 +199,9 @@ impl FieldMapping {
     }
 
     pub fn apply_with_params(mappings: &[FieldMapping], source_type: &str, target_kind: DialectKind) -> Option<String> {
-        let base_type = source_type.split('(').next().unwrap_or(source_type).trim();
-        let source_params = &source_type[base_type.len()..];
+        let trimmed = source_type.trim();
+        let base_type = trimmed.split('(').next().unwrap_or(trimmed);
+        let source_params = &trimmed[base_type.len()..];
         let matched = mappings.iter().find(|m| m.source_type.eq_ignore_ascii_case(base_type))?;
 
         match matched.param_strategy {
