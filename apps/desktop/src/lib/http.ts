@@ -548,6 +548,10 @@ export async function listDataTypes(connectionId: string, database: string): Pro
   return get(`/api/schema/data-types?${qs({ connection_id: connectionId, database })}`);
 }
 
+export async function listDialectDataTypes(_dialectName: string): Promise<string[]> {
+  return [];
+}
+
 export async function listIndexes(connectionId: string, database: string, schema: string, table: string): Promise<IndexInfo[]> {
   return get(`/api/schema/indexes?${qs({ connection_id: connectionId, database, schema, table })}`);
 }

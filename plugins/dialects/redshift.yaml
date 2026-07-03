@@ -22,6 +22,7 @@ types:
     aliases: ["FLOAT8"]
   - name: "DECIMAL"
     category: "DECIMAL"
+    has_precision: true
     aliases: ["NUMERIC"]
   - name: "VARCHAR"
     category: "STRING"

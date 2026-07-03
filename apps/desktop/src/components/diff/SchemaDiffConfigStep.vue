@@ -10,7 +10,8 @@ import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
 import * as api from "@/lib/api";
 import { isSchemaAware } from "@/lib/databaseCapabilities";
 import { ArrowLeftRight, GitCompareArrows, Save, FolderOpen, Settings, X } from "@lucide/vue";
-import type { SchemaDiffConfig, SchemaDiffCompareOptions } from "@/types/schemaDiff";
+import type { SchemaDiffConfig, SchemaDiffCompareOptions, FieldMappingEntry } from "@/types/schemaDiff";
+import FieldMappingPanel from "@/components/diff/FieldMappingPanel.vue";
 
 const { t } = useI18n();
 const store = useConnectionStore();
@@ -45,6 +46,7 @@ const emit = defineEmits<{
   (e: "swap"): void;
   (e: "loadHistoryConfig", config: SchemaDiffConfig): void;
   (e: "deleteHistoryConfig", configId: string): void;
+  (e: "update:fieldMappings", value: FieldMappingEntry[]): void;
 }>();
 
 const sourceDatabases = ref<string[]>([]);
@@ -58,6 +60,11 @@ const sqlConnections = computed(() => store.connections.filter((c: any) => !["mo
 
 const sourceConfig = computed(() => store.getConfig(props.sourceConnectionId));
 const targetConfig = computed(() => store.getConfig(props.targetConnectionId));
+
+const sourceDbType = computed(() => sourceConfig.value?.db_type || "");
+const targetDbType = computed(() => targetConfig.value?.db_type || "");
+const showFieldMapping = computed(() => sourceDbType.value && targetDbType.value && sourceDbType.value !== targetDbType.value);
+const activeFieldMappings = computed(() => props.options?.fieldMappings ?? []);
 
 const canCompare = computed(() => {
   return props.sourceConnectionId && props.targetConnectionId && props.sourceDatabase && props.targetDatabase && (!isSchemaAware(sourceConfig.value?.db_type) || props.sourceSchema) && (!isSchemaAware(targetConfig.value?.db_type) || props.targetSchema);
@@ -453,6 +460,11 @@ async function fetchDbVersion(connectionId: string, database: string, schema: st
           </SelectItem>
         </SelectContent>
       </Select>
+    </div>
+
+    <!-- Field Mapping -->
+    <div v-if="showFieldMapping" class="mt-3">
+      <FieldMappingPanel :mappings="activeFieldMappings" :source-db-type="sourceDbType" :target-db-type="targetDbType" @update:mappings="(v: FieldMappingEntry[]) => $emit('update:fieldMappings', v)" />
     </div>
 
     <!-- Bottom Actions -->

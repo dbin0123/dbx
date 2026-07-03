@@ -40,6 +40,7 @@ types:
     aliases: ["DOUBLE"]
   - name: "Decimal"
     category: "DECIMAL"
+    has_precision: true
     aliases: ["NUMERIC"]
   - name: "String"
     category: "STRING"

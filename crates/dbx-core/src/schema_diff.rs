@@ -167,6 +167,46 @@ pub struct TableSchemaDetail {
     pub ddl: Option<String>,
 }
 
+/// A custom field type mapping override: source_type → target_type.
+/// Used when source and target database types differ.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldMapping {
+    pub source_type: String,
+    pub target_type: String,
+}
+
+impl FieldMapping {
+    pub fn apply<'a>(mappings: &'a [FieldMapping], source_type: &str) -> Option<&'a str> {
+        let base_type = source_type.split('(').next().unwrap_or(source_type).trim();
+        mappings.iter().find(|m| m.source_type.eq_ignore_ascii_case(base_type)).map(|m| m.target_type.as_str())
+    }
+
+    pub fn apply_with_params(mappings: &[FieldMapping], source_type: &str, target_kind: DialectKind) -> Option<String> {
+        let base_type = source_type.split('(').next().unwrap_or(source_type).trim();
+        let params = &source_type[base_type.len()..];
+        let matched = mappings.iter().find(|m| m.source_type.eq_ignore_ascii_case(base_type))?;
+        if !params.is_empty() && type_supports_params(target_kind, &matched.target_type) {
+            Some(format!("{}{}", matched.target_type, params))
+        } else {
+            Some(matched.target_type.clone())
+        }
+    }
+}
+
+fn type_supports_params(kind: DialectKind, type_name: &str) -> bool {
+    use crate::sql_dialect::dialect_loader::DialectRegistry;
+    DialectRegistry::global()
+        .get(kind.label())
+        .map(|loaded| {
+            loaded.yaml.types.iter().any(|t| {
+                (t.name.eq_ignore_ascii_case(type_name) || t.aliases.iter().any(|a| a.eq_ignore_ascii_case(type_name)))
+                    && (t.has_length || t.has_precision || t.max_precision.is_some())
+            })
+        })
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaDiffPreparationOptions {
@@ -225,6 +265,8 @@ pub struct SchemaDiffPreparationOptions {
     pub shard_strategy: Option<ShardStrategy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_constraint: Option<ResourceConstraint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_mappings: Vec<FieldMapping>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -817,6 +859,7 @@ pub fn diff_columns_with_compatibility(
     source_dialect: DialectKind,
     target_dialect: DialectKind,
     compatibility_threshold: f64,
+    field_mappings: &[FieldMapping],
 ) -> (Vec<ColumnDiff>, Vec<ColumnCompatibilityWarning>) {
     use crate::sql_dialect::descriptor::TypeMappingMatrix;
 
@@ -837,7 +880,12 @@ pub fn diff_columns_with_compatibility(
                 let tgt_parsed = ColumnType::parse(&tgt.data_type);
                 let compatibility = engine.type_compatibility_score(&src_parsed, &tgt_parsed);
 
-                let (mapped_type, requires_cast) = matrix.convert_type(&tgt.data_type);
+                let (mapped_type, requires_cast) =
+                    if let Some(user_target) = FieldMapping::apply(field_mappings, &src.data_type) {
+                        (user_target.to_string(), false)
+                    } else {
+                        matrix.convert_type(&tgt.data_type)
+                    };
 
                 let risk = if compatibility >= 0.9 {
                     ColumnConversionRisk::None
@@ -1144,7 +1192,7 @@ pub fn generate_rollback_sync_sql(
     cascade_delete: bool,
 ) -> String {
     let rollback_diffs: Vec<TableDiff> = rollback_graph.rollback_nodes.iter().map(|n| n.table_diff.clone()).collect();
-    generate_schema_sync_sql(&rollback_diffs, &[], &[], &[], &[], db_type, schema, cascade_delete, None)
+    generate_schema_sync_sql_inner(&rollback_diffs, &[], &[], &[], &[], db_type, schema, cascade_delete, None, &[])
 }
 
 // ============================================================================
@@ -1496,6 +1544,7 @@ impl Default for SchemaDiffPreparationOptions {
             target_permissions: Vec::new(),
             shard_strategy: None,
             resource_constraint: None,
+            field_mappings: Vec::new(),
         }
     }
 }
@@ -1543,6 +1592,11 @@ impl SchemaDiffPreparationOptions {
 
     pub fn with_resource_constraint(mut self, constraint: ResourceConstraint) -> Self {
         self.resource_constraint = Some(constraint);
+        self
+    }
+
+    pub fn with_field_mappings(mut self, mappings: Vec<FieldMapping>) -> Self {
+        self.field_mappings = mappings;
         self
     }
 }
@@ -1615,6 +1669,7 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
                             src_dialect,
                             tgt_dialect,
                             options.compatibility_threshold,
+                            &options.field_mappings,
                         );
                         all_warnings.extend(warnings);
                     }
@@ -1640,7 +1695,7 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
     let owner_diffs = diff_owners(&options.source_owners, &options.target_owners);
 
     for diff in &mut diffs {
-        let sync_sql = generate_schema_sync_sql(
+        let sync_sql = generate_schema_sync_sql_inner(
             std::slice::from_ref(diff),
             &[],
             &[],
@@ -1650,13 +1705,14 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
             options.target_schema.as_deref(),
             options.cascade_delete,
             options.source_dialect,
+            &options.field_mappings,
         );
         if !sync_sql.is_empty() {
             diff.sync_sql = Some(sync_sql);
         }
     }
 
-    let sync_sql = generate_schema_sync_sql(
+    let sync_sql = generate_schema_sync_sql_inner(
         &diffs,
         &function_diffs,
         &sequence_diffs,
@@ -1666,6 +1722,7 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
         options.target_schema.as_deref(),
         options.cascade_delete,
         options.source_dialect,
+        &options.field_mappings,
     );
 
     let rollback_sync_sql = rollback_graph.as_ref().map(|graph| {
@@ -2730,12 +2787,16 @@ fn generate_create_table_sql(
     db_type: DatabaseType,
     schema: Option<&str>,
     source_dialect: Option<DialectKind>,
+    field_mappings: &[FieldMapping],
 ) -> String {
     let mut lines = Vec::new();
     let target_dialect = DialectKind::from_database_type(db_type);
     let type_matrix =
         source_dialect.map(|src| crate::sql_dialect::descriptor::TypeMappingMatrix::for_dialects(src, target_dialect));
     let map_type = |source_type: &str| -> String {
+        if let Some(user_target) = FieldMapping::apply_with_params(field_mappings, source_type, target_dialect) {
+            return user_target;
+        }
         type_matrix.as_ref().map_or_else(|| source_type.to_string(), |m| m.convert_type(source_type).0)
     };
     let table = qualified_name(name, db_type, schema);
@@ -2907,6 +2968,32 @@ pub fn generate_schema_sync_sql(
     cascade_delete: bool,
     source_dialect: Option<DialectKind>,
 ) -> String {
+    generate_schema_sync_sql_inner(
+        diffs,
+        function_diffs,
+        sequence_diffs,
+        rule_diffs,
+        owner_diffs,
+        db_type,
+        schema,
+        cascade_delete,
+        source_dialect,
+        &[],
+    )
+}
+
+fn generate_schema_sync_sql_inner(
+    diffs: &[TableDiff],
+    function_diffs: &[FunctionDiff],
+    sequence_diffs: &[SequenceDiff],
+    rule_diffs: &[RuleDiff],
+    owner_diffs: &[OwnerDiff],
+    db_type: DatabaseType,
+    schema: Option<&str>,
+    cascade_delete: bool,
+    source_dialect: Option<DialectKind>,
+    field_mappings: &[FieldMapping],
+) -> String {
     let mut lines = Vec::new();
     let is_mysql = is_mysql_like(db_type);
     let cascade = if cascade_delete { " CASCADE" } else { "" };
@@ -2916,6 +3003,10 @@ pub fn generate_schema_sync_sql(
         crate::sql_dialect::descriptor::TypeMappingMatrix::for_dialects(src, target_dialect)
     });
     let map_type = |source_type: &str| -> String {
+        let tgt = DialectKind::from_database_type(db_type);
+        if let Some(user_target) = FieldMapping::apply_with_params(field_mappings, source_type, tgt) {
+            return user_target;
+        }
         type_matrix.as_ref().map_or_else(|| source_type.to_string(), |m| m.convert_type(source_type).0)
     };
 
@@ -2941,6 +3032,7 @@ pub fn generate_schema_sync_sql(
                         db_type,
                         schema,
                         source_dialect,
+                        field_mappings,
                     );
                     if !gen.is_empty() {
                         lines.push(gen);
@@ -2961,6 +3053,7 @@ pub fn generate_schema_sync_sql(
                     db_type,
                     schema,
                     source_dialect,
+                    field_mappings,
                 );
                 if !gen.is_empty() {
                     lines.push(gen);
@@ -4949,6 +5042,7 @@ mod tests {
             DialectKind::Mysql,
             DialectKind::Mysql,
             0.9,
+            &[],
         );
         assert!(!warnings.is_empty());
         assert_eq!(warnings[0].risk, ColumnConversionRisk::Low);
@@ -4964,6 +5058,7 @@ mod tests {
             DialectKind::Mysql,
             DialectKind::Mysql,
             0.5,
+            &[],
         );
         assert!(warnings.is_empty());
     }
@@ -5604,6 +5699,7 @@ mod tests {
             DialectKind::Mysql,
             DialectKind::Postgres,
             0.5,
+            &[],
         );
         // int(11)→integer should be compatible
         let has_warning = warnings.iter().any(|w| w.column_name == "id");
@@ -5622,6 +5718,7 @@ mod tests {
             DialectKind::Mysql,
             DialectKind::Postgres,
             0.9,
+            &[],
         );
         let has_warning = warnings.iter().any(|w| w.column_name == "id");
         assert!(has_warning, "int→text should generate warning");
@@ -6580,6 +6677,7 @@ mod tests {
             target_permissions: vec![],
             shard_strategy: None,
             resource_constraint: None,
+            field_mappings: vec![],
         };
         let result = prepare_schema_diff(options);
         result.sync_sql

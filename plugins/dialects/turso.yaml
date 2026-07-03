@@ -18,6 +18,7 @@ types:
     category: "BINARY"
   - name: "NUMERIC"
     category: "DECIMAL"
+    has_precision: true
 
 ddl_capabilities:
   add_column: true

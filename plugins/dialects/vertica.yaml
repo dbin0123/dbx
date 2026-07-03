@@ -15,6 +15,7 @@ types:
     category: "FLOAT"
   - name: "NUMERIC"
     category: "DECIMAL"
+    has_precision: true
   - name: "VARCHAR"
     category: "STRING"
     has_length: true

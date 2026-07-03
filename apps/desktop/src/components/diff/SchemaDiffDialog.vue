@@ -17,7 +17,7 @@ import SchemaDiffOptionsPanel from "@/components/diff/SchemaDiffOptionsPanel.vue
 import { getSchemaDiffOptionsForDbType } from "@/lib/schemaDiffOptions";
 import { createConcurrencyLimiter, mapWithConcurrency, schemaDiffMetadataConcurrency } from "@/lib/schemaDiffMetadataLoad";
 import { normalizeSchemaDiffCompareOptions } from "@/types/schemaDiff";
-import type { SchemaDiffCompareOptions, SchemaDiffConfig } from "@/types/schemaDiff";
+import type { SchemaDiffCompareOptions, SchemaDiffConfig, FieldMappingEntry } from "@/types/schemaDiff";
 import type { ObjectSourceKind, TableInfo } from "@/types/database";
 import {
   buildDeploySqlForObjects,
@@ -295,6 +295,13 @@ function handleOptionsUpdate(options: SchemaDiffCompareOptions) {
   }
 }
 
+function handleFieldMappingsUpdate(mappings: FieldMappingEntry[]) {
+  if (activeConfig.value) {
+    const updated = { ...activeConfig.value.options, fieldMappings: mappings };
+    updateActiveConfigOptions(normalizeSchemaDiffCompareOptions(updated, getDbType()));
+  }
+}
+
 /** Map a JDBC table_type to an ObjectSourceKind for getTableDdl routing.
  *  Views and materialized views need the object_type parameter so the
  *  backend can call DBMS_METADATA.GET_DDL with the correct type. */
@@ -439,9 +446,10 @@ async function handleCompare() {
             .map((s: string) => s.trim())
             .filter(Boolean)
         : undefined,
-      sourceDialect: opts?.sourceDialect || undefined,
-      targetDialect: opts?.targetDialect || undefined,
+      sourceDialect: opts?.sourceDialect || sourceConfig?.db_type || undefined,
+      targetDialect: opts?.targetDialect || targetConfig?.db_type || undefined,
       compatibilityThreshold: opts?.compatibilityThreshold ?? 0.5,
+      fieldMappings: opts?.fieldMappings?.map((m: FieldMappingEntry) => ({ sourceType: m.sourceType, targetType: m.targetType })) || [],
     });
 
     // Extract new result fields
@@ -813,6 +821,7 @@ const targetConnectionInfo = computed(() => {
           @save-config="handleSaveConfig"
           @load-history-config="handleLoadHistoryConfig"
           @delete-history-config="handleDeleteHistoryConfig"
+          @update:field-mappings="handleFieldMappingsUpdate"
         />
 
         <!-- Compare Loading -->

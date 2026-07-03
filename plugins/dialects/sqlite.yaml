@@ -20,6 +20,7 @@ types:
     aliases: ["NONE"]
   - name: "NUMERIC"
     category: "DECIMAL"
+    has_precision: true
     aliases: ["DECIMAL", "BOOLEAN", "DATE", "DATETIME"]
     semantic_fidelity_base: 0.5
   - name: "NULL"

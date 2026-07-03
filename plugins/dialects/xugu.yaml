@@ -21,6 +21,7 @@ types:
     category: "FLOAT"
   - name: "DECIMAL"
     category: "DECIMAL"
+    has_precision: true
     aliases: ["NUMERIC"]
   - name: "VARCHAR"
     category: "STRING"

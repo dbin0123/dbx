@@ -23,6 +23,7 @@ types:
     category: "FLOAT"
   - name: "DECIMAL"
     category: "DECIMAL"
+    has_precision: true
   - name: "VARCHAR"
     category: "STRING"
     has_length: true

@@ -29,6 +29,7 @@ types:
     aliases: ["DOUBLE PRECISION", "REAL"]
   - name: "DECIMAL"
     category: "DECIMAL"
+    has_precision: true
   - name: "VARCHAR"
     category: "STRING"
     max_precision: 65535

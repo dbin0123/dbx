@@ -19,6 +19,7 @@ types:
     category: "INTEGER"
   - name: "DECIMAL"
     category: "DECIMAL"
+    has_precision: true
     aliases: ["NUMERIC", "DEC", "NUMBER"]
   - name: "DOUBLE"
     category: "FLOAT"

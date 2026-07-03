@@ -8,6 +8,7 @@ dialect:
 types:
   - name: "NUMBER"
     category: "DECIMAL"
+    has_precision: true
   - name: "FLOAT"
     category: "FLOAT"
   - name: "BINARY_FLOAT"

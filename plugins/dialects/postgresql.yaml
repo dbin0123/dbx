@@ -32,6 +32,7 @@ types:
     aliases: ["FLOAT8"]
   - name: "NUMERIC"
     category: "DECIMAL"
+    has_precision: true
     aliases: ["DECIMAL"]
   - name: "MONEY"
     category: "DECIMAL"

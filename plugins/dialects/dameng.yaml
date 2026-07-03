@@ -26,6 +26,7 @@ types:
     aliases: ["DOUBLE PRECISION"]
   - name: "NUMERIC"
     category: "DECIMAL"
+    has_precision: true
     aliases: ["DECIMAL", "NUMBER"]
   - name: "VARCHAR"
     category: "STRING"

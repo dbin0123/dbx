@@ -2349,6 +2349,17 @@ export default {
     deployMode: "Deploy SQL",
     rollbackMode: "Rollback SQL",
     renameCount: "{count} rename(s)",
+    fieldMapping: {
+      title: "Field Type Mapping",
+      description: "Customize how source data types are mapped to target data types when databases differ",
+      sourceType: "Source Type",
+      targetType: "Target Type",
+      addMapping: "Add Mapping",
+      removeMapping: "Remove",
+      noMappings: "No custom field type mappings defined",
+      sameTypeHint: "Source and target are the same database type — no mappings needed",
+    },
+    fieldMappingToggle: "Field Type Mapping",
   },
   schemaDiff: {
     optionsTitle: "Compare Options",

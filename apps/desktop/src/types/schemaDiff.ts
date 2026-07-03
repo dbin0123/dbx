@@ -27,6 +27,12 @@ export interface SchemaDiffCompareOptions {
   sourceDialect: string;
   targetDialect: string;
   compatibilityThreshold: number;
+  fieldMappings: FieldMappingEntry[];
+}
+
+export interface FieldMappingEntry {
+  sourceType: string;
+  targetType: string;
 }
 
 export interface SchemaDiffConfig {
@@ -83,6 +89,7 @@ export const DEFAULT_POSTGRES_OPTIONS: SchemaDiffCompareOptions = {
   sourceDialect: "",
   targetDialect: "",
   compatibilityThreshold: 0.5,
+  fieldMappings: [],
 };
 
 export const DEFAULT_MYSQL_OPTIONS: SchemaDiffCompareOptions = {
@@ -112,6 +119,7 @@ export const DEFAULT_MYSQL_OPTIONS: SchemaDiffCompareOptions = {
   sourceDialect: "",
   targetDialect: "",
   compatibilityThreshold: 0.5,
+  fieldMappings: [],
 };
 
 export function getDefaultOptionsForDbType(dbType: string): SchemaDiffCompareOptions {

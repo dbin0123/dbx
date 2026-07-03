@@ -584,6 +584,10 @@ export async function listDataTypes(connectionId: string, database: string): Pro
   return invoke("list_data_types", { connectionId, database });
 }
 
+export async function listDialectDataTypes(dialectName: string): Promise<string[]> {
+  return invoke("list_dialect_data_types", { dialectName });
+}
+
 export async function executeQuery(
   connectionId: string,
   database: string,

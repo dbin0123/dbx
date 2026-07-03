@@ -27,6 +27,7 @@ mod tests {
                 max_precision: None,
                 precision_range: None,
                 has_length: false,
+                has_precision: false,
                 aliases: vec![],
                 semantic_fidelity_base: 1.0,
             })

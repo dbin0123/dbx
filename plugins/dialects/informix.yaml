@@ -29,6 +29,7 @@ types:
     aliases: ["DOUBLE PRECISION"]
   - name: "DECIMAL"
     category: "DECIMAL"
+    has_precision: true
     aliases: ["NUMERIC", "DEC"]
   - name: "MONEY"
     category: "DECIMAL"

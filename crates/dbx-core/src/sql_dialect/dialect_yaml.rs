@@ -77,6 +77,8 @@ pub struct DialectType {
     #[serde(default)]
     pub has_length: bool,
     #[serde(default)]
+    pub has_precision: bool,
+    #[serde(default)]
     pub aliases: Vec<String>,
     #[serde(default = "default_fidelity")]
     pub semantic_fidelity_base: f64,
