@@ -30,9 +30,13 @@ export interface SchemaDiffCompareOptions {
   fieldMappings: FieldMappingEntry[];
 }
 
+export type FieldMappingParamStrategy = "preserve" | "strip" | "custom";
+
 export interface FieldMappingEntry {
   sourceType: string;
   targetType: string;
+  paramStrategy: FieldMappingParamStrategy;
+  customParams?: string;
 }
 
 export interface SchemaDiffConfig {
