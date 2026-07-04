@@ -231,7 +231,7 @@ fn type_supports_params(kind: DialectKind, type_name: &str) -> bool {
                     && (t.has_length || t.has_precision || t.max_precision.is_some())
             })
         })
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7409,5 +7409,22 @@ mod tests {
         }];
         let result = FieldMapping::apply_with_params(&mappings, "VARCHAR(255)", DialectKind::Oracle);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn field_mapping_preserve_with_yaml_char_type() {
+        crate::sql_dialect::dialect_loader::register_core_dialects();
+        let mappings = vec![FieldMapping {
+            source_type: "VARCHAR".into(),
+            target_type: "CHAR".into(),
+            param_strategy: ParamStrategy::Preserve,
+            custom_params: None,
+        }];
+        let result = FieldMapping::apply_with_params(&mappings, "VARCHAR(200)", DialectKind::Oracle);
+        assert_eq!(
+            result,
+            Some("CHAR(200)".to_string()),
+            "Preserve should keep params for CHAR which has has_length in Oracle YAML"
+        );
     }
 }

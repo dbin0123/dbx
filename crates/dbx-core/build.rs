@@ -5,6 +5,7 @@ fn main() {
     let cargo_manifest_dir_str = env::var("CARGO_MANIFEST_DIR").unwrap();
     let cargo_manifest_dir = Path::new(&cargo_manifest_dir_str);
     let dialects_dir = cargo_manifest_dir.join("..").join("..").join("plugins").join("dialects");
+    let dialects_dir = std::fs::canonicalize(&dialects_dir).unwrap_or(dialects_dir);
 
     let out_dir_str = env::var("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir_str).join("core_dialects.rs");
@@ -20,8 +21,9 @@ fn main() {
 
     for entry in &entries {
         let path = entry.path();
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         let file_name = path.file_stem().unwrap().to_str().unwrap();
-        let path_str = path.to_str().unwrap();
+        let path_str = canonical.to_str().unwrap();
 
         code.push_str(&format!("match crate::sql_dialect::dialect_loader::DialectPluginLoader::load_from_string(\n"));
         code.push_str(&format!("    include_str!(\"{}\"),\n", path_str.replace('\\', "\\\\")));
