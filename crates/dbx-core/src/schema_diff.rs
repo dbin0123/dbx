@@ -222,9 +222,8 @@ impl FieldMapping {
 }
 
 fn type_supports_params(kind: DialectKind, type_name: &str) -> bool {
-    use crate::sql_dialect::dialect_loader::DialectRegistry;
-    DialectRegistry::global()
-        .get(kind.label())
+    crate::sql_dialect::dialect_loader::DialectRegistry::global()
+        .get_by_kind(kind)
         .map(|loaded| {
             loaded.yaml.types.iter().any(|t| {
                 (t.name.eq_ignore_ascii_case(type_name) || t.aliases.iter().any(|a| a.eq_ignore_ascii_case(type_name)))

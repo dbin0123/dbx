@@ -52,6 +52,7 @@ fn lazy_init() {
     use std::sync::OnceLock;
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
+        dialect_loader::register_core_dialects();
         let _ = crate::dml_binding::DmlCleanRuleRegistry::load_default();
     });
 }

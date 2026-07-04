@@ -139,6 +139,19 @@ impl Default for DialectRegistry {
     }
 }
 
+/// Register all core dialect YAML definitions embedded at compile time.
+/// Called once at startup by `lazy_init()`.
+pub fn register_core_dialects() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let registry = DialectRegistry::global();
+        include!(concat!(env!("OUT_DIR"), "/core_dialects.rs"));
+        let n = registry.len();
+        log::info!("Registered {n} core dialects");
+    });
+}
+
 // ============================================================================
 // DialectPluginLoader — scans plugin directories and loads YAML files
 // ============================================================================
