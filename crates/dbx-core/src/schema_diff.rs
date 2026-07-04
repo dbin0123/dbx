@@ -907,12 +907,13 @@ pub fn diff_columns_with_compatibility(
                 let tgt_parsed = ColumnType::parse(&tgt.data_type);
                 let compatibility = engine.type_compatibility_score(&src_parsed, &tgt_parsed);
 
-                let (mapped_type, requires_cast) =
-                    if let Some(user_target) = FieldMapping::apply(field_mappings, &src.data_type) {
-                        (user_target.to_string(), false)
-                    } else {
-                        matrix.convert_type(&tgt.data_type)
-                    };
+                let (mapped_type, requires_cast) = if let Some(user_target) =
+                    FieldMapping::apply_with_params(field_mappings, &src.data_type, target_dialect)
+                {
+                    (user_target, false)
+                } else {
+                    matrix.convert_type(&tgt.data_type)
+                };
 
                 let risk = if compatibility >= 0.9 {
                     ColumnConversionRisk::None
