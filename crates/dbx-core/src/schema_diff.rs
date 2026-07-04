@@ -222,6 +222,7 @@ impl FieldMapping {
 }
 
 fn type_supports_params(kind: DialectKind, type_name: &str) -> bool {
+    crate::sql_dialect::dialect_loader::register_core_dialects();
     crate::sql_dialect::dialect_loader::DialectRegistry::global()
         .get_by_kind(kind)
         .map(|loaded| {

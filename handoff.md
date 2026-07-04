@@ -1,120 +1,87 @@
 # 🤝 Context Handoff
 
 ## Meta
-- **exported_at**: 2026-07-03T12:30:18+08:00
+- **exported_at**: 2026-07-04T08:28:27+08:00
 - **exported_from**: opencode
-- **session_id**: b4d9e7
+- **session_id**: 790504
 
 ## Project
 - **name**: dbx
-- **stack**: Rust, Tauri, Vue 3, TypeScript, SQLite, Vite, pnpm
+- **stack**: Rust, Tauri 2, Vue 3, TypeScript, shadcn-vue, Tailwind CSS, pnpm
 - **root**: D:\Developments\jetbrains\workspace\rust\dbx
 - **package_manager**: pnpm
 
 ## Current Task
-Adding user-customizable field type mapping to Schema Compare (backend Rust + frontend Vue). Users can map source column types to arbitrary target types when source/target DB types differ. Backend applies mappings in SQL generation (`generate_create_table_sql`, `generate_schema_sync_sql`). The frontend `FieldMappingPanel.vue` shows dropdowns populated from `list_dialect_data_types` Tauri command. Recent work added `has_precision: bool` to `DialectType` struct to correctly drive `type_supports_params` for DECIMAL types.
+在"比较架构"（Schema Diff）页面中增强字段映射规则功能。当源和目标数据库类型不同时（如 MySQL→达梦），支持用户自定义字段类型映射关系，每条映射可控制参数策略（Preserve/Custom），并提供常见数据库对的预设映射。
 
 ## Progress
-- [x] `FieldMapping` Rust struct with `apply` / `apply_with_params` methods — `apply_with_params` preserves params (e.g. `varchar(120)` → `char(120)`)
-- [x] `type_supports_params` — queries DialectRegistry for `has_length || has_precision || max_precision`
-- [x] `diff_columns_with_compatibility` accepts `field_mappings` and checks user mapping before `matrix.convert_type`
-- [x] `generate_create_table_sql` and `generate_schema_sync_sql_inner` both accept `field_mappings`, use `apply_with_params` in `map_type` closures
-- [x] Second call in `prepare_schema_diff` (overall sync SQL) changed from 9-arg wrapper to `_inner` with `&options.field_mappings`
-- [x] `sourceDialect` auto-detected from `sourceConfig?.db_type` when empty — enables correct cross-dialect type conversion matrix
-- [x] Tauri command `list_dialect_data_types(dialect_name)` returning types from DialectRegistry YAML
-- [x] Frontend `FieldMappingPanel.vue` calls backend `listDialectDataTypes` with fallback to static `getDataTypeOptions`
-- [x] Frontend `api.ts` / `tauri.ts` / `http.ts` all wired for `listDialectDataTypes`
-- [x] Frontend types, i18n keys, config step integration, dialog wiring all restored after merge wipes
-- [x] Added `has_precision: bool` to `DialectType` struct (with `#[serde(default)]`)
-- [x] Added `has_precision: true` to DECIMAL/NUMERIC/NUMBER types in all 30 dialect YAML files (NOT MONEY types)
-- [x] Fixed `E0515` borrow error in `type_supports_params` — replaced `and_then`+`find`+`map` with `map`+`any` to avoid returning reference to local `loaded`
-- [x] Updated test construction in `dialect_types.rs` with `has_precision: false`
-- [x] `cargo check -p dbx-core` passes with 0 errors, 0 new warnings
+- [x] 后端：添加 ParamStrategy 枚举（Preserve/Custom），更新 FieldMapping 结构体
+- [x] 后端：重写 apply_with_params 支持三种策略
+- [x] 后端：修复 type_supports_params 中 source_type trim 后切片错位 bug
+- [x] 后端：修复 diff_columns_with_compatibility 使用 apply 而非 apply_with_params 的问题
+- [x] 后端：5 个单元测试覆盖三种策略及边界情况
+- [x] 后端：build.rs 自动扫描 plugins/dialects/*.yaml，编译时嵌入所有方言 YAML
+- [x] 后端：register_core_dialects() 在首次使用时将所有方言注册到全局 DialectRegistry
+- [x] 后端：type_supports_params 改用 get_by_kind 查找方言（解决注册 key 与 label 不一致问题）
+- [x] 后端：移除硬编码的 type_supports_params_hardcoded 回退逻辑
+- [x] 前端：更新 FieldMappingEntry 类型（paramStrategy + customParams）
+- [x] 前端：创建 fieldMappingPresets.ts（MySQL→达梦/PostgreSQL/Oracle）
+- [x] 前端：重写 FieldMappingPanel.vue（预设选择、参数策略下拉、自定义输入）
+- [x] 前端：更新 SchemaDiffDialog.vue 序列化格式
+- [x] i18n：更新/新增 7 种语言的 fieldMapping 翻译
+- [x] 后端测试通过（5/5）
 
 ## Active Files
-### Rust backend — Field Mapping core
-- `crates/dbx-core/src/schema_diff.rs` — `FieldMapping` struct, `type_supports_params`, all `field_mappings` wiring throughout diff/sql-gen pipeline
-- `crates/dbx-core/src/sql_dialect/dialect_yaml.rs:78` — `DialectType` struct now has `has_precision: bool`
-- `crates/dbx-core/src/sql_dialect/dialect_types.rs:30` — test construction updated
-- `crates/dbx-core/src/sql_dialect/dialect_types.rs` — `list_dialect_type_names()` core function for `list_dialect_data_types`
-
-### Rust backend — Tauri command
-- `src-tauri/src/commands/dialect_cmd.rs` — `list_dialect_data_types` Tauri command
-
-### Dialect YAML files (all 30 — added `has_precision: true` to DECIMAL types)
-- `plugins/dialects/mysql.yaml` — DECIMAL, FLOAT, DOUBLE
-- `plugins/dialects/postgresql.yaml` — NUMERIC(alias DECIMAL)
-- `plugins/dialects/sqlserver.yaml` — DECIMAL(alias NUMERIC)
-- `plugins/dialects/oracle.yaml` — NUMBER
-- `plugins/dialects/sqlite.yaml` — NUMERIC(alias DECIMAL)
-- `plugins/dialects/clickhouse.yaml` — Decimal
-- `plugins/dialects/dameng.yaml` — NUMERIC(alias DECIMAL, NUMBER)
-- `plugins/dialects/access.yaml`, `databend.yaml`, `doris.yaml`, `duckdb.yaml`, `exasol.yaml`, `firebird.yaml`, `gaussdb.yaml`, `gbase.yaml`, `goldendb.yaml`, `h2.yaml`, `highgo.yaml`, `informix.yaml`, `iris.yaml`, `kingbase.yaml`, `kwdb.yaml`, `oceanbase.yaml`, `opengauss.yaml`, `redshift.yaml`, `rqlite.yaml`, `starrocks.yaml`, `sundb.yaml`, `turso.yaml`, `vastbase.yaml`, `vertica.yaml`, `xugu.yaml`, `yashandb.yaml`
-
-### Frontend
-- `apps/desktop/src/components/diff/FieldMappingPanel.vue` — dropdown selects with backend `listDialectDataTypes` + fallback
-- `apps/desktop/src/components/diff/SchemaDiffConfigStep.vue` — FieldMappingPanel integration
-- `apps/desktop/src/components/diff/SchemaDiffDialog.vue` — `handleFieldMappingsUpdate` + `sourceDialect` auto-detect + `fieldMappings` in `prepareSchemaDiff`
-- `apps/desktop/src/lib/tauri.ts` — `listDialectDataTypes` binding
-- `apps/desktop/src/lib/api.ts` — forward entry
-- `apps/desktop/src/lib/http.ts` — HTTP fallback
-- `apps/desktop/src/i18n/locales/en.ts` — `fieldMapping.*` i18n keys
-
-### Fixes for pre-existing compilation errors (previous session)
-- `crates/dbx-core/src/lib.rs` — `pub mod document_ops;`
-- `crates/dbx-core/src/commands/mod.rs` — `pub mod document_cmd;`
-- `crates/dbx-core/src/script_generator.rs` — unused import `BindingResult`
-- `crates/dbx-core/src/sql_dialect/dialect_loader.rs` — unused import `YamlValidationError`
-- `crates/dbx-core/src/sql_dialect/hot_reload.rs` — unused imports
-- `crates/dbx-core/src/sql_dialect/inference.rs` — unused import
-- `crates/dbx-core/src/osc_probe.rs` — unused variables
+- `crates/dbx-core/build.rs` — 构建脚本，扫描 plugins/dialects/ 目录，生成嵌入所有 YAML 的 core_dialects.rs
+- `crates/dbx-core/src/schema_diff.rs` — FieldMapping 结构体、ParamStrategy 枚举、apply/apply_with_params 逻辑、type_supports_params（改用 get_by_kind）、diff_columns_with_compatibility
+- `crates/dbx-core/src/sql_dialect/dialect_loader.rs` — register_core_dialects() 函数，编译时嵌入并注册所有方言 YAML
+- `crates/dbx-core/src/sql_dialect.rs` — lazy_init() 调用 register_core_dialects()
+- `apps/desktop/src/types/schemaDiff.ts` — FieldMappingEntry / FieldMappingParamStrategy 类型定义
+- `apps/desktop/src/lib/fieldMappingPresets.ts` — 预设映射定义（MySQL→达梦/PostgreSQL/Oracle）
+- `apps/desktop/src/components/diff/FieldMappingPanel.vue` — 字段映射 UI 组件（预设、参数策略、自定义参数）
+- `apps/desktop/src/components/diff/SchemaDiffDialog.vue` — Schema Diff 对话框，序列化 fieldMappings
+- `apps/desktop/src/components/diff/SchemaDiffConfigStep.vue` — 配置步骤，集成 FieldMappingPanel
+- `apps/desktop/src/i18n/locales/en.ts` — 英文翻译（已更新）
+- `apps/desktop/src/i18n/locales/zh-CN.ts` — 简体中文翻译（已新增）
+- `apps/desktop/src/i18n/locales/zh-TW.ts` — 繁体中文翻译（已新增）
+- `apps/desktop/src/i18n/locales/ja.ts` — 日文翻译（已新增）
+- `apps/desktop/src/i18n/locales/es.ts` — 西班牙语翻译（已新增）
+- `apps/desktop/src/i18n/locales/it.ts` — 意大利语翻译（已新增）
+- `apps/desktop/src/i18n/locales/pt-BR.ts` — 葡萄牙语翻译（已新增）
+- `docs/superpowers/specs/2026-07-03-field-mapping-rules-design.md` — 设计文档
+- `docs/superpowers/plans/2026-07-03-field-mapping-rules.md` — 实现计划
 
 ## Blocker
-None. `cargo check -p dbx-core` passes with 0 errors (only pre-existing warnings).
+None
 
 ## Key Decisions
-- `FieldMapping::apply` extracts base type before `(` to match `varchar` against `varchar(120)`
-- `FieldMapping::apply_with_params` re-appends source params to mapped target type, but only if the target type supports params (checked via DialectRegistry / `type_supports_params`)
-- `type_supports_params` uses `map`+`any` (not `and_then`+`find`) to avoid returning reference to local `loaded` data
-- `type_supports_params` checks `has_length || has_precision || max_precision.is_some()` — data-driven from YAML, no hardcoded category checks
-- `has_precision: bool` added to `DialectType` (with `#[serde(default)]`) — semantically separate from `has_length` (VARCHAR length ≠ DECIMAL precision)
-- DECIMAL/NUMERIC types get `has_precision: true`; MONEY types (same `DECIMAL` category) do NOT — MONEY has fixed precision, no user param
-- `sourceDialect` auto-detection uses `sourceConfig?.db_type || undefined` to trigger cross-dialect type conversion matrix; user can still override manually in Options panel
-- Second `generate_schema_sync_sql` call (overall SQL assembly) uses `_inner` with `&options.field_mappings` — do NOT revert to 9-arg wrapper which passes `&[]`
+1. Strip 策略已移除（与 Preserve 在目标不支持参数时行为重复），只保留 Preserve + Custom 两个策略
+2. Preserve 策略：目标类型支持参数则保留源类型参数，不支持则自动丢弃
+3. Custom 策略：允许用户手动输入自定义参数（如 `(200)` 或 `(10,2)`）
+4. 预设映射从 YAML 方言定义推导 + 代码硬编码补充，目前支持 MySQL→达梦/PostgreSQL/Oracle 三组
+5. diff_columns_with_compatibility 必须使用 apply_with_params（带参数保留），而非 apply（裸类型映射）
+6. **方言 YAML 通过 build.rs 自动扫描 plugins/dialects/ 目录，编译时嵌入并注册到 DialectRegistry**，无需硬编码类型列表
+7. type_supports_params 使用 get_by_kind(kind) 查找方言，而非 get(kind.label())，避免因注册 key 不同导致查找失败
+8. register_core_dialects() 通过 lazy_init() 在首次解析方言时触发，使用 Once 确保只执行一次
 
 ## Environment
-- **OS**: Windows (win32)
 - **Node**: v22.20.0
-- **pnpm**: 10.27.0
-- **Rust**: 1.96.0
-- **Branch**: `cmp`
-- **Dev command**: `pnpm tauri dev` (launches Vite + Tauri)
-- **Frontend port**: http://localhost:1420
-- **Cargo check**: `cargo check -p dbx-core` (or `-p dbx` with features)
-- **Dialect YAML dir**: `plugins/dialects/`
+- **Rust**: rustc 1.96.0 / cargo 1.96.0
+- **Branch**: cmp
+- **Dev command**: `make dev` (Tauri desktop) / `make dev-web` + `make dev-backend` (web)
+- **Rust test**: `cargo test -p dbx-core --no-default-features -- <test_name>`
+- **Type check**: `npx vue-tsc --noEmit`
 
 ## Next Steps
-1. Run `pnpm tauri dev` (or `pnpm tauri build`) to verify full pipeline compiles and frontend loads
-2. Manual test: MySQL→PostgreSQL compare with `varchar→char` mapping, verify generated SQL has `char(120)`, `INTEGER`, `SMALLINT`, `TIMESTAMP`
-3. Test DECIMAL→DECIMAL mapping with precision params preserved (e.g. 10,2)
-4. Commit changes to `cmp` branch when ready
+1. 启动 Tauri 开发环境（`make dev`），在浏览器中验证字段映射 UI 是否正常显示
+2. 验证预设映射加载和参数策略切换交互
+3. 实际执行一次跨库 Schema Diff（如 MySQL→达梦），检查生成的 DDL/SQL 是否正确应用映射规则
+4. 考虑是否需要为其他数据库对添加预设映射（如 MySQL→SQL Server、PostgreSQL→达梦 等）
 
 ## For the Next AI
 - Read all Active Files before doing anything.
 - Do NOT change Key Decisions without flagging first.
-- `type_supports_params` in `schema_diff.rs` must use `map`+`any` — do NOT refactor back to `and_then`+`find`.
-- `has_precision: bool` is the correct field for DECIMAL types; `has_length` is only for string types.
-- MONEY/SMALLMONEY in DECIMAL category must NOT get `has_precision: true` — they have fixed precision.
-- The 30 dialect YAML files all have `has_precision: true` on DECIMAL types — verify with grep before editing any YAML.
-- Pre-existing unused import/variable warnings are present in `script_generator.rs`, `dialect_loader.rs`, `hot_reload.rs`, `inference.rs`, `osc_probe.rs` — do not fix them unless explicitly asked.
-- For frontend, `listDialectDataTypes` is available through `import * as api from "@/lib/api"`.
-- i18n keys for field mapping are under `fieldMapping.*` namespace in `en.ts`.
-
----
-
-✅ handoff.md written to project root.
-
-Summary:
-- Task: Field type mapping for Schema Compare — `has_precision` backend + YAML data
-- Next step: Run `pnpm tauri dev` to verify full pipeline
-- Blocker: None
+- This feature is on branch `cmp` — work on that branch.
+- Backend tests pass but compilation with DuckDB feature (`cargo test -p dbx-core` without `--no-default-features`) takes very long — use `--no-default-features` for quick iteration.
+- The `FieldMapping::apply()` simple method still exists for backward compatibility but should NOT be used in new code — always prefer `apply_with_params()`.
+- Core dialect YAMLs are embedded at compile time via `crates/dbx-core/build.rs`. To add a new dialect YAML, just drop the file in `plugins/dialects/` and rebuild — no code changes needed.
