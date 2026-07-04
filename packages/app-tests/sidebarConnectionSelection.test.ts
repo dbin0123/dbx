@@ -1,6 +1,6 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { connectionPasteTargetGroupId, selectedConnectionClipboardNodes, selectedConnectionClipboardTargets, selectedConnectionEditTarget } from "../../apps/desktop/src/lib/sidebarConnectionSelection.ts";
+import { connectionPasteTargetGroupId, selectedConnectionClipboardNodes, selectedConnectionClipboardTargets, selectedConnectionEditTarget } from "../../apps/desktop/src/lib/sidebar/sidebarConnectionSelection.ts";
 import type { TreeNode } from "../../apps/desktop/src/types/database.ts";
 
 function connectionNode(id: string): TreeNode {

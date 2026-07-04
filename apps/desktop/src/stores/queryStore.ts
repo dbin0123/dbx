@@ -1,13 +1,13 @@
 import { defineStore } from "pinia";
-import { uuid } from "@/lib/utils";
+import { uuid } from "@/lib/common/utils";
 import { markRaw, ref, watch, computed } from "vue";
 import { useI18n } from "vue-i18n";
 import type { DatabaseType, QueryResult, QueryTab, TableInfoTab } from "@/types/database";
-import { orderPinnedFirst } from "@/lib/pinnedItems";
-import { canCancelQueryExecution } from "@/lib/queryExecutionState";
-import { buildExplainSql, parseExplainResult, parseDamengExplainText } from "@/lib/explainPlan";
-import { allEditableColumnsWriteable, allPrimaryKeysPresent, analyzeEditableQuery, sourceColumnsForResult, type EditableQueryInfo } from "@/lib/sqlAnalysis";
-import { ACTIVE_TAB_STORAGE_KEY, OPEN_TABS_STORAGE_KEY, restoreOpenTabsState, serializeOpenTabs } from "@/lib/openTabsPersistence";
+import { orderPinnedFirst } from "@/lib/app/pinnedItems";
+import { canCancelQueryExecution } from "@/lib/sql/queryExecutionState";
+import { buildExplainSql, parseExplainResult, parseDamengExplainText } from "@/lib/diagram/explainPlan";
+import { allEditableColumnsWriteable, allPrimaryKeysPresent, analyzeEditableQuery, sourceColumnsForResult, type EditableQueryInfo } from "@/lib/sql/sqlAnalysis";
+import { ACTIVE_TAB_STORAGE_KEY, OPEN_TABS_STORAGE_KEY, restoreOpenTabsState, serializeOpenTabs } from "@/lib/app/openTabsPersistence";
 import {
   evaluateMongoAggregateSafety,
   evaluateMongoWriteSafety,
@@ -22,25 +22,25 @@ import {
   mongoWriteToQueryResult,
   splitMongoCommands,
   type MongoAggregateSafetyOptions,
-} from "@/lib/mongoShellCommand";
-import { redisCommandResultToQueryResult } from "@/lib/redisQueryResult";
-import { nextRedisCommandDb } from "@/lib/redisCommandSession";
-import { isRedisMutatingCommand } from "@/lib/redisCommandTable";
-import { usesAgentCursorForQuery } from "@/lib/databaseDriverManifest";
-import { canUseKeylessRowPredicate, editableRowIdentifierColumns } from "@/lib/tableEditing";
-import { TABLE_DATA_EXPORT_PAGE_SIZE } from "@/lib/tableDataExport";
-import { tableMetaForDataTab } from "@/lib/tableDataTabMeta";
-import { tableOpenPageLimit } from "@/lib/tableOpenPageLimit";
-import { quoteTableIdentifier } from "@/lib/tableSelectSql";
-import { connectionUsesDatabaseObjectTreeMode, connectionUsesSchemaExecutionContext, effectiveDatabaseTypeForConnection, metadataSchemaForConnection } from "@/lib/jdbcDialect";
-import { frontendQueryTimeoutSecsForSql, queryTimeoutSecsForConnection } from "@/lib/queryTimeout";
-import { sortDataGridRows, type DataGridSortDirection } from "@/lib/dataGridSort";
-import { normalizeResultPageSize } from "@/lib/paginationPageSize";
-import { splitSqlStatementRanges } from "@/lib/sqlStatementRanges";
+} from "@/lib/mongo/mongoShellCommand";
+import { redisCommandResultToQueryResult } from "@/lib/redis/redisQueryResult";
+import { nextRedisCommandDb } from "@/lib/redis/redisCommandSession";
+import { isRedisMutatingCommand } from "@/lib/redis/redisCommandTable";
+import { usesAgentCursorForQuery } from "@/lib/database/databaseDriverManifest";
+import { canUseKeylessRowPredicate, editableRowIdentifierColumns } from "@/lib/table/tableEditing";
+import { TABLE_DATA_EXPORT_PAGE_SIZE } from "@/lib/table/tableDataExport";
+import { tableMetaForDataTab } from "@/lib/table/tableDataTabMeta";
+import { tableOpenPageLimit } from "@/lib/table/tableOpenPageLimit";
+import { quoteTableIdentifier } from "@/lib/table/tableSelectSql";
+import { connectionUsesDatabaseObjectTreeMode, connectionUsesSchemaExecutionContext, effectiveDatabaseTypeForConnection, metadataSchemaForConnection } from "@/lib/database/jdbcDialect";
+import { frontendQueryTimeoutSecsForSql, queryTimeoutSecsForConnection } from "@/lib/sql/queryTimeout";
+import { sortDataGridRows, type DataGridSortDirection } from "@/lib/dataGrid/dataGridSort";
+import { normalizeResultPageSize } from "@/lib/dataGrid/paginationPageSize";
+import { splitSqlStatementRanges } from "@/lib/sql/sqlStatementRanges";
 import { clearDataGridPendingSnapshotsForTab } from "@/composables/useDataGridEditor";
-import { buildTabResultSnapshot, deleteTabResultSnapshot, readTabResultSnapshot, tabResultCacheKey, writeTabResultSnapshot } from "@/lib/tabResultCache";
-import { decodeQueryResultArchive, encodeQueryResultArchive, type DecodedQueryResultArchive } from "@/lib/queryResultArchive";
-import * as api from "@/lib/api";
+import { buildTabResultSnapshot, deleteTabResultSnapshot, readTabResultSnapshot, tabResultCacheKey, writeTabResultSnapshot } from "@/lib/tabs/tabResultCache";
+import { decodeQueryResultArchive, encodeQueryResultArchive, type DecodedQueryResultArchive } from "@/lib/query/queryResultArchive";
+import * as api from "@/lib/backend/api";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";

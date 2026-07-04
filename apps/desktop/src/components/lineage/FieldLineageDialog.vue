@@ -9,9 +9,9 @@ import { Dialog, DialogFooter, DialogHeader, DialogScrollContent, DialogTitle } 
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/composables/useToast";
 import { useConnectionStore } from "@/stores/connectionStore";
-import * as api from "@/lib/api";
-import { analyzeFieldLineage, summarizeLineageCounts, type FieldLineageConfidence, type FieldLineageItem, type FieldLineageResult, type FieldLineageTable, type FieldLineageView } from "@/lib/fieldLineage";
-import { copyToClipboard } from "@/lib/clipboard";
+import * as api from "@/lib/backend/api";
+import { analyzeFieldLineage, summarizeLineageCounts, type FieldLineageConfidence, type FieldLineageItem, type FieldLineageResult, type FieldLineageTable, type FieldLineageView } from "@/lib/diagram/fieldLineage";
+import { copyToClipboard } from "@/lib/common/clipboard";
 
 const props = defineProps<{
   open: boolean;

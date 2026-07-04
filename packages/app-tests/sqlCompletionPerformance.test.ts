@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { buildSqlCompletionItems, buildSqlCompletionItemsFromContext, getSqlCompletionContext, recordCompletionSelection } from "../../apps/desktop/src/lib/sqlCompletion.ts";
-import { sqlCompletionContextFromSemantic } from "../../apps/desktop/src/lib/sqlSemanticCompletion.ts";
-import { buildSqlSemanticModel } from "../../apps/desktop/src/lib/sqlSemanticModel.ts";
+import { buildSqlCompletionItems, buildSqlCompletionItemsFromContext, getSqlCompletionContext, recordCompletionSelection } from "../../apps/desktop/src/lib/sql/sqlCompletion.ts";
+import { sqlCompletionContextFromSemantic } from "../../apps/desktop/src/lib/sql/semantic/completion.ts";
+import { buildSqlSemanticModel } from "../../apps/desktop/src/lib/sql/semantic/model.ts";
 import { useConnectionStore } from "../../apps/desktop/src/stores/connectionStore.ts";
 import type { ConnectionConfig, TableInfo } from "../../apps/desktop/src/types/database.ts";
 

@@ -1,6 +1,6 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ACTIVE_TAB_STORAGE_KEY, OPEN_TABS_STORAGE_KEY } from "@/lib/openTabsPersistence";
+import { ACTIVE_TAB_STORAGE_KEY, OPEN_TABS_STORAGE_KEY } from "@/lib/app/openTabsPersistence";
 
 function installLocalStorage() {
   const data = new Map<string, string>();

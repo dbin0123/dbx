@@ -1,17 +1,17 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import * as api from "@/lib/api";
-import { normalizeColumnFormatter, normalizeCustomColumnFormatter, type ColumnFormatterConfig, type CustomColumnFormatterConfig } from "@/lib/columnFormatter";
-import { normalizeShortcutSettings, type ShortcutSettings } from "@/lib/shortcutRegistry";
-import { normalizeResultPageSize } from "@/lib/paginationPageSize";
-import { normalizeSidebarHiddenTablePrefixes } from "@/lib/sidebarTableNameDisplay";
-import { DEFAULT_SQL_FORMATTER_SETTINGS, normalizeSqlFormatterSettings, type SqlFormatterSettings } from "@/lib/sqlFormatterConfig";
-import type { SidebarActivation } from "@/lib/treeNodeClick";
+import * as api from "@/lib/backend/api";
+import { normalizeColumnFormatter, normalizeCustomColumnFormatter, type ColumnFormatterConfig, type CustomColumnFormatterConfig } from "@/lib/dataGrid/columnFormatter";
+import { normalizeShortcutSettings, type ShortcutSettings } from "@/lib/editor/shortcutRegistry";
+import { normalizeResultPageSize } from "@/lib/dataGrid/paginationPageSize";
+import { normalizeSidebarHiddenTablePrefixes } from "@/lib/sidebar/sidebarTableNameDisplay";
+import { DEFAULT_SQL_FORMATTER_SETTINGS, normalizeSqlFormatterSettings, type SqlFormatterSettings } from "@/lib/sql/sqlFormatterConfig";
+import type { SidebarActivation } from "@/lib/sidebar/treeNodeClick";
 import type { SqlSnippet } from "@/types/database";
-import { DEFAULT_SQL_SNIPPETS } from "@/lib/sqlCompletion";
-import { setDebugLoggingEnabled } from "@/lib/debugLog";
-import { DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS, normalizeTableColumnTemplateFields } from "@/lib/tableColumnTemplates";
-import { DEFAULT_UI_FONT_FAMILY } from "@/lib/appFonts";
+import { DEFAULT_SQL_SNIPPETS } from "@/lib/sql/sqlCompletion";
+import { setDebugLoggingEnabled } from "@/lib/backend/debugLog";
+import { DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS, normalizeTableColumnTemplateFields } from "@/lib/table/tableColumnTemplates";
+import { DEFAULT_UI_FONT_FAMILY } from "@/lib/app/appFonts";
 
 export type AiProvider = "claude" | "openai" | "gemini" | "deepseek" | "qwen" | "ollama" | "openai-compatible" | "codex-cli" | "custom";
 export type AiApiStyle = "completions" | "responses" | "anthropic-messages";

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, defineAsyncComponent, watch, nextTick, onMounted, onUnmounted } from "vue";
-import { safeLocalStorageGet, safeLocalStorageSet } from "@/lib/safeStorage";
+import { safeLocalStorageGet, safeLocalStorageSet } from "@/lib/backend/safeStorage";
 import type { CSSProperties } from "vue";
 import { useI18n } from "vue-i18n";
 import { Check, Columns3, EyeOff, Loader2, Search, Bot, GitBranch, BarChart3, TableProperties, ChevronDown, ChevronUp, Inbox, RefreshCcw, Wrench, Toolbox, ListChecks, Database, FileUp, Download, X, Pin, Rows3, SquareDashed, Minus, Plus } from "@lucide/vue";
@@ -53,23 +53,23 @@ import { useQueryStore } from "@/stores/queryStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { TABLE_FONT_SIZE_MAX, TABLE_FONT_SIZE_MIN, useSettingsStore, type DataGridSearchMode } from "@/stores/settingsStore";
 import { useToast } from "@/composables/useToast";
-import { canCancelQueryExecution, queryExecutionLabelKey } from "@/lib/queryExecutionState";
-import { databaseDisplayNameForTab, executionSummaryItems, nextExecutionSummaryView, resultGridCacheKey, resultRunItems, tabularResultItems } from "@/lib/tabPresentation";
-import { defaultQueryResultArchiveFileName } from "@/lib/queryResultArchive";
-import { saveQueryResultArchiveFile } from "@/lib/queryResultArchiveFile";
-import { isTableDataEditable } from "@/lib/tableEditing";
-import { tableMetaForDataTab } from "@/lib/tableDataTabMeta";
-import { formatShortcut } from "@/lib/shortcutRegistry";
-import { effectiveDatabaseTypeForConnection } from "@/lib/jdbcDialect";
-import { chartableColumnIndexes } from "@/lib/chartData";
-import * as api from "@/lib/api";
-import { buildMongoUpdateDocument, formatMongoShellLiteral, type MongoInputValue } from "@/lib/mongoDocumentValues";
-import type { SqlExecutionOverride } from "@/lib/sqlExecutionTarget";
-import type { DataGridSortMode } from "@/lib/dataGridSort";
+import { canCancelQueryExecution, queryExecutionLabelKey } from "@/lib/sql/queryExecutionState";
+import { databaseDisplayNameForTab, executionSummaryItems, nextExecutionSummaryView, resultGridCacheKey, resultRunItems, tabularResultItems } from "@/lib/tabs/tabPresentation";
+import { defaultQueryResultArchiveFileName } from "@/lib/query/queryResultArchive";
+import { saveQueryResultArchiveFile } from "@/lib/query/queryResultArchiveFile";
+import { isTableDataEditable } from "@/lib/table/tableEditing";
+import { tableMetaForDataTab } from "@/lib/table/tableDataTabMeta";
+import { formatShortcut } from "@/lib/editor/shortcutRegistry";
+import { effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
+import { chartableColumnIndexes } from "@/lib/dataGrid/chartData";
+import * as api from "@/lib/backend/api";
+import { buildMongoUpdateDocument, formatMongoShellLiteral, type MongoInputValue } from "@/lib/mongo/mongoDocumentValues";
+import type { SqlExecutionOverride } from "@/lib/sql/sqlExecutionTarget";
+import type { DataGridSortMode } from "@/lib/dataGrid/dataGridSort";
 import { useTabScroll } from "@/composables/useTabScroll";
 import type { CustomSaveHandler } from "@/composables/useDataGridEditor";
 import type { QueryTab, ConnectionConfig, TableInfoTab, TreeNode, VectorCollectionMeta } from "@/types/database";
-import { sqlFormatDialectForDbType, type SqlFormatDialect } from "@/lib/sqlFormatter";
+import { sqlFormatDialectForDbType, type SqlFormatDialect } from "@/lib/sql/sqlFormatter";
 
 type DataGridHandle = {
   onToolbarRefresh: () => Promise<void> | void;
@@ -514,7 +514,7 @@ async function onHandleClickColumn(matchedCols: Array<{ name: string; table: str
 
   try {
     // Fetch full column details from API
-    const apiModule = await import("@/lib/api");
+    const apiModule = await import("@/lib/backend/api");
     const results: ColumnInfo[] = [];
 
     for (const matchedCol of matchedCols) {

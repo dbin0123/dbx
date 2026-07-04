@@ -13,7 +13,7 @@ import {
   isTableDataEditable,
   supportsDataGridTransaction,
   usesSyntheticRowIdKey,
-} from "../../apps/desktop/src/lib/tableEditing.ts";
+} from "../../apps/desktop/src/lib/table/tableEditing.ts";
 import type { ColumnInfo } from "../../apps/desktop/src/types/database.ts";
 
 function column(name: string, isPrimaryKey = false): ColumnInfo {

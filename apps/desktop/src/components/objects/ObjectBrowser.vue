@@ -45,33 +45,33 @@ import { SearchableSelect } from "@/components/ui/searchable-select";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import DangerConfirmDialog from "@/components/editor/DangerConfirmDialog.vue";
 import ProcedureExecutionDialog from "@/components/objects/ProcedureExecutionDialog.vue";
-import * as api from "@/lib/api";
+import * as api from "@/lib/backend/api";
 import type { ConnectionConfig, ForeignKeyInfo, ObjectInfo, ObjectSourceKind, ObjectStatistics } from "@/types/database";
-import { sortTablesByFkDependency, type TableWithFk } from "@/lib/tableDependencySort";
-import { isSchemaAware } from "@/lib/databaseCapabilities";
-import { supportsSchemaDiagram, supportsTableImport, supportsTableStructureEditing, supportsTableTruncate } from "@/lib/databaseFeatureSupport";
-import { codeMirrorSqlDialect, connectionUsesDatabaseObjectTreeMode, effectiveDatabaseTypeForConnection, tableStructureDatabaseTypeForConnection } from "@/lib/jdbcDialect";
-import { buildTableSelectSql } from "@/lib/tableSelectSql";
-import { buildDropObjectSql, buildDuplicateTableStructureSql, buildCopyTableDataSql, buildEmptyTableSql, buildTruncateTableSql, type TableAdminSqlOptions } from "@/lib/dbAdminSql";
+import { sortTablesByFkDependency, type TableWithFk } from "@/lib/table/tableDependencySort";
+import { isSchemaAware } from "@/lib/database/databaseCapabilities";
+import { supportsSchemaDiagram, supportsTableImport, supportsTableStructureEditing, supportsTableTruncate } from "@/lib/database/databaseFeatureSupport";
+import { codeMirrorSqlDialect, connectionUsesDatabaseObjectTreeMode, effectiveDatabaseTypeForConnection, tableStructureDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
+import { buildTableSelectSql } from "@/lib/table/tableSelectSql";
+import { buildDropObjectSql, buildDuplicateTableStructureSql, buildCopyTableDataSql, buildEmptyTableSql, buildTruncateTableSql, type TableAdminSqlOptions } from "@/lib/database/dbAdminSql";
 import { useToast } from "@/composables/useToast";
-import { buildExecutableObjectSourceStatements, buildRoutineRenameObjectSourceStatements, objectSourceSaveExecutionMode, supportsSourceBackedRoutineRename } from "@/lib/objectSourceEditor";
-import { buildRenameObjectSql, supportsObjectRename } from "@/lib/objectRenameSql";
-import { buildViewDdl } from "@/lib/viewDdl";
-import { isTauriRuntime } from "@/lib/tauriRuntime";
-import { generateDatabaseExportId } from "@/lib/databaseExport";
-import { copyToClipboard, eventTargetAllowsAppClipboardShortcut } from "@/lib/clipboard";
-import { defaultPasteTableMode, pasteTableModeCopiesData, supportsWholeRowTableDataCopy, tableClipboardMatchesTarget, tableDataCopyColumnOptions, type PasteTableMode, type TableClipboardContext } from "@/lib/tableClipboard";
-import { formatSqlInsert } from "@/lib/exportFormats";
-import { buildSingleDdlExportFileContent } from "@/lib/ddlExport";
-import { fetchTableDataForExport } from "@/lib/tableDataExport";
+import { buildExecutableObjectSourceStatements, buildRoutineRenameObjectSourceStatements, objectSourceSaveExecutionMode, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
+import { buildRenameObjectSql, supportsObjectRename } from "@/lib/table/objectRenameSql";
+import { buildViewDdl } from "@/lib/table/viewDdl";
+import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
+import { generateDatabaseExportId } from "@/lib/export/databaseExport";
+import { copyToClipboard, eventTargetAllowsAppClipboardShortcut } from "@/lib/common/clipboard";
+import { defaultPasteTableMode, pasteTableModeCopiesData, supportsWholeRowTableDataCopy, tableClipboardMatchesTarget, tableDataCopyColumnOptions, type PasteTableMode, type TableClipboardContext } from "@/lib/table/tableClipboard";
+import { formatSqlInsert } from "@/lib/export/exportFormats";
+import { buildSingleDdlExportFileContent } from "@/lib/export/ddlExport";
+import { fetchTableDataForExport } from "@/lib/table/tableDataExport";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useExportTracker, type ExportTask } from "@/composables/useExportTracker";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useQueryStore } from "@/stores/queryStore";
 import QueryEditor from "@/components/editor/QueryEditor.vue";
 import DdlViewDialog from "./DdlViewDialog.vue";
-import { formatSqlForDisplay, sqlFormatDialectForDbType, type SqlFormatDialect } from "@/lib/sqlFormatter";
-import { isCancelSearchShortcut } from "@/lib/keyboardShortcuts";
+import { formatSqlForDisplay, sqlFormatDialectForDbType, type SqlFormatDialect } from "@/lib/sql/sqlFormatter";
+import { isCancelSearchShortcut } from "@/lib/editor/keyboardShortcuts";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   buildObjectBrowserRows,
@@ -84,7 +84,7 @@ import {
   type ObjectBrowserRow,
   type ObjectBrowserSortDirection,
   type ObjectBrowserSortKey,
-} from "@/lib/objectBrowserRows";
+} from "@/lib/table/objectBrowserRows";
 
 type ObjectFilter = "all" | "tables" | "views" | "materializedViews" | "procedures" | "functions" | "sequences" | "packages";
 type ObjectBrowserColumnKey = "select" | "name" | "type" | "estimatedRows" | "totalBytes" | "created_at" | "updated_at" | "comment";

@@ -19,7 +19,7 @@ const DatabaseExportDialog = defineAsyncComponent(() => import("@/components/exp
 const DataGenerateDialog = defineAsyncComponent(() => import("@/components/generate/DataGenerateDialog.vue"));
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useDialogSources } from "@/composables/useDialogSources";
-import type { ConnectionDeepLinkDraft } from "@/lib/connectionDeepLink";
+import type { ConnectionDeepLinkDraft } from "@/lib/connection/connectionDeepLink";
 import type { ConfigTab } from "@/components/connection/ConnectionDialog.vue";
 
 const props = defineProps<{

@@ -25,8 +25,8 @@ import {
   isZoomInShortcut,
   isZoomOutShortcut,
   switchToTabIndexFromShortcut,
-} from "../../apps/desktop/src/lib/keyboardShortcuts.ts";
-import { shortcutToCodeMirrorKey } from "../../apps/desktop/src/lib/shortcutRegistry.ts";
+} from "../../apps/desktop/src/lib/editor/keyboardShortcuts.ts";
+import { shortcutToCodeMirrorKey } from "../../apps/desktop/src/lib/editor/shortcutRegistry.ts";
 
 test("matches Cmd+Enter for SQL execution", () => {
   assert.equal(isExecuteSqlShortcut({ key: "Enter", metaKey: true }), true);

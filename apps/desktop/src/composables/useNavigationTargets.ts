@@ -1,9 +1,9 @@
-import * as api from "@/lib/api";
-import { effectiveDatabaseTypeForConnection, metadataSchemaForConnection } from "@/lib/jdbcDialect";
-import { isNoSnapshotErrorResult } from "@/lib/queryResultError";
-import { buildTableSelectSql } from "@/lib/tableSelectSql";
-import { editableRowIdentifierColumns, usesSyntheticRowIdKey } from "@/lib/tableEditing";
-import { tableOpenPageLimit } from "@/lib/tableOpenPageLimit";
+import * as api from "@/lib/backend/api";
+import { effectiveDatabaseTypeForConnection, metadataSchemaForConnection } from "@/lib/database/jdbcDialect";
+import { isNoSnapshotErrorResult } from "@/lib/query/queryResultError";
+import { buildTableSelectSql } from "@/lib/table/tableSelectSql";
+import { editableRowIdentifierColumns, usesSyntheticRowIdKey } from "@/lib/table/tableEditing";
+import { tableOpenPageLimit } from "@/lib/table/tableOpenPageLimit";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useQueryStore } from "@/stores/queryStore";
 import { useSettingsStore } from "@/stores/settingsStore";
