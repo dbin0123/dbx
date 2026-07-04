@@ -218,7 +218,7 @@ fn mysql_bytes_to_json(bytes: Vec<u8>, column: &mysql_async::Column) -> serde_js
 /// Map a MySQL column to a user-facing type name for the result-grid header.
 /// Returns the bare lowercase type name (no length/precision/signedness), which
 /// is enough for display; unknown variants fall back to a lowercased debug name.
-fn mysql_column_type_name(ty: ColumnType) -> String {
+pub(crate) fn mysql_column_type_name(ty: ColumnType) -> String {
     use mysql_async::consts::ColumnType::*;
     match ty {
         MYSQL_TYPE_TINY => "tinyint",
@@ -251,7 +251,7 @@ fn mysql_column_type_name(ty: ColumnType) -> String {
     .to_string()
 }
 
-fn mysql_value_to_json(row: &mysql_async::Row, idx: usize) -> serde_json::Value {
+pub(crate) fn mysql_value_to_json(row: &mysql_async::Row, idx: usize) -> serde_json::Value {
     let Some(column) = row.columns_ref().get(idx) else {
         return serde_json::Value::Null;
     };
@@ -952,6 +952,14 @@ fn is_dbx_handled_mysql_url_param(key: &str) -> bool {
     )
 }
 
+fn is_mysql_cleartext_password_param(key: &str) -> bool {
+    matches!(key.to_ascii_lowercase().as_str(), "allowcleartextpasswords" | "enable_cleartext_plugin")
+}
+
+fn mysql_url_param_value_is_true(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on")
+}
+
 /// Strips the database path from a `mysql://[user[:pass]@]host[:port][/path]`
 /// URL, returning only the scheme and authority. Used so mysql_async does not
 /// send the database as the schema during the MySQL handshake (StarRocks would
@@ -975,6 +983,7 @@ fn mysql_async_url(url: &str) -> Cow<'_, str> {
     let mut filtered: Vec<String> = Vec::new();
     let mut changed = false;
     let mut has_catalog = false;
+    let mut enable_cleartext_plugin = false;
     for segment in query.split('&') {
         let segment = segment.trim();
         if segment.is_empty() {
@@ -988,6 +997,11 @@ fn mysql_async_url(url: &str) -> Cow<'_, str> {
         };
         if key.eq_ignore_ascii_case("catalog") {
             has_catalog = true;
+        }
+        if is_mysql_cleartext_password_param(key) {
+            changed = true;
+            enable_cleartext_plugin |= mysql_url_param_value_is_true(value);
+            continue;
         }
         if is_dbx_handled_mysql_url_param(key) {
             changed = true;
@@ -1016,6 +1030,9 @@ fn mysql_async_url(url: &str) -> Cow<'_, str> {
             continue;
         }
         filtered.push(segment.to_string());
+    }
+    if enable_cleartext_plugin {
+        filtered.push("enable_cleartext_plugin=true".to_string());
     }
 
     // When a catalog is configured, the database in the URL path must not be
@@ -3707,6 +3724,24 @@ UNIQUE KEY(`tenant_id`, `name``part`)
     #[test]
     fn mysql_async_url_keeps_valid_params_while_stripping_jdbc() {
         let url = "mysql://host:3306/db?useUnicode=true&characterEncoding=utf8&require_ssl=true&charset=utf8mb4&autoReconnect=true";
+        assert_eq!(mysql_async_url(url).as_ref(), "mysql://host:3306/db?require_ssl=true");
+    }
+
+    #[test]
+    fn mysql_async_url_normalizes_cleartext_password_auth_alias() {
+        let url = "mysql://host:3306/db?allowCleartextPasswords=true&charset=utf8mb4";
+        assert_eq!(mysql_async_url(url).as_ref(), "mysql://host:3306/db?enable_cleartext_plugin=true");
+    }
+
+    #[test]
+    fn mysql_async_url_deduplicates_cleartext_password_auth_params() {
+        let url = "mysql://host:3306/db?allowCleartextPasswords=true&enable_cleartext_plugin=true&require_ssl=true";
+        assert_eq!(mysql_async_url(url).as_ref(), "mysql://host:3306/db?require_ssl=true&enable_cleartext_plugin=true");
+    }
+
+    #[test]
+    fn mysql_async_url_omits_disabled_cleartext_password_auth_params() {
+        let url = "mysql://host:3306/db?allowCleartextPasswords=false&enable_cleartext_plugin=&require_ssl=true";
         assert_eq!(mysql_async_url(url).as_ref(), "mysql://host:3306/db?require_ssl=true");
     }
 

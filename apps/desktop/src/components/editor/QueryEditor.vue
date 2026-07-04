@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, shallowRef, computed, nextTick } from "vue";
-import { FileCode, Play, Copy, Table2, TextSelect } from "@lucide/vue";
+import { CaseLower, CaseUpper, FileCode, PencilRuler, Play, Copy, Table2, TextSelect } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import type { CompletionContext } from "@codemirror/autocomplete";
 import type { EditorView as EditorViewType } from "@codemirror/view";
@@ -31,7 +31,7 @@ import {
 } from "@/lib/sqlCompletion";
 import { buildElasticsearchCompletionItemsFromContext, getElasticsearchCompletionContext, getElasticsearchCompletionResultValidFor, shouldAutoOpenElasticsearchCompletion, type ElasticsearchCompletionItem } from "@/lib/elasticsearchCompletion";
 import { buildMongoCompletionItemsFromContext, getMongoCompletionContext, getMongoCompletionResultValidFor, shouldAutoOpenMongoCompletion, type MongoCompletionItem } from "@/lib/mongoCompletion";
-import { extractIdentifierAt, isSqlKeyword, matchTable } from "@/lib/sqlNavigation";
+import { extractIdentifierAt, isSqlKeyword, matchTable, splitQualifiedIdentifier } from "@/lib/sqlNavigation";
 import { lineColumnToOffset, parseSqlErrorLocation } from "@/lib/sqlDiagnostics";
 import {
   DBX_TABLE_REFERENCE_MIME,
@@ -89,6 +89,7 @@ const emit = defineEmits<{
   clickTable: [tableName: string];
   viewTableData: [tableName: string];
   viewTableDdl: [tableName: string];
+  editTableStructure: [tableName: string];
   clickColumn: [columns: Array<{ name: string; table: string; schema?: string }>, error?: string | undefined];
   closeColumnPanel: [];
   viewportChange: [viewport: { scrollTop: number; scrollLeft: number }];
@@ -187,13 +188,20 @@ interface EditorGestureEvent extends Event {
 
 let editorViewModule: typeof import("@codemirror/view") | null = null;
 let codeMirrorPrec: typeof import("@codemirror/state").Prec | null = null;
+let codeMirrorEditorSelection: typeof import("@codemirror/state").EditorSelection | null = null;
 let fontThemeComp: import("@codemirror/state").Compartment | null = null;
 let codeMirrorTheme: import("@codemirror/state").Compartment | null = null;
 let wordWrapComp: import("@codemirror/state").Compartment | null = null;
+let vimModeComp: import("@codemirror/state").Compartment | null = null;
 let readOnlyComp: import("@codemirror/state").Compartment | null = null;
 let runKeymapComp: import("@codemirror/state").Compartment | null = null;
 let completionComp: import("@codemirror/state").Compartment | null = null;
 let diagnosticComp: import("@codemirror/state").Compartment | null = null;
+let codeMirrorVim: typeof import("@replit/codemirror-vim").vim | null = null;
+let codeMirrorVimApi: typeof import("@replit/codemirror-vim").Vim | null = null;
+let codeMirrorGetVimCm: typeof import("@replit/codemirror-vim").getCM | null = null;
+let codeMirrorVimImportPromise: Promise<typeof import("@replit/codemirror-vim")> | null = null;
+let dbxVimCommandsConfigured = false;
 let buildSqlDiagnosticExtension: (() => import("@codemirror/state").Extension) | null = null;
 let buildSqlSignatureExtension: (() => import("@codemirror/state").Extension) | null = null;
 let buildSqlCompletionExtension: (() => import("@codemirror/state").Extension) | null = null;
@@ -228,10 +236,13 @@ let editorIsActive = true;
 let tableReferenceDropListenerRegistered = false;
 let imeCompositionActive = false;
 let pendingImeModelEmit = false;
+
+type SelectionCaseMode = "upper" | "lower";
 let executableStatementRangeCache: ExecutableStatementRangeCache | null = null;
 let editorScrollbarPointerCleanup: (() => void) | null = null;
 const EDITOR_SCROLLBAR_POINTER_GUTTER_PX = 18;
 const tableNavigationHoverClass = "query-editor--table-navigation-hover";
+const DBX_VIM_SAVE_EVENT = "dbx-vim-save";
 
 function editorThemeAppearance() {
   return isDark.value ? "dark" : "light";
@@ -260,6 +271,7 @@ const queryEditorAppearanceSettings = computed(() => {
     customThemes: settings.customThemes,
     activeCustomThemeId: settings.activeCustomThemeId,
     wordWrap: settings.wordWrap,
+    vimModeEnabled: settings.vimModeEnabled,
     shortcuts: settings.shortcuts,
   };
 });
@@ -549,9 +561,38 @@ function selectAllSqlFromContextMenu() {
   focusEditor();
 }
 
+function convertSelectedSqlCaseFromContextMenu(mode: SelectionCaseMode) {
+  const currentView = view.value;
+  const EditorSelection = codeMirrorEditorSelection;
+  if (!currentView || !EditorSelection || !canCopySelectedSql.value) return;
+
+  const state = currentView.state;
+  const transaction = state.changeByRange((range) => {
+    if (range.empty) return { range };
+
+    const selectedText = state.sliceDoc(range.from, range.to);
+    const convertedText = mode === "upper" ? selectedText.toUpperCase() : selectedText.toLowerCase();
+    return {
+      changes: { from: range.from, to: range.to, insert: convertedText },
+      range: EditorSelection.range(range.from, range.from + convertedText.length),
+    };
+  });
+
+  if (!transaction.changes.empty) {
+    currentView.dispatch({ ...transaction, scrollIntoView: true, userEvent: "input" });
+  }
+  focusEditor();
+}
+
 function openTableFromContextMenu() {
   if (!contextTableName.value) return;
   emit("viewTableData", contextTableName.value);
+  focusEditor();
+}
+
+function editTableStructureFromContextMenu() {
+  if (!contextTableName.value) return;
+  emit("editTableStructure", contextTableName.value);
   focusEditor();
 }
 
@@ -572,7 +613,9 @@ function executeSqlStatementFromGutter(currentView: EditorViewType, line: { from
   if (!statementRange) return false;
   event.preventDefault();
   event.stopPropagation();
-  requestExecuteFromView(currentView, line.from, { ignoreSelection: true });
+  // Gutter play is always scoped to the statement/command for that line, even
+  // when the main editor execute action would run the full document.
+  emit("execute", statementRange.sql);
   currentView.focus();
   return true;
 }
@@ -603,6 +646,12 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
     icon: Table2,
   },
   {
+    label: t("contextMenu.editStructure"),
+    action: editTableStructureFromContextMenu,
+    disabled: !contextTableName.value,
+    icon: PencilRuler,
+  },
+  {
     label: t("contextMenu.viewDdl"),
     action: openTableDdlFromContextMenu,
     disabled: !contextTableName.value,
@@ -614,6 +663,18 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
     action: copySelectedSqlFromContextMenu,
     disabled: !canCopySelectedSql.value,
     icon: Copy,
+  },
+  {
+    label: t("editor.contextMenu.uppercaseSelection"),
+    action: () => convertSelectedSqlCaseFromContextMenu("upper"),
+    disabled: !canCopySelectedSql.value,
+    icon: CaseUpper,
+  },
+  {
+    label: t("editor.contextMenu.lowercaseSelection"),
+    action: () => convertSelectedSqlCaseFromContextMenu("lower"),
+    disabled: !canCopySelectedSql.value,
+    icon: CaseLower,
   },
   { label: t("editor.contextMenu.selectAll"), action: selectAllSqlFromContextMenu, icon: TextSelect },
 ]);
@@ -675,6 +736,53 @@ function acceptCompletionOrNextSnippetField(view: EditorViewType): boolean {
 function wordWrapExtension() {
   if (!editorViewModule) return [];
   return props.forceWordWrap || settingsStore.editorSettings.wordWrap ? editorViewModule.EditorView.lineWrapping : [];
+}
+
+function vimModeExtension(enabled = settingsStore.editorSettings.vimModeEnabled) {
+  if (!codeMirrorVim || !enabled) return [];
+  const vimExtension = codeMirrorVim({ status: true });
+  if (!codeMirrorPrec || !editorViewModule || !codeMirrorGetVimCm || !codeMirrorVimApi) return vimExtension;
+
+  // Beekeeper treats Vim as a first-class editor keymap. Keep it above DBX's
+  // normal shortcuts so regular normal-mode keys are not stolen by other maps.
+  return codeMirrorPrec.highest([
+    editorViewModule.keymap.of([
+      {
+        key: "Ctrl-[",
+        mac: "Ctrl-[",
+        linux: "Ctrl-[",
+        win: "Ctrl-[",
+        run(currentView) {
+          const cm = codeMirrorGetVimCm?.(currentView);
+          if (cm?.state.vim?.insertMode) {
+            codeMirrorVimApi?.exitInsertMode(cm as any, true);
+            return true;
+          }
+          return false;
+        },
+      },
+    ]),
+    vimExtension,
+  ]);
+}
+
+function configureDbxVimCommands(vimApi: typeof import("@replit/codemirror-vim").Vim) {
+  if (dbxVimCommandsConfigured) return;
+  dbxVimCommandsConfigured = true;
+  vimApi.defineEx("write", "w", (cm) => {
+    cm.cm6?.contentDOM.dispatchEvent(new CustomEvent(DBX_VIM_SAVE_EVENT, { bubbles: true }));
+  });
+}
+
+async function ensureCodeMirrorVim() {
+  if (codeMirrorVim && codeMirrorVimApi && codeMirrorGetVimCm) return true;
+  codeMirrorVimImportPromise ??= import("@replit/codemirror-vim");
+  const { vim, Vim, getCM } = await codeMirrorVimImportPromise;
+  codeMirrorVim = vim;
+  codeMirrorVimApi = Vim;
+  codeMirrorGetVimCm = getCM;
+  configureDbxVimCommands(Vim);
+  return true;
 }
 
 function indentExtension() {
@@ -2022,7 +2130,7 @@ onMounted(async () => {
 
   const [
     { EditorView, keymap, rectangularSelection, hoverTooltip, showTooltip, Decoration, tooltips, gutter, GutterMarker, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, dropCursor, crosshairCursor, ViewPlugin },
-    { EditorState, Compartment, Prec, StateEffect, StateField },
+    { EditorState, EditorSelection, Compartment, Prec, StateEffect, StateField },
     langSql,
     { autocompletion, startCompletion, acceptCompletion, closeBrackets, closeBracketsKeymap, snippetCompletion, completionStatus, completionKeymap, insertCompletionText, nextSnippetField },
     { copyLineDown, copyLineUp, deleteLine, indentLess, indentMore, insertNewlineKeepIndent, moveLineDown, moveLineUp, redo, selectAll, undo, history, defaultKeymap, historyKeymap },
@@ -2031,10 +2139,12 @@ onMounted(async () => {
   ] = await Promise.all([import("@codemirror/view"), import("@codemirror/state"), import("@codemirror/lang-sql"), import("@codemirror/autocomplete"), import("@codemirror/commands"), import("@codemirror/language"), import("@codemirror/search")]);
   editorViewModule = { EditorView, keymap, rectangularSelection } as typeof import("@codemirror/view");
   codeMirrorPrec = Prec;
+  codeMirrorEditorSelection = EditorSelection;
   codeMirrorSnippetCompletion = snippetCompletion;
   fontThemeComp = new Compartment();
   codeMirrorTheme = new Compartment();
   wordWrapComp = new Compartment();
+  vimModeComp = new Compartment();
   readOnlyComp = new Compartment();
   runKeymapComp = new Compartment();
   completionComp = new Compartment();
@@ -2147,6 +2257,9 @@ onMounted(async () => {
 
   const initialSettings = settingsStore.editorSettings;
   const theme = await loadEditorTheme(initialSettings.theme, editorThemeAppearance(), getCurrentCustomThemeColors());
+  if (initialSettings.vimModeEnabled) {
+    await ensureCodeMirrorVim();
+  }
 
   class RunStatementGutterMarker extends GutterMarker {
     toDOM() {
@@ -2237,6 +2350,8 @@ onMounted(async () => {
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       crosshairCursor(),
       activeLineHighlighter,
+      // Vim must be mounted before DBX/default keymaps so normal-mode keys are handled first.
+      vimModeComp.of(vimModeExtension(initialSettings.vimModeEnabled)),
       keymap.of([...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap]),
       langSql.sql({ dialect }),
       tooltips({ parent: document.body }),
@@ -2323,6 +2438,10 @@ onMounted(async () => {
           window.setTimeout(flushImeComposition, 0);
           return false;
         },
+        [DBX_VIM_SAVE_EVENT]() {
+          emit("save");
+          return true;
+        },
         wheel(event) {
           if (!event.metaKey && !event.ctrlKey) return false;
           event.preventDefault();
@@ -2378,11 +2497,15 @@ onMounted(async () => {
           event.preventDefault();
           setTimeout(async () => {
             try {
+              const identifierParts = splitQualifiedIdentifier(identifier);
+              const tableLookupFilter = identifierParts[identifierParts.length - 1] ?? identifier;
+
               // Ensure table cache is populated
               if (cachedTables.length === 0) {
+                // Some metadata providers only accept table-name masks, not schema.table masks.
                 cachedTables = usesLocalOnlyCompletionMetadata()
-                  ? connectionStore.lookupLocalCompletionTables(props.connectionId!, props.database!, identifier, MAX_COMPLETION_TABLES, props.schema)
-                  : await connectionStore.listCompletionTables(props.connectionId!, props.database!, identifier, MAX_COMPLETION_TABLES, props.schema);
+                  ? connectionStore.lookupLocalCompletionTables(props.connectionId!, props.database!, tableLookupFilter, MAX_COMPLETION_TABLES, props.schema)
+                  : await connectionStore.listCompletionTables(props.connectionId!, props.database!, tableLookupFilter, MAX_COMPLETION_TABLES, props.schema);
               }
 
               // 1. Check if it's a table name
@@ -2405,20 +2528,14 @@ onMounted(async () => {
               });
 
               // Check if identifier has a qualifier (e.g., c.card_name or schema.table)
-              const qualifierMatch = /^(.+)\.(.+)$/.exec(identifier);
-              const qualifier = qualifierMatch ? qualifierMatch[1] : null;
+              const qualifier = identifierParts.length >= 2 ? identifierParts[identifierParts.length - 2] : null;
 
-              // 2b. Qualified identifier (schema.table): check against SQL-parsed referenced tables
-              if (qualifierMatch) {
-                const qQualifier = qualifierMatch[1].toLowerCase();
-                const qTableName = qualifierMatch[2].toLowerCase();
-                const matchedRef = referencedTables.find((rt) => rt.name.toLowerCase() === qTableName && rt.schema?.toLowerCase() === qQualifier);
-                if (matchedRef) {
-                  emit("clickTable", matchedRef.schema ? `${matchedRef.schema}.${matchedRef.name}` : matchedRef.name);
-                  return;
-                }
+              const matchedRef = matchTable(identifier, referencedTables);
+              if (matchedRef) {
+                emit("clickTable", matchedRef.schema ? `${matchedRef.schema}.${matchedRef.name}` : matchedRef.name);
+                return;
               }
-              const colName = qualifierMatch ? qualifierMatch[2] : identifier;
+              const colName = identifierParts[identifierParts.length - 1] ?? identifier;
               const colLower = colName.toLowerCase();
 
               if (referencedTables.length === 0) {
@@ -2570,7 +2687,7 @@ function getCurrentCustomThemeColors() {
 watch(
   [queryEditorAppearanceSettings, () => isDark.value],
   async ([ss]) => {
-    if (!view.value || !codeMirrorTheme || !fontThemeComp || !wordWrapComp || !runKeymapComp || !editorViewModule) {
+    if (!view.value || !codeMirrorTheme || !fontThemeComp || !wordWrapComp || !vimModeComp || !runKeymapComp || !editorViewModule) {
       return;
     }
     if (!isGestureZooming.value && !zoomCommitScheduler.hasPendingCommit() && liveFontSize.value !== ss.fontSize) {
@@ -2578,9 +2695,17 @@ watch(
     }
     syncEditorFontCssVars(liveFontSize.value, ss.fontFamily);
     const themeColors = getCurrentCustomThemeColors();
-    const themeExt = await loadEditorTheme(ss.theme, editorThemeAppearance(), themeColors);
+    const [themeExt] = await Promise.all([loadEditorTheme(ss.theme, editorThemeAppearance(), themeColors), ss.vimModeEnabled ? ensureCodeMirrorVim() : Promise.resolve(false)]);
+    if (!view.value || !codeMirrorTheme || !wordWrapComp || !vimModeComp || !runKeymapComp || !editorViewModule) {
+      return;
+    }
     view.value.dispatch({
-      effects: [codeMirrorTheme.reconfigure(themeExt), wordWrapComp.reconfigure(props.forceWordWrap || ss.wordWrap ? editorViewModule.EditorView.lineWrapping : []), runKeymapComp.reconfigure(runKeymapExtension(editorViewModule.keymap))],
+      effects: [
+        codeMirrorTheme.reconfigure(themeExt),
+        wordWrapComp.reconfigure(props.forceWordWrap || ss.wordWrap ? editorViewModule.EditorView.lineWrapping : []),
+        vimModeComp.reconfigure(vimModeExtension(settingsStore.editorSettings.vimModeEnabled)),
+        runKeymapComp.reconfigure(runKeymapExtension(editorViewModule.keymap)),
+      ],
     });
   },
   { deep: true },

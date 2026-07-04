@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createPinia, setActivePinia } from "pinia";
 import { DEFAULT_SQL_FORMATTER_SETTINGS } from "../../apps/desktop/src/lib/sqlFormatterConfig.ts";
 import { DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS } from "../../apps/desktop/src/lib/tableColumnTemplates.ts";
+import { DEFAULT_UI_FONT_FAMILY, SYSTEM_UI_FONT_FAMILY } from "../../apps/desktop/src/lib/appFonts.ts";
+import { tableOpenPageLimit } from "../../apps/desktop/src/lib/tableOpenPageLimit.ts";
 import { AI_PROVIDER_PRESETS, DEFAULT_EDITOR_SETTINGS, normalizeAiConfig, normalizeEditorSettings, useSettingsStore } from "../../apps/desktop/src/stores/settingsStore.ts";
 
 const OLD_FONT_SIZE_KEY = "dbx-query-editor-font-size";
@@ -44,6 +46,12 @@ test("normalizes saved query result page size", () => {
   assert.equal(normalizeEditorSettings({ pageSize: 5000 }).pageSize, 5000);
   assert.equal(normalizeEditorSettings({ pageSize: 200000 }).pageSize, 100000);
   assert.equal(normalizeEditorSettings({ pageSize: 0 }).pageSize, 100);
+});
+
+test("uses saved rows-per-page for table opens", () => {
+  assert.equal(tableOpenPageLimit(), 100);
+  assert.equal(tableOpenPageLimit(500), 500);
+  assert.equal(tableOpenPageLimit(0), 100);
 });
 
 test("defaults export batch size to 2000 rows", () => {
@@ -101,10 +109,35 @@ test("normalizes editor theme settings", () => {
   assert.equal(normalizeEditorSettings({ theme: "invalid" as any }).theme, DEFAULT_EDITOR_SETTINGS.theme);
 });
 
+test("defaults UI font family to the app sans stack", () => {
+  assert.equal(DEFAULT_EDITOR_SETTINGS.uiFontFamily, DEFAULT_UI_FONT_FAMILY);
+  assert.equal(normalizeEditorSettings({}).uiFontFamily, DEFAULT_UI_FONT_FAMILY);
+  assert.equal(normalizeEditorSettings({ uiFontFamily: "" as any }).uiFontFamily, DEFAULT_UI_FONT_FAMILY);
+});
+
+test("keeps saved UI font family", () => {
+  const uiFontFamily = `"Aptos", system-ui, sans-serif`;
+  assert.equal(normalizeEditorSettings({ uiFontFamily } as any).uiFontFamily, uiFontFamily);
+  assert.equal(normalizeEditorSettings({ uiFontFamily: SYSTEM_UI_FONT_FAMILY } as any).uiFontFamily, SYSTEM_UI_FONT_FAMILY);
+});
+
 test("defaults dangerous SQL confirmation to enabled", () => {
   assert.equal(DEFAULT_EDITOR_SETTINGS.confirmDangerousSqlExecution, true);
   assert.equal(normalizeEditorSettings({}).confirmDangerousSqlExecution, true);
   assert.equal(normalizeEditorSettings({ confirmDangerousSqlExecution: false }).confirmDangerousSqlExecution, false);
+});
+
+test("defaults unsaved SQL close confirmation to enabled", () => {
+  assert.equal(DEFAULT_EDITOR_SETTINGS.confirmUnsavedSqlClose, true);
+  assert.equal(normalizeEditorSettings({}).confirmUnsavedSqlClose, true);
+  assert.equal(normalizeEditorSettings({ confirmUnsavedSqlClose: false }).confirmUnsavedSqlClose, false);
+});
+
+test("defaults Vim mode to off and preserves saved booleans", () => {
+  assert.equal(DEFAULT_EDITOR_SETTINGS.vimModeEnabled, false);
+  assert.equal(normalizeEditorSettings({}).vimModeEnabled, false);
+  assert.equal(normalizeEditorSettings({ vimModeEnabled: true }).vimModeEnabled, true);
+  assert.equal(normalizeEditorSettings({ vimModeEnabled: "yes" as any }).vimModeEnabled, false);
 });
 
 test("defaults update notifications to enabled", () => {

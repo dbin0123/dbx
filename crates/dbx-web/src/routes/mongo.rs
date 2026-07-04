@@ -88,6 +88,16 @@ pub struct MongoServerVersionRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MongoCollectionStatsRequest {
+    pub connection_id: String,
+    pub database: String,
+    pub collection: String,
+    pub scale: Option<serde_json::Number>,
+    pub execution_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MongoAggregateRequest {
     pub connection_id: String,
     pub database: String,
@@ -196,6 +206,29 @@ pub async fn list_collections(
     Ok(Json(result))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VectorCollectionDetailRequest {
+    pub connection_id: String,
+    pub database: String,
+    pub collection: String,
+}
+
+pub async fn vector_collection_detail(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<VectorCollectionDetailRequest>,
+) -> Result<Json<dbx_core::db::vector_driver::CollectionInfo>, AppError> {
+    let result = dbx_core::schema::get_vector_collection_detail_core(
+        &state.app,
+        &req.connection_id,
+        &req.database,
+        &req.collection,
+    )
+    .await
+    .map_err(AppError)?;
+    Ok(Json(result))
+}
+
 pub async fn create_database(
     State(state): State<Arc<WebState>>,
     Json(req): Json<MongoCollectionRequest>,
@@ -260,6 +293,25 @@ pub async fn server_version(
         &state,
         req.execution_id.clone(),
         dbx_core::mongo_ops::mongo_server_version_core(&state.app, &req.connection_id, &req.database),
+    )
+    .await?;
+    Ok(Json(serde_json::to_value(result).map_err(|e| AppError(e.to_string()))?))
+}
+
+pub async fn collection_stats(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<MongoCollectionStatsRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = run_cancellable(
+        &state,
+        req.execution_id.clone(),
+        dbx_core::mongo_ops::mongo_collection_stats_core(
+            &state.app,
+            &req.connection_id,
+            &req.database,
+            &req.collection,
+            req.scale,
+        ),
     )
     .await?;
     Ok(Json(serde_json::to_value(result).map_err(|e| AppError(e.to_string()))?))

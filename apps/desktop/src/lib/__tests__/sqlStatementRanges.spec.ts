@@ -172,6 +172,13 @@ describe("statementRangeAtCursor", () => {
     expect(range?.sql.trim()).toBe("SELECT *\nFROM system_dept");
   });
 
+  it("keeps a semicolon-line-end cursor on the current multi-line statement", () => {
+    const sql = "SELECT *\nFROM system_dept;";
+    const gapPos = sql.indexOf(";") + 1;
+    const range = statementRangeAtCursor(sql, gapPos);
+    expect(range?.sql.trim()).toBe("SELECT *\nFROM system_dept");
+  });
+
   it("returns the next same-line statement when the cursor is inside it", () => {
     const sql = "SELECT 1;   SELECT 2;";
     const pos = indexOf(sql, "SELECT 2") + 1;
@@ -216,6 +223,31 @@ describe("statementRangeAtCursor", () => {
     expect(range?.sql.trim()).toBe("UPDATE users\nSET name = 'a'\nWHERE id = 1");
   });
 
+  it("keeps MySQL ALTER TABLE column comments with the column definition", () => {
+    const sql =
+      "ALTER TABLE `yb_course_order`\n  ADD COLUMN `audit_status` tinyint(4) DEFAULT NULL\n    COMMENT '审核状态：0-待审核，1-已通过，2-已拒绝',\n  ADD COLUMN `close_reason` varchar(30) DEFAULT NULL\n    COMMENT '关闭原因：timeout-超时关闭，cancel-取消关闭，refund-退款关闭',\n  ADD COLUMN `paid_completion_time` datetime DEFAULT NULL\n    COMMENT '订单完成支付(付清)时间 首次全额支付完成时记录，全部退款后不重置';";
+
+    expect(statementRangeAtCursor(sql, indexOf(sql, "ALTER"), "mysql")?.sql.trim()).toBe(sql.slice(0, -1));
+    expect(statementRangeAtCursor(sql, indexOf(sql, "close_reason"), "mysql")?.sql.trim()).toBe(sql.slice(0, -1));
+    expect(rangeSqlTexts(executableStatementRanges(sql, "mysql"))).toEqual([sql.slice(0, -1)]);
+  });
+
+  it("keeps MySQL ALTER TABLE drop column clauses with the statement", () => {
+    const sql = "ALTER TABLE t\n  DROP COLUMN a,\n  DROP COLUMN b;";
+
+    expect(statementRangeAtCursor(sql, indexOf(sql, "ALTER"), "mysql")?.sql.trim()).toBe(sql.slice(0, -1));
+    expect(statementRangeAtCursor(sql, indexOf(sql, "DROP COLUMN b"), "mysql")?.sql.trim()).toBe(sql.slice(0, -1));
+    expect(rangeSqlTexts(executableStatementRanges(sql, "mysql"))).toEqual([sql.slice(0, -1)]);
+  });
+
+  it("keeps MySQL ALTER TABLE alter column clauses with the statement", () => {
+    const sql = "ALTER TABLE t\n  ALTER COLUMN name SET NOT NULL;";
+
+    expect(statementRangeAtCursor(sql, indexOf(sql, "ALTER"), "mysql")?.sql.trim()).toBe(sql.slice(0, -1));
+    expect(statementRangeAtCursor(sql, indexOf(sql, "ALTER COLUMN"), "mysql")?.sql.trim()).toBe(sql.slice(0, -1));
+    expect(rangeSqlTexts(executableStatementRanges(sql, "mysql"))).toEqual([sql.slice(0, -1)]);
+  });
+
   it("keeps insert-select with the INSERT statement", () => {
     const sql = "INSERT INTO archived_users (id, name)\nSELECT id, name FROM users\nUPDATE users SET archived = 1;";
     const range = statementRangeAtCursor(sql, indexOf(sql, "archived_users"));
@@ -238,6 +270,22 @@ describe("statementRangeAtCursor", () => {
   it("keeps MySQL EXPLAIN UPDATE assignments as one statement", () => {
     const sql = "EXPLAIN UPDATE test_orders a\nJOIN test_users b ON a.id=b.id\nSET a.name = '张三'\nWHERE b.id > 10;";
     expect(statementRangeAtCursor(sql, indexOf(sql, "SET"), "mysql")?.sql.trim()).toBe(sql.slice(0, -1));
+    expect(rangeSqlTexts(executableStatementRanges(sql, "mysql"))).toEqual([sql.slice(0, -1)]);
+  });
+
+  it("keeps MySQL REPLACE function calls inside UPDATE assignments", () => {
+    const sql = `UPDATE ecm_archive_prepare_pool
+SET
+  request_json =
+    REPLACE(
+      request_json,
+      '"paperFlag":null',
+      '"paperFlag":false'
+    ),
+  process_flag = 0
+WHERE request_json LIKE '%"paperFlag":null%';`;
+
+    expect(statementRangeAtCursor(sql, indexOf(sql, "REPLACE"), "mysql")?.sql.trim()).toBe(sql.slice(0, -1));
     expect(rangeSqlTexts(executableStatementRanges(sql, "mysql"))).toEqual([sql.slice(0, -1)]);
   });
 
@@ -317,6 +365,19 @@ describe("executableStatementRanges", () => {
     expect(ranges.map((range) => range.from)).toEqual([0, sql.indexOf("DEL")]);
   });
 
+  it("keeps MySQL REPLACE INTO as an executable statement start", () => {
+    const sql = "SELECT 1\nREPLACE INTO users (id, name) VALUES (1, 'a');";
+    expect(rangeSqlTexts(executableStatementRanges(sql, "mysql"))).toEqual(["SELECT 1", "REPLACE INTO users (id, name) VALUES (1, 'a')"]);
+  });
+
+  it("returns MongoDB command ranges for newline-separated shell commands", () => {
+    const sql = 'use archive\ndb.users.find({ status: "open" })\n  .limit(5)';
+    const ranges = executableStatementRanges(sql, "mongodb");
+
+    expect(rangeSqlTexts(ranges)).toEqual(["use archive", 'db.users.find({ status: "open" })\n  .limit(5)']);
+    expect(ranges.map((range) => range.from)).toEqual([0, sql.indexOf("db.users.find")]);
+  });
+
   it("does not split executable Oracle PL/SQL ranges at inner statement starts", () => {
     expect(rangeSqlTexts(executableStatementRanges(oraclePlSqlFixture, "oracle"))).toEqual([oraclePlSqlFixture.slice(0, oraclePlSqlFixture.indexOf("\n/")), "SELECT 1"]);
   });
@@ -374,6 +435,13 @@ describe("buildExecutionCandidates", () => {
     const candidates = buildExecutionCandidates(sql, indentationPos);
     expect(candidateSummaries(candidates)).toEqual(["cursor:SELECT 2", "all:SELECT 1;\n    SELECT 2;"]);
     expect(candidateLabels(candidates)).toEqual(["currentStatement", "allStatements"]);
+  });
+
+  it("uses the current statement when the cursor is immediately after its semicolon before a blank line", () => {
+    const sql = "select 1;\n\nselect 2;";
+    const cursorAfterFirstSemicolon = sql.indexOf(";") + 1;
+    const candidates = buildExecutionCandidates(sql, cursorAfterFirstSemicolon);
+    expect(candidateSummaries(candidates)).toEqual(["cursor:select 1", "all:select 1;\n\nselect 2;"]);
   });
 
   it("dedupes when the cursor statement equals the full document", () => {

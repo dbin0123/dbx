@@ -7,7 +7,8 @@ export type SidebarSelectionCopyAction = "copy-name" | "none";
 export type SidebarActivation = "single" | "double";
 
 const dataNodeTypes = new Set<TreeNodeType>(["table", "view", "materialized_view"]);
-const toggleLeafNodeTypes = new Set<TreeNodeType>(["redis-db", "mq-tenant", "etcd-root", "zookeeper-root", "mongo-collection", "vector-collection", "elasticsearch-index", "user-admin"]);
+const documentBrowserNodeTypes = new Set<TreeNodeType>(["mongo-collection", "mongo-bucket"]);
+const toggleLeafNodeTypes = new Set<TreeNodeType>(["redis-db", "mq-tenant", "etcd-root", "zookeeper-root", "mongo-gridfs", "mongo-collection", "mongo-bucket", "vector-collection", "elasticsearch-index", "user-admin"]);
 const objectBrowserNodeTypes = new Set<TreeNodeType>(["database", "schema", "object-browser"]);
 const sourceNodeTypes = new Set<TreeNodeType>(["materialized_view", "procedure", "function", "sequence", "package", "package-body"]);
 const savedSqlNodeTypes = new Set<TreeNodeType>(["saved-sql-file"]);
@@ -25,12 +26,21 @@ export function objectSourceKindForTreeNode(type: TreeNodeType): ObjectSourceKin
   return null;
 }
 
+export function isDocumentBrowserTreeNode(type: TreeNodeType): boolean {
+  return documentBrowserNodeTypes.has(type);
+}
+
 export function treeNodeRowAction(type: TreeNodeType, canExpand: boolean, activation: SidebarActivation = "single"): TreeNodeRowAction {
   if (activation === "double") return "none";
   if (dataNodeTypes.has(type)) return "open-data";
   if (toggleLeafNodeTypes.has(type)) return "toggle";
   if (canExpand) return "toggle";
   return "none";
+}
+
+export function shouldRunTreeNodeRowAction(action: TreeNodeRowAction, clickDetail: number): boolean {
+  if (action === "none") return false;
+  return action === "toggle" || clickDetail <= 1;
 }
 
 export function treeNodeRowDoubleClickAction(type: TreeNodeType, canOpenObjectBrowser: boolean, activation: SidebarActivation = "single", canExpand = false): TreeNodeRowDoubleClickAction {

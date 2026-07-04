@@ -156,7 +156,7 @@ export interface ConnectionConfig {
   read_only?: boolean;
 }
 
-export type TransportLayerConfig = ({ type: "ssh" } & SshTunnelConfig) | ({ type: "proxy" } & ProxyTunnelConfig);
+export type TransportLayerConfig = ({ type: "ssh" } & SshTunnelConfig) | ({ type: "proxy" } & ProxyTunnelConfig) | ({ type: "http_tunnel" } & HttpTunnelConfig);
 
 export interface SshTunnelConfig {
   id: string;
@@ -183,6 +183,15 @@ export interface ProxyTunnelConfig {
   port: number;
   username?: string;
   password?: string;
+}
+
+export interface HttpTunnelConfig {
+  id: string;
+  name?: string;
+  enabled?: boolean;
+  url: string;
+  token?: string;
+  connect_timeout_secs?: number;
 }
 
 export interface AttachedDatabaseConfig {
@@ -514,6 +523,9 @@ export type TreeNodeType =
   | "etcd-root"
   | "zookeeper-root"
   | "mongo-db"
+  | "mongo-gridfs"
+  | "mongo-buckets"
+  | "mongo-bucket"
   | "mongo-collection"
   | "vector-collection"
   | "elasticsearch-index";
@@ -637,7 +649,7 @@ export interface QueryTab {
   executionId?: string;
   isExplaining?: boolean;
   explainExecutionId?: string;
-  mode: "data" | "query" | "redis" | "redis-dashboard" | "mongo" | "vector" | "etcd" | "zookeeper" | "mq" | "nacos" | "objects" | "structure" | "users";
+  mode: "data" | "query" | "redis" | "redis-dashboard" | "mongo" | "mongo-gridfs" | "mongo-bucket" | "vector" | "etcd" | "zookeeper" | "mq" | "nacos" | "objects" | "structure" | "users";
   mqTenant?: string;
   mqInitialTab?: "topics";
   nacosNamespace?: string;
@@ -684,9 +696,19 @@ export interface QueryTab {
     collection: string;
     idColumn: "_id";
   };
+  mongoBucket?: {
+    bucketName: string;
+  };
   resultEvicted?: boolean;
   whereInput?: string;
   previewSql?: string;
+  /** Whether to use auto-commit mode (default true). When false, multiple statements are
+   *  wrapped in a single transaction. */
+  autoCommit?: boolean;
+  /** Session ID for an active manual transaction, set after beginManualTransaction */
+  txnSessionId?: string;
+  /** Set to true when a manual transaction was auto-rolled back due to inactivity */
+  txnAutoRolledBack?: boolean;
 }
 
 export interface SavedSqlFolder {
@@ -728,4 +750,6 @@ export interface CollectionInfo {
   name: string;
   id: string;
   dimension?: number;
+  kind?: "collection" | "bucket";
+  bucketName?: string;
 }

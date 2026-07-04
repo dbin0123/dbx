@@ -1,7 +1,6 @@
 import { isTauriRuntime } from "./tauriRuntime";
 import type * as TauriModule from "./tauri";
 import { appendDebugLog } from "./debugLog";
-import { apiWebSocketUrl } from "./webPath";
 
 // ---------------------------------------------------------------------------
 // Lazy backend resolution (avoids top-level await)
@@ -164,6 +163,10 @@ export const executeMulti = forward("executeMulti");
 export const executeBatch = forward("executeBatch");
 export const executeScript = forward("executeScript");
 export const executeInTransaction = forward("executeInTransaction");
+export const beginManualTransaction = forward("beginManualTransaction");
+export const executeInManualTransaction = forward("executeInManualTransaction");
+export const commitManualTransaction = forward("commitManualTransaction");
+export const rollbackManualTransaction = forward("rollbackManualTransaction");
 export const cancelQuery = forward("cancelQuery");
 export const closeQuerySession = forward("closeQuerySession");
 export const closeClientConnectionSession = forward("closeClientConnectionSession");
@@ -225,8 +228,12 @@ export const aiTestConnection = forward("aiTestConnection");
 export const aiListModels = forward("aiListModels");
 export const saveAiConfig = forward("saveAiConfig");
 export const loadAiConfig = forward("loadAiConfig");
+export const saveAiProviderConfig = forward("saveAiProviderConfig");
+export const loadAiProviderConfigs = forward("loadAiProviderConfigs");
 export const loadDesktopSettings = forward("loadDesktopSettings");
 export const saveDesktopSettings = forward("saveDesktopSettings");
+export const completeAppClose = forward("completeAppClose");
+export const requestAppClose = forward("requestAppClose");
 export const setDriverStoreDir = forward("setDriverStoreDir");
 export const setPluginStoreDir = forward("setPluginStoreDir");
 export const setAgentStoreDir = forward("setAgentStoreDir");
@@ -324,12 +331,9 @@ export const redisFlushDb = forward("redisFlushDb");
 export const redisExecuteCommand = forward("redisExecuteCommand");
 export const redisLoadMore = forward("redisLoadMore");
 export const redisPubSubPublish = forward("redisPubSubPublish");
+export const redisPubSubConnect = forward("redisPubSubConnect");
 export const redisSlowlogGet = forward("redisSlowlogGet");
 export const redisClusterMasterNodes = forward("redisClusterMasterNodes");
-
-export function redisPubSubConnect(connectionId: string): WebSocket {
-  return new WebSocket(apiWebSocketUrl(`/api/redis/pubsub/ws?connectionId=${encodeURIComponent(connectionId)}`));
-}
 
 // etcd
 export const etcdListPrefix = forward("etcdListPrefix");
@@ -390,6 +394,14 @@ export const mqSendMessage = forward("mqSendMessage");
 // MongoDB
 export const mongoListDatabases = forward("mongoListDatabases");
 export const mongoListCollections = forward("mongoListCollections");
+export const documentListGridFsBuckets = forward("documentListGridFsBuckets");
+export const documentCreateGridFsBucket = forward("documentCreateGridFsBucket");
+export const documentDeleteGridFsBucket = forward("documentDeleteGridFsBucket");
+export const documentListGridFsFiles = forward("documentListGridFsFiles");
+export const documentDownloadGridFsFile = forward("documentDownloadGridFsFile");
+export const documentUploadGridFsFile = forward("documentUploadGridFsFile");
+export const documentDeleteGridFsFile = forward("documentDeleteGridFsFile");
+export const vectorGetCollectionDetail = forward("vectorGetCollectionDetail");
 export const mongoCreateDatabase = forward("mongoCreateDatabase");
 export const mongoDropDatabase = forward("mongoDropDatabase");
 export const mongoDropCollection = forward("mongoDropCollection");
@@ -397,6 +409,10 @@ export const documentFindDocuments = forward("documentFindDocuments");
 export const mongoFindDocuments = forward("mongoFindDocuments");
 export const mongoServerVersion = forward("mongoServerVersion");
 export const mongoAggregateDocuments = forward("mongoAggregateDocuments");
+export const mongoCollectionStats = forward("mongoCollectionStats");
+export const mongoCreateIndex = forward("mongoCreateIndex");
+export const mongoDropIndexes = forward("mongoDropIndexes");
+export const documentInsertDocument = forward("documentInsertDocument");
 export const mongoInsertDocument = forward("mongoInsertDocument");
 export const mongoInsertDocuments = forward("mongoInsertDocuments");
 export const mongoUpdateDocument = forward("mongoUpdateDocument");

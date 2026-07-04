@@ -275,7 +275,6 @@ export interface AiCompletionRequest {
   messages: AiMessage[];
   taskContract?: AiTaskContract;
   maxTokens?: number;
-  temperature?: number;
 }
 
 export interface AiModelInfo {
@@ -339,6 +338,14 @@ export async function saveAiConfig(config: AiConfig): Promise<void> {
   return invoke("save_ai_config", { config });
 }
 
+export async function saveAiProviderConfig(provider: string, config: AiConfig): Promise<void> {
+  return invoke("save_ai_provider_config", { provider, config });
+}
+
+export async function loadAiProviderConfigs(): Promise<Record<string, AiConfig>> {
+  return invoke("load_ai_provider_configs");
+}
+
 export async function aiTestConnection(config: AiConfig): Promise<AiTestConnectionResult> {
   return invoke("ai_test_connection", { config });
 }
@@ -361,6 +368,14 @@ export async function loadDesktopSettings(): Promise<DesktopSettings> {
 
 export async function saveDesktopSettings(settings: DesktopSettings): Promise<void> {
   return invoke("save_desktop_settings", { settings });
+}
+
+export async function completeAppClose(action: "quit" | "hide"): Promise<void> {
+  return invoke("complete_app_close", { action });
+}
+
+export async function requestAppClose(): Promise<void> {
+  return invoke("request_app_close_from_window_controls");
 }
 
 export interface DriverStoreMigrationResult {
@@ -619,6 +634,7 @@ export async function executeMulti(
     resultSessionId?: string;
     clientSessionId?: string;
     timeoutSecs?: number;
+    useTransaction?: boolean;
   },
 ): Promise<QueryResult[]> {
   return invoke("execute_multi", { connectionId, database, sql, schema, executionId, ...options });
@@ -650,6 +666,22 @@ export async function executeScript(connectionId: string, database: string, sql:
 
 export async function executeInTransaction(connectionId: string, database: string, statements: string[], schema?: string): Promise<QueryResult> {
   return invoke("execute_in_transaction", { connectionId, database, statements, schema });
+}
+
+export async function beginManualTransaction(connectionId: string, database: string, schema?: string): Promise<string> {
+  return invoke("begin_manual_transaction", { connectionId, database, schema });
+}
+
+export async function executeInManualTransaction(txnSessionId: string, sql: string, database: string, schema?: string, maxRows?: number): Promise<QueryResult[]> {
+  return invoke("execute_in_manual_transaction", { txnSessionId, sql, database, schema, maxRows });
+}
+
+export async function commitManualTransaction(txnSessionId: string): Promise<QueryResult> {
+  return invoke("commit_manual_transaction", { txnSessionId });
+}
+
+export async function rollbackManualTransaction(txnSessionId: string): Promise<QueryResult> {
+  return invoke("rollback_manual_transaction", { txnSessionId });
 }
 
 export async function analyzeSqlReferences(sql: string, dialect?: string): Promise<SqlReferenceAnalysis> {
@@ -1131,7 +1163,7 @@ export interface UpdateInfo {
   release_notes: string;
 }
 
-export type UpdateDownloadSource = "official" | "cnb";
+export type UpdateDownloadSource = "official" | "cnb" | "atomgit";
 
 export interface UpdateDownloadProgress {
   downloaded: number;
@@ -1330,6 +1362,11 @@ export async function redisPubSubPublish(connectionId: string, db: number, chann
   return invoke("redis_pubsub_publish", { connectionId, db, channel, message });
 }
 
+export async function redisPubSubConnect(connectionId: string): Promise<WebSocket> {
+  const port = await invoke<number>("redis_pubsub_server_port");
+  return new WebSocket(`ws://127.0.0.1:${port}/api/redis/pubsub/ws?connectionId=${encodeURIComponent(connectionId)}`);
+}
+
 export async function redisSlowlogGet(connectionId: string, count: number, nodeHost?: string, nodePort?: number): Promise<RedisSlowlogEntry[]> {
   return invoke("redis_slowlog_get", { connectionId, count, nodeHost, nodePort });
 }
@@ -1445,12 +1482,47 @@ export interface MongoDocumentResult {
   total: number;
 }
 
+export interface MongoCollectionStatsResult {
+  count: unknown;
+  size: unknown;
+  avgObjSize: unknown;
+  storageSize: unknown;
+  totalIndexSize: unknown;
+  nindexes: unknown;
+}
+
+export interface MongoGridFsFileInfo {
+  id: string;
+  filename?: string;
+  length: number;
+  chunkSize: number;
+  uploadDate?: string;
+  metadata?: any;
+  md5?: string;
+  contentType?: string;
+  aliases?: string[];
+}
+
+export interface MongoGridFsBucketInfo {
+  name: string;
+  fileCount: number;
+  totalBytes: number;
+}
+
+export async function documentListDatabases(connectionId: string): Promise<string[]> {
+  return invoke("document_list_databases", { connectionId });
+}
+
 export async function mongoListDatabases(connectionId: string): Promise<string[]> {
   return invoke("mongo_list_databases", { connectionId });
 }
 
 export async function mongoListCollections(connectionId: string, database: string): Promise<CollectionInfo[]> {
   return invoke("mongo_list_collections", { connectionId, database });
+}
+
+export async function vectorGetCollectionDetail(connectionId: string, database: string, collection: string): Promise<CollectionInfo> {
+  return invoke("vector_collection_detail", { connectionId, database, collection });
 }
 
 export async function mongoCreateDatabase(connectionId: string, database: string): Promise<void> {
@@ -1482,12 +1554,60 @@ export async function documentFindDocuments(connectionId: string, database: stri
   return invoke("document_find_documents", { connectionId, database, collection, skip, limit, filter, projection, sort, executionId });
 }
 
+export async function documentListGridFsFiles(connectionId: string, database: string, bucket: string): Promise<MongoGridFsFileInfo[]> {
+  return invoke("document_list_gridfs_files", { connectionId, database, bucket });
+}
+
+export async function documentListGridFsBuckets(connectionId: string, database: string): Promise<MongoGridFsBucketInfo[]> {
+  return invoke("document_list_gridfs_buckets", { connectionId, database });
+}
+
+export async function documentCreateGridFsBucket(connectionId: string, database: string, bucket: string): Promise<void> {
+  return invoke("document_create_gridfs_bucket", { connectionId, database, bucket });
+}
+
+export async function documentDeleteGridFsBucket(connectionId: string, database: string, bucket: string): Promise<void> {
+  return invoke("document_delete_gridfs_bucket", { connectionId, database, bucket });
+}
+
+export async function documentDownloadGridFsFile(connectionId: string, database: string, bucket: string, fileId: string): Promise<Uint8Array> {
+  const data = await invoke<number[]>("document_download_gridfs_file", { connectionId, database, bucket, fileId });
+  return new Uint8Array(data);
+}
+
+export async function documentUploadGridFsFile(connectionId: string, database: string, bucket: string, fileName: string, data: Uint8Array, contentType?: string): Promise<string> {
+  return invoke("document_upload_gridfs_file", {
+    connectionId,
+    database,
+    bucket,
+    fileName,
+    data: Array.from(data),
+    contentType,
+  });
+}
+
+export async function documentDeleteGridFsFile(connectionId: string, database: string, bucket: string, fileId: string): Promise<void> {
+  return invoke("document_delete_gridfs_file", { connectionId, database, bucket, fileId });
+}
+
 export async function mongoServerVersion(connectionId: string, database: string, executionId?: string): Promise<string> {
   return invoke("mongo_server_version", { connectionId, database, executionId });
 }
 
 export async function mongoAggregateDocuments(connectionId: string, database: string, collection: string, pipelineJson: string, maxRows?: number, executionId?: string): Promise<MongoDocumentResult> {
   return invoke("mongo_aggregate_documents", { connectionId, database, collection, pipelineJson, maxRows, executionId });
+}
+
+export async function mongoCollectionStats(connectionId: string, database: string, collection: string, scale?: number, executionId?: string): Promise<MongoCollectionStatsResult> {
+  return invoke("mongo_collection_stats", { connectionId, database, collection, scale, executionId });
+}
+
+export async function mongoCreateIndex(connectionId: string, database: string, collection: string, keysJson: string, optionsJson?: string): Promise<{ name: string }> {
+  return invoke("mongo_create_index", { connectionId, database, collection, keysJson, optionsJson });
+}
+
+export async function mongoDropIndexes(connectionId: string, database: string, collection: string, indexesJson?: string, single = false): Promise<{ dropped_names: string[]; affected_rows: number }> {
+  return invoke("mongo_drop_indexes", { connectionId, database, collection, indexesJson, single });
 }
 
 export async function mongoInsertDocument(connectionId: string, database: string, collection: string, docJson: string): Promise<string> {
@@ -1590,6 +1710,7 @@ export interface SqlFilePreview {
   filePath: string;
   sizeBytes: number;
   preview: string;
+  canExecuteWithoutSelectedDatabase: boolean;
 }
 
 export interface SqlFileProgress {

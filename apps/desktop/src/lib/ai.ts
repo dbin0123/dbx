@@ -70,7 +70,7 @@ export interface AiRequestInput {
   context: AiContext;
 }
 
-function buildAgentRequest(input: AiRequestInput, history?: api.AiMessage[]): { messages: api.AiMessage[]; systemPrompt: string; taskContract: api.AiTaskContract; maxTokens: number; temperature: number } {
+function buildAgentRequest(input: AiRequestInput, history?: api.AiMessage[]): { messages: api.AiMessage[]; systemPrompt: string; taskContract: api.AiTaskContract; maxTokens: number } {
   const isZh = isChineseLocale(currentLocale());
   const systemPrompt = buildSystemPrompt(input.action, input.context, input.mode);
   const userPrompt = buildUserPrompt(input.action, input.context, input.instruction, isZh);
@@ -84,23 +84,22 @@ function buildAgentRequest(input: AiRequestInput, history?: api.AiMessage[]): { 
 
   const params = actionParams(input.action);
   const maxTokens = input.config.enableThinking ? Math.max(params.maxTokens, 8192) : params.maxTokens;
-  return { messages, systemPrompt, taskContract, maxTokens, temperature: params.temperature };
+  return { messages, systemPrompt, taskContract, maxTokens };
 }
 
 export async function runAiAction(input: AiRequestInput, history?: api.AiMessage[]): Promise<string> {
-  const { messages, systemPrompt, taskContract, maxTokens, temperature } = buildAgentRequest(input, history);
+  const { messages, systemPrompt, taskContract, maxTokens } = buildAgentRequest(input, history);
   return api.aiComplete({
     config: input.config,
     systemPrompt,
     messages,
     taskContract,
     maxTokens,
-    temperature,
   });
 }
 
 export async function runAiStream(input: AiRequestInput, history: api.AiMessage[] | undefined, onDelta: (delta: string) => void, sessionId?: string, onReasoningDelta?: (delta: string) => void): Promise<void> {
-  const { messages, systemPrompt, taskContract, maxTokens, temperature } = buildAgentRequest(input, history);
+  const { messages, systemPrompt, taskContract, maxTokens } = buildAgentRequest(input, history);
   const sid = sessionId || uuid();
 
   await api.aiStream(
@@ -111,7 +110,6 @@ export async function runAiStream(input: AiRequestInput, history: api.AiMessage[
       messages,
       taskContract,
       maxTokens,
-      temperature,
     },
     (chunk) => {
       if (!chunk.done) {
@@ -123,7 +121,7 @@ export async function runAiStream(input: AiRequestInput, history: api.AiMessage[
 }
 
 export async function runAgentStream(input: AiRequestInput, history: api.AiMessage[] | undefined, onEvent: (event: AgentEvent) => void, sessionId?: string): Promise<string> {
-  const { messages, systemPrompt, taskContract, maxTokens, temperature } = buildAgentRequest(input, history);
+  const { messages, systemPrompt, taskContract, maxTokens } = buildAgentRequest(input, history);
   const sid = sessionId || uuid();
 
   return api.aiAgentStream(
@@ -134,7 +132,6 @@ export async function runAgentStream(input: AiRequestInput, history: api.AiMessa
       messages,
       taskContract,
       maxTokens,
-      temperature,
     },
     input.context.connectionId,
     input.context.database,
@@ -155,14 +152,14 @@ export function buildUserPrompt(action: AiAction, context: AiContext, instructio
   return [`Action: ${action}`, skillInstruction, "", "User request:", userRequest].join("\n");
 }
 
-function actionParams(action: AiAction): { maxTokens: number; temperature: number } {
+function actionParams(action: AiAction): { maxTokens: number } {
   switch (action) {
     case "explain":
-      return { maxTokens: 3200, temperature: 0.2 };
+      return { maxTokens: 3200 };
     case "sampleData":
-      return { maxTokens: 2400, temperature: 0.1 };
+      return { maxTokens: 2400 };
     default:
-      return { maxTokens: 2400, temperature: 0.15 };
+      return { maxTokens: 2400 };
   }
 }
 
@@ -352,9 +349,11 @@ function formatSchema(context: AiContext): string {
     .join("\n\n");
 }
 
-export async function buildAiContext(tab: QueryTab, connection: ConnectionConfig, options: { maxTables?: number; maxColumnsPerTable?: number; mentionedTables?: AiTableMention[] } = {}): Promise<AiContext> {
+export async function buildAiContext(tab: QueryTab, connection: ConnectionConfig, options: { maxTables?: number; maxColumnsPerTable?: number; maxIndexesPerTable?: number; maxFksPerTable?: number; mentionedTables?: AiTableMention[] } = {}): Promise<AiContext> {
   const maxTables = options.maxTables ?? 50;
   const maxColumnsPerTable = options.maxColumnsPerTable ?? 40;
+  const maxIndexesPerTable = options.maxIndexesPerTable ?? 10;
+  const maxFksPerTable = options.maxFksPerTable ?? 10;
   const databaseType = aiDatabaseTypeForConnection(connection);
   const tables: AiSchemaTable[] = [];
   const tableKeys = new Set<string>();
@@ -374,8 +373,8 @@ export async function buildAiContext(tab: QueryTab, connection: ConnectionConfig
       tableType: "TABLE",
       comment: tableComment,
       columns: tab.tableMeta.columns.slice(0, maxColumnsPerTable),
-      indexes,
-      foreignKeys,
+      indexes: indexes.slice(0, maxIndexesPerTable),
+      foreignKeys: foreignKeys.slice(0, maxFksPerTable),
     });
     tableKeys.add(aiTableMentionKey(tab.tableMeta.schema, tName));
     truncated = tab.tableMeta.columns.length > maxColumnsPerTable;
@@ -384,7 +383,7 @@ export async function buildAiContext(tab: QueryTab, connection: ConnectionConfig
   for (const mention of options.mentionedTables ?? []) {
     const key = aiTableMentionKey(mention.schema, mention.table);
     if (tableKeys.has(key)) continue;
-    const entry = await loadMentionedTableContext(tab, connection, mention, maxColumnsPerTable).catch(() => undefined);
+    const entry = await loadMentionedTableContext(tab, connection, mention, maxColumnsPerTable, maxIndexesPerTable, maxFksPerTable).catch(() => undefined);
     if (!entry) continue;
     tableKeys.add(aiTableMentionKey(entry.schema, entry.name));
     tables.push(entry);
@@ -446,8 +445,8 @@ export async function buildAiContext(tab: QueryTab, connection: ConnectionConfig
               tableType: table.table_type,
               comment: table.comment,
               columns: columns.slice(0, maxColumnsPerTable),
-              indexes,
-              foreignKeys,
+              indexes: indexes.slice(0, maxIndexesPerTable),
+              foreignKeys: foreignKeys.slice(0, maxFksPerTable),
               _truncatedCols: columns.length > maxColumnsPerTable,
             })),
           ),
@@ -482,7 +481,7 @@ export async function buildAiContext(tab: QueryTab, connection: ConnectionConfig
   };
 }
 
-async function loadMentionedTableContext(tab: QueryTab, connection: ConnectionConfig, mention: AiTableMention, maxColumnsPerTable: number): Promise<AiSchemaTable | undefined> {
+async function loadMentionedTableContext(tab: QueryTab, connection: ConnectionConfig, mention: AiTableMention, maxColumnsPerTable: number, maxIndexesPerTable: number, maxFksPerTable: number): Promise<AiSchemaTable | undefined> {
   const databaseType = aiDatabaseTypeForConnection(connection);
   const schema = await resolveMentionedTableSchema(tab, connection, mention);
   const [columns, indexes, foreignKeys, tableComment] = await Promise.all([
@@ -497,8 +496,8 @@ async function loadMentionedTableContext(tab: QueryTab, connection: ConnectionCo
     tableType: "TABLE",
     comment: tableComment,
     columns: columns.slice(0, maxColumnsPerTable),
-    indexes,
-    foreignKeys,
+    indexes: indexes.slice(0, maxIndexesPerTable),
+    foreignKeys: foreignKeys.slice(0, maxFksPerTable),
   };
 }
 
@@ -551,8 +550,15 @@ function extractLastError(result?: QueryResult): string | undefined {
 
 function formatResultPreview(result?: QueryResult): string | undefined {
   if (!result || result.columns.includes("Error") || !result.rows.length) return undefined;
+  const MAX_VALUE_CHARS = 200;
   const rows = result.rows.slice(0, 5).map((row) => {
-    return result.columns.map((column, index) => `${column}=${JSON.stringify(row[index] ?? null)}`).join(", ");
+    return result.columns
+      .map((column, index) => {
+        const raw = JSON.stringify(row[index] ?? null);
+        const val = raw.length > MAX_VALUE_CHARS ? raw.slice(0, MAX_VALUE_CHARS) + "…" : raw;
+        return `${column}=${val}`;
+      })
+      .join(", ");
   });
   return rows.join("\n");
 }

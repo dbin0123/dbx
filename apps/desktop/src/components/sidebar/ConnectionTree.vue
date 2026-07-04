@@ -114,7 +114,7 @@ const SEARCH_SCOPE_TO_NODE_TYPES: Record<SearchScope, TreeNodeType[]> = {
   connection: ["connection"],
   database: ["database", "redis-db", "mq-tenant", "nacos-namespace", "mongo-db"],
   schema: ["schema"],
-  table: ["table", "mongo-collection", "vector-collection", "elasticsearch-index"],
+  table: ["table", "mongo-collection", "mongo-bucket", "vector-collection", "elasticsearch-index"],
   view: ["view"],
 };
 
@@ -440,6 +440,7 @@ function clearSidebarSelection() {
   // Clicking the blank area of the tree clears the current selection. Row
   // clicks call event.stopPropagation(), so this only fires for blank clicks
   // (issue #681 — selection wasn't cleared in double-click activation mode).
+  store.connectionMultiSelectActive = false;
   store.selectedTreeNodeId = null;
   store.selectedTreeNodeIds = [];
   store.treeSelectionAnchorId = null;
@@ -447,9 +448,12 @@ function clearSidebarSelection() {
 
 async function createNewGroup() {
   const groupId = store.createConnectionGroup(t("connectionGroup.newGroupDefault"));
+  await startRenamingCreatedGroup(groupId);
+}
+
+async function startRenamingCreatedGroup(groupId: string) {
   pendingRenameGroupId.value = groupId;
   store.selectedTreeNodeId = groupId;
-
   if (isFiltering.value) {
     searchQuery.value = "";
     deferredSearchQuery.value = "";
@@ -699,6 +703,13 @@ function onSearchToggle(node: TreeNode) {
   searchCollapsedIds.value = next;
 }
 
+function collapseAllTreeNodes() {
+  store.collapseAllTreeNodes();
+  if (isSearching.value) {
+    searchCollapsedIds.value = new Set(flatNodes.value.filter((item) => item.node.children?.length).map((item) => item.id));
+  }
+}
+
 function currentTreeScroller(): HTMLElement | null {
   return ((useVirtualTree.value ? treeScrollerRef.value?.$el : plainTreeScrollerRef.value) as HTMLElement | undefined) ?? null;
 }
@@ -856,7 +867,7 @@ onUnmounted(() => {
   window.clearTimeout(sidebarScrollingTimer);
 });
 
-defineExpose({ focusSearch, createNewGroup });
+defineExpose({ focusSearch, createNewGroup, collapseAllTreeNodes });
 </script>
 
 <template>
@@ -917,11 +928,20 @@ defineExpose({ focusSearch, createNewGroup });
         :prerender="SIDEBAR_TREE_PRERENDER_COUNT"
         :skip-hover="true"
         key-field="id"
-        type-field="type"
+        type-field="poolType"
         flow-mode
       >
         <template #default="{ item }">
-          <TreeItem :node="item.node" :depth="item.depth" :drag-disabled="isFiltering" :pending-rename="pendingRenameGroupId === item.node.id" :highlighted="highlightedNodeId === item.node.id" @search-toggle="onSearchToggle" @rename-started="pendingRenameGroupId = null" />
+          <TreeItem
+            :node="item.node"
+            :depth="item.depth"
+            :drag-disabled="isFiltering"
+            :pending-rename="pendingRenameGroupId === item.node.id"
+            :highlighted="highlightedNodeId === item.node.id"
+            @search-toggle="onSearchToggle"
+            @rename-started="pendingRenameGroupId = null"
+            @group-created="startRenamingCreatedGroup"
+          />
         </template>
       </RecycleScroller>
       <div v-if="stickyNode" class="sticky-database-header pointer-events-auto absolute inset-x-0 top-0 z-[5] border-b border-border/60" :style="stickyHeaderStyle">
@@ -943,6 +963,7 @@ defineExpose({ focusSearch, createNewGroup });
           :highlighted="highlightedNodeId === item.id"
           @search-toggle="onSearchToggle"
           @rename-started="pendingRenameGroupId = null"
+          @group-created="startRenamingCreatedGroup"
         />
       </div>
       <div v-if="hasSidebarVerticalOverflow" ref="sidebarScrollbarTrackRef" class="sidebar-tree-scrollbar" :class="{ 'sidebar-tree-scrollbar--scrolling': isScrollingSidebar, 'sidebar-tree-scrollbar--dragging': isDraggingSidebarScrollbar }" @pointerdown="onSidebarScrollbarTrackPointerDown">

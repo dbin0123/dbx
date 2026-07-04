@@ -95,6 +95,8 @@ pub struct ConnectionConfig {
 pub enum TransportLayerConfig {
     Ssh(SshTunnelConfig),
     Proxy(ProxyTunnelConfig),
+    #[serde(rename = "http_tunnel")]
+    HttpTunnel(HttpTunnelConfig),
 }
 
 impl TransportLayerConfig {
@@ -102,6 +104,7 @@ impl TransportLayerConfig {
         match self {
             TransportLayerConfig::Ssh(layer) => &layer.id,
             TransportLayerConfig::Proxy(layer) => &layer.id,
+            TransportLayerConfig::HttpTunnel(layer) => &layer.id,
         }
     }
 
@@ -109,6 +112,7 @@ impl TransportLayerConfig {
         match self {
             TransportLayerConfig::Ssh(layer) => &layer.name,
             TransportLayerConfig::Proxy(layer) => &layer.name,
+            TransportLayerConfig::HttpTunnel(layer) => &layer.name,
         }
     }
 
@@ -116,6 +120,7 @@ impl TransportLayerConfig {
         match self {
             TransportLayerConfig::Ssh(layer) => layer.enabled,
             TransportLayerConfig::Proxy(layer) => layer.enabled,
+            TransportLayerConfig::HttpTunnel(layer) => layer.enabled,
         }
     }
 
@@ -123,6 +128,9 @@ impl TransportLayerConfig {
         match self {
             TransportLayerConfig::Ssh(layer) => (&layer.host, layer.port),
             TransportLayerConfig::Proxy(layer) => (&layer.host, layer.port),
+            // HTTP script tunnel layers dial a PHP script URL instead of a host:port
+            // endpoint, and are validated as the outermost transport layer.
+            TransportLayerConfig::HttpTunnel(_) => ("", 0),
         }
     }
 }
@@ -181,6 +189,22 @@ pub struct ProxyTunnelConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpTunnelConfig {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default = "default_http_tunnel_connect_timeout_secs")]
+    pub connect_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AttachedDatabaseConfig {
     pub name: String,
     pub path: String,
@@ -196,6 +220,10 @@ fn default_ssh_port() -> u16 {
 
 pub fn default_ssh_connect_timeout_secs() -> u64 {
     5
+}
+
+pub fn default_http_tunnel_connect_timeout_secs() -> u64 {
+    10
 }
 
 pub fn default_connect_timeout_secs() -> u64 {
@@ -592,7 +620,7 @@ impl ConnectionConfig {
             .into_iter()
             .filter_map(|layer| match layer {
                 TransportLayerConfig::Ssh(ssh) => Some(ssh),
-                TransportLayerConfig::Proxy(_) => None,
+                TransportLayerConfig::Proxy(_) | TransportLayerConfig::HttpTunnel(_) => None,
             })
             .collect()
     }
@@ -657,6 +685,25 @@ impl ConnectionConfig {
             || self.driver_profile.as_deref().map(|p| p.to_lowercase()).is_some_and(|p| {
                 matches!(p.as_str(), "doris" | "starrocks" | "manticoresearch" | "selectdb" | "oceanbase")
             })
+    }
+
+    pub fn is_starrocks(&self) -> bool {
+        self.db_type == DatabaseType::StarRocks
+            || self.driver_profile.as_deref().is_some_and(|profile| profile.eq_ignore_ascii_case("starrocks"))
+    }
+
+    pub fn bare_mysql_supports_tls(&self) -> bool {
+        self.is_starrocks()
+    }
+
+    pub fn bare_mysql_uses_tls(&self) -> bool {
+        if !self.bare_mysql_supports_tls() {
+            return false;
+        }
+        if mysql_url_params_tls_disabled(self.url_params.as_deref()) {
+            return false;
+        }
+        self.mysql_uses_tls()
     }
 
     pub fn canonicalized(&self) -> Self {
@@ -1072,6 +1119,9 @@ impl ConnectionConfig {
     fn normalized_url_params(&self) -> String {
         let value = self.url_params.as_deref().unwrap_or("").trim();
         if self.needs_bare_mysql() {
+            if self.bare_mysql_uses_tls() {
+                return normalize_mysql_url_params(value, true, self.ca_cert_path.trim().is_empty());
+            }
             return normalize_bare_mysql_url_params(value);
         }
         match self.db_type {
@@ -1088,7 +1138,9 @@ impl ConnectionConfig {
             }
             DatabaseType::Databend => normalize_bare_mysql_url_params(value),
             DatabaseType::Postgres | DatabaseType::Redshift => normalize_postgres_url_params(value, self.ssl),
-            DatabaseType::MongoDb => normalize_mongo_url_params(value, self.ssl, !self.username.trim().is_empty()),
+            DatabaseType::MongoDb => {
+                normalize_mongo_url_params(value, self.ssl, !self.username.trim().is_empty(), self.ca_cert_path.trim())
+            }
             _ => value.trim_start_matches('?').to_string(),
         }
     }
@@ -1097,8 +1149,10 @@ impl ConnectionConfig {
         self.ssl || url_params_contains_flag(self.url_params.as_deref(), "secure", "true")
     }
 
-    fn mysql_uses_tls(&self) -> bool {
-        self.ssl || self.host.to_ascii_lowercase().ends_with(".tidbcloud.com")
+    pub fn mysql_uses_tls(&self) -> bool {
+        self.ssl
+            || self.host.to_ascii_lowercase().ends_with(".tidbcloud.com")
+            || mysql_url_params_require_tls(self.url_params.as_deref())
     }
 
     fn redis_tls_insecure_fragment(&self) -> &'static str {
@@ -1131,6 +1185,50 @@ fn url_params_contains_flag(params: Option<&str>, key: &str, expected: &str) -> 
     )
 }
 
+fn mysql_tls_file_param_is(key: &str, target: &str) -> bool {
+    let normalized = key.to_ascii_lowercase().replace(['-', '_'], "");
+    normalized == format!("ssl{target}")
+}
+
+fn mysql_url_params_tls_disabled(params: Option<&str>) -> bool {
+    params.unwrap_or("").trim().trim_start_matches('?').split('&').any(|part| {
+        let part = part.trim();
+        if part.is_empty() {
+            return false;
+        }
+        let Some((key, value)) = part.split_once('=') else {
+            return false;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        (key.eq_ignore_ascii_case("require_ssl") && value.eq_ignore_ascii_case("false"))
+            || ((key.eq_ignore_ascii_case("ssl-mode") || key.eq_ignore_ascii_case("sslmode"))
+                && matches!(value.to_ascii_lowercase().replace('-', "_").as_str(), "disabled" | "disable"))
+    })
+}
+
+fn mysql_url_params_require_tls(params: Option<&str>) -> bool {
+    params.unwrap_or("").trim().trim_start_matches('?').split('&').any(|part| {
+        let part = part.trim();
+        if part.is_empty() {
+            return false;
+        }
+        let Some((key, value)) = part.split_once('=') else {
+            return mysql_tls_file_param_is(part, "cert") || mysql_tls_file_param_is(part, "key");
+        };
+        let key = key.trim();
+        let value = value.trim();
+        (key.eq_ignore_ascii_case("require_ssl") && value.eq_ignore_ascii_case("true"))
+            || mysql_tls_file_param_is(key, "cert")
+            || mysql_tls_file_param_is(key, "key")
+            || ((key.eq_ignore_ascii_case("ssl-mode") || key.eq_ignore_ascii_case("sslmode"))
+                && matches!(
+                    value.to_ascii_lowercase().replace('-', "_").as_str(),
+                    "required" | "require" | "verify_ca" | "verify_identity"
+                ))
+    })
+}
+
 fn normalize_bare_mysql_url_params(value: &str) -> String {
     value
         .trim_start_matches('?')
@@ -1148,9 +1246,30 @@ fn normalize_bare_mysql_url_params(value: &str) -> String {
         .join("&")
 }
 
+fn is_mysql_cleartext_password_param(key: &str) -> bool {
+    matches!(key.to_ascii_lowercase().as_str(), "allowcleartextpasswords" | "enable_cleartext_plugin")
+}
+
+fn mysql_url_param_value_is_true(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on")
+}
+
 fn normalize_mysql_url_params(value: &str, force_tls: bool, accept_invalid_certs: bool) -> String {
     let value = value.trim_start_matches('?');
     let mut parts: Vec<String> = value.split('&').filter(|part| !part.is_empty()).map(str::to_string).collect();
+    let enable_cleartext_plugin = parts.iter().any(|part| {
+        let Some((key, value)) = part.split_once('=') else {
+            return false;
+        };
+        is_mysql_cleartext_password_param(key.trim()) && mysql_url_param_value_is_true(value)
+    });
+
+    parts.retain(|part| {
+        let Some((key, _)) = part.split_once('=') else {
+            return true;
+        };
+        !is_mysql_cleartext_password_param(key.trim())
+    });
 
     if force_tls {
         parts.retain(|part| {
@@ -1174,11 +1293,14 @@ fn normalize_mysql_url_params(value: &str, force_tls: bool, accept_invalid_certs
     if !parts.iter().any(|part| url_param_key_is(part, "charset")) {
         parts.push("charset=utf8mb4".to_string());
     }
+    if enable_cleartext_plugin {
+        parts.push("enable_cleartext_plugin=true".to_string());
+    }
 
     parts.join("&")
 }
 
-fn normalize_mongo_url_params(value: &str, force_tls: bool, default_auth_source: bool) -> String {
+fn normalize_mongo_url_params(value: &str, force_tls: bool, default_auth_source: bool, ca_cert_path: &str) -> String {
     let value = value.trim_start_matches('?');
     let mut parts: Vec<String> = value.split('&').filter(|part| !part.is_empty()).map(str::to_string).collect();
 
@@ -1187,11 +1309,57 @@ fn normalize_mongo_url_params(value: &str, force_tls: bool, default_auth_source:
         parts.insert(0, "tls=true".to_string());
     }
 
+    normalize_mongo_tls_compat_params(&mut parts);
+
+    if !force_tls {
+        parts.retain(|part| {
+            !url_param_key_is(part, "tlsAllowInvalidCertificates") && !url_param_key_is(part, "tlsCAFile")
+        });
+    }
+
+    let existing_tls_ca_file = if ca_cert_path.is_empty() {
+        parts.iter().find(|part| url_param_key_is(part, "tlsCAFile")).cloned()
+    } else {
+        None
+    };
+    parts.retain(|part| !url_param_key_is(part, "tlsCAFile"));
+
+    if force_tls {
+        if !ca_cert_path.is_empty() {
+            parts.push(format!("tlsCAFile={}", encode_mongo_tls_file_path(ca_cert_path)));
+        } else if let Some(part) = existing_tls_ca_file {
+            parts.push(part);
+        }
+    }
+
     if default_auth_source && !parts.iter().any(|part| url_param_key_is(part, "authSource")) {
         parts.push("authSource=admin".to_string());
     }
 
     parts.join("&")
+}
+
+/// The Rust MongoDB driver uses rustls by default, which does not accept
+/// `tlsAllowInvalidHostnames` in the connection string. Map it to the
+/// supported `tlsAllowInvalidCertificates` option instead.
+fn normalize_mongo_tls_compat_params(parts: &mut Vec<String>) {
+    let allow_invalid_hostnames =
+        parts.iter().any(|part| url_param_key_is(part, "tlsAllowInvalidHostnames") && mongo_url_param_is_truthy(part));
+    parts.retain(|part| !url_param_key_is(part, "tlsAllowInvalidHostnames"));
+    if allow_invalid_hostnames && !parts.iter().any(|part| url_param_key_is(part, "tlsAllowInvalidCertificates")) {
+        parts.push("tlsAllowInvalidCertificates=true".to_string());
+    }
+}
+
+fn mongo_url_param_is_truthy(part: &str) -> bool {
+    let Some((_, value)) = part.split_once('=') else {
+        return true;
+    };
+    matches!(percent_decode_str(value).decode_utf8_lossy().trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes")
+}
+
+fn encode_mongo_tls_file_path(path: &str) -> String {
+    utf8_percent_encode(path, NON_ALPHANUMERIC).to_string()
 }
 
 fn mongo_uri_db_part_for_suffix<'a>(db_part: &'a str, suffix: &str) -> &'a str {
@@ -1245,9 +1413,18 @@ fn normalize_mongo_uri_query_path(uri: &str) -> String {
 }
 
 fn mongo_uri_has_multiple_seeds(uri: &str) -> bool {
+    if mongo_uri_is_srv(uri) {
+        // The Rust MongoDB driver resolves SRV records into a seed list, so an
+        // SRV URL must not keep directConnection=true even with one hostname.
+        return true;
+    }
     mongo_uri_host_section(uri)
         .map(|hosts| hosts.split(',').filter(|host| !host.trim().is_empty()).count() > 1)
         .unwrap_or(false)
+}
+
+fn mongo_uri_is_srv(uri: &str) -> bool {
+    uri.get(..14).is_some_and(|scheme| scheme.eq_ignore_ascii_case("mongodb+srv://"))
 }
 
 fn mongo_uri_host_section(uri: &str) -> Option<&str> {
@@ -1771,7 +1948,7 @@ mod tests {
                 assert_eq!(proxy.username, "alice");
                 assert_eq!(proxy.password, "secret");
             }
-            TransportLayerConfig::Ssh(_) => panic!("expected proxy layer"),
+            _ => panic!("expected proxy layer"),
         }
     }
 
@@ -1854,7 +2031,7 @@ mod tests {
     }
 
     #[test]
-    fn starrocks_profile_omits_mysql_ssl_mode_param() {
+    fn starrocks_profile_omits_mysql_ssl_mode_param_when_tls_disabled() {
         let mut config = mysql_config("root", "secret", Some("analytics"));
         config.driver_profile = Some("starrocks".to_string());
         config.url_params = Some(
@@ -1863,7 +2040,36 @@ mod tests {
         );
 
         assert!(config.needs_bare_mysql());
+        assert!(!config.bare_mysql_uses_tls());
         assert_eq!(config.connection_url(), "mysql://root:secret@10.1.2.3:2883/analytics");
+    }
+
+    #[test]
+    fn starrocks_profile_preserves_mysql_tls_params_when_enabled() {
+        let mut config = mysql_config("root", "secret", Some("analytics"));
+        config.driver_profile = Some("starrocks".to_string());
+        config.ssl = true;
+        config.url_params = Some("verify_ca=true&verify_identity=false".to_string());
+
+        assert!(config.bare_mysql_uses_tls());
+        assert_eq!(
+            config.connection_url(),
+            "mysql://root:secret@10.1.2.3:2883/analytics?require_ssl=true&verify_ca=true&verify_identity=false&charset=utf8mb4"
+        );
+    }
+
+    #[test]
+    fn starrocks_database_type_preserves_mysql_tls_params_when_enabled() {
+        let mut config = mysql_config("root", "secret", Some("analytics"));
+        config.db_type = DatabaseType::StarRocks;
+        config.ssl = true;
+        config.ca_cert_path = "/tmp/starrocks-ca.pem".to_string();
+
+        assert!(config.bare_mysql_uses_tls());
+        assert_eq!(
+            config.connection_url(),
+            "mysql://root:secret@10.1.2.3:2883/analytics?require_ssl=true&verify_identity=false&charset=utf8mb4"
+        );
     }
 
     #[test]
@@ -1973,6 +2179,51 @@ mod tests {
     fn mysql_url_appends_custom_params() {
         let mut config = mysql_config("root", "secret", Some("test"));
         config.url_params = Some("charset=utf8mb4".to_string());
+
+        assert_eq!(
+            config.connection_url(),
+            "mysql://root:secret@10.1.2.3:2883/test?ssl-mode=preferred&charset=utf8mb4"
+        );
+    }
+
+    #[test]
+    fn mysql_cleartext_password_auth_alias_normalizes_to_driver_param() {
+        let mut config = mysql_config("root", "secret", Some("test"));
+        config.url_params = Some("allowCleartextPasswords=true".to_string());
+
+        assert_eq!(
+            config.connection_url(),
+            "mysql://root:secret@10.1.2.3:2883/test?ssl-mode=preferred&charset=utf8mb4&enable_cleartext_plugin=true"
+        );
+    }
+
+    #[test]
+    fn mysql_cleartext_password_auth_keeps_canonical_driver_param() {
+        let mut config = mysql_config("root", "secret", Some("test"));
+        config.url_params = Some("enable_cleartext_plugin=true".to_string());
+
+        assert_eq!(
+            config.connection_url(),
+            "mysql://root:secret@10.1.2.3:2883/test?ssl-mode=preferred&charset=utf8mb4&enable_cleartext_plugin=true"
+        );
+    }
+
+    #[test]
+    fn mysql_cleartext_password_auth_deduplicates_aliases() {
+        let mut config = mysql_config("root", "secret", Some("test"));
+        config.url_params =
+            Some("allowCleartextPasswords=true&enable_cleartext_plugin=true&charset=utf8mb4".to_string());
+
+        assert_eq!(
+            config.connection_url(),
+            "mysql://root:secret@10.1.2.3:2883/test?ssl-mode=preferred&charset=utf8mb4&enable_cleartext_plugin=true"
+        );
+    }
+
+    #[test]
+    fn mysql_cleartext_password_auth_omits_disabled_values() {
+        let mut config = mysql_config("root", "secret", Some("test"));
+        config.url_params = Some("allowCleartextPasswords=false&enable_cleartext_plugin=&charset=utf8mb4".to_string());
 
         assert_eq!(
             config.connection_url(),
@@ -2321,6 +2572,56 @@ mod tests {
     }
 
     #[test]
+    fn mongodb_form_tls_ca_cert_adds_tls_ca_file_param() {
+        let mut config = mongodb_config("root", "secret", Some("admin"));
+        config.ssl = true;
+        config.ca_cert_path = "/tmp/mongo-ca.pem".to_string();
+
+        assert_eq!(
+            config.connection_url(),
+            "mongodb://root:secret@10.1.2.3:17000/admin?tls=true&tlsCAFile=%2Ftmp%2Fmongo%2Dca%2Epem&authSource=admin"
+        );
+    }
+
+    #[test]
+    fn mongodb_form_tls_cert_params_replace_existing_url_values() {
+        let mut config = mongodb_config("root", "secret", Some("admin"));
+        config.ssl = true;
+        config.ca_cert_path = "/tmp/new-ca.pem".to_string();
+        config.url_params = Some("tlsCAFile=%2Fold-ca.pem&authSource=admin".to_string());
+
+        assert_eq!(
+            config.connection_url(),
+            "mongodb://root:secret@10.1.2.3:17000/admin?tls=true&authSource=admin&tlsCAFile=%2Ftmp%2Fnew%2Dca%2Epem"
+        );
+    }
+
+    #[test]
+    fn mongodb_form_tls_preserves_legacy_tls_ca_file_in_url_params() {
+        let mut config = mongodb_config("root", "secret", Some("admin"));
+        config.ssl = true;
+        config.url_params = Some("tlsCAFile=%2Ftmp%2Flegacy-ca.pem&authSource=admin".to_string());
+
+        assert_eq!(
+            config.connection_url(),
+            "mongodb://root:secret@10.1.2.3:17000/admin?tls=true&authSource=admin&tlsCAFile=%2Ftmp%2Flegacy-ca.pem"
+        );
+    }
+
+    #[test]
+    fn mongodb_form_tls_allow_invalid_hostnames_maps_to_allow_invalid_certificates() {
+        let mut config = mongodb_config("root", "secret", Some("admin"));
+        config.ssl = true;
+        config.url_params = Some("replicaSet=rs0&tlsAllowInvalidHostnames=true".to_string());
+
+        assert_eq!(
+            config.connection_url(),
+            "mongodb://root:secret@10.1.2.3:17000/admin?tls=true&replicaSet=rs0&tlsAllowInvalidCertificates=true&authSource=admin"
+        );
+        assert!(!config.connection_url().contains("tlsAllowInvalidHostnames"));
+    }
+
+    #[test]
     fn parse_mongo_first_host_replica_set() {
         let uri = "mongodb://user:pass@host1:27017,host2:27017,host3:27017/admin?replicaSet=rs0";
         let (host, port) = super::parse_mongo_first_host(uri).unwrap();
@@ -2407,6 +2708,19 @@ mod tests {
         let url = config.connection_url();
 
         assert_eq!(url, "mongodb://read:pass@host1:27017,host2:27017/admin?replicaSet=rs0&authSource=admin");
+    }
+
+    #[test]
+    fn mongodb_srv_connection_string_removes_direct_connection_true() {
+        let mut config = mongodb_config("root", "secret", Some("admin"));
+        config.connection_string = Some(
+            "mongodb+srv://read:pass@cluster.example.net/admin?tls=true&authSource=admin&directConnection=true&replicaSet=rs0"
+                .to_string(),
+        );
+
+        let url = config.connection_url();
+
+        assert_eq!(url, "mongodb+srv://read:pass@cluster.example.net/admin?tls=true&authSource=admin&replicaSet=rs0");
     }
 
     #[test]

@@ -16,8 +16,8 @@ mod tests;
 mod descriptor_snapshots;
 
 pub use capabilities::{
-    is_schema_aware, pagination_strategy, table_pagination_strategy, uses_fetch_first, PaginationContext,
-    TablePaginationStrategy,
+    firebird_rows_clause, is_schema_aware, pagination_strategy, table_pagination_strategy, uses_fetch_first,
+    uses_single_row_insert_statements, PaginationContext, TablePaginationStrategy,
 };
 pub use descriptor::{
     dialect_check, dialect_check_all, DialectCapabilityDescriptor, DialectInfo, DialectKind, TypeConversionRule,

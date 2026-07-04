@@ -67,23 +67,7 @@ public final class JdbcExecutor {
     ) {
         return unchecked(() -> {
             String trimmedSql = trimSql(sql);
-            String upperSql = trimmedSql.toUpperCase(Locale.ROOT).trim();
             long start = System.currentTimeMillis();
-
-            if ("BEGIN".equals(upperSql) || "BEGIN TRANSACTION".equals(upperSql)) {
-                conn.setAutoCommit(false);
-                return emptyQueryResult(start);
-            }
-            if ("COMMIT".equals(upperSql)) {
-                conn.commit();
-                conn.setAutoCommit(true);
-                return emptyQueryResult(start);
-            }
-            if ("ROLLBACK".equals(upperSql)) {
-                conn.rollback();
-                conn.setAutoCommit(true);
-                return emptyQueryResult(start);
-            }
 
             applySchema(conn, schema, setSchemaSql);
 
@@ -94,6 +78,8 @@ public final class JdbcExecutor {
                 if (fetchSize != null && fetchSize > 0) {
                     stmt.setFetchSize(fetchSize);
                 }
+                // SQL dumps often contain BEGIN/COMMIT/ROLLBACK as executable statements.
+                // Do not translate them to Connection.commit(), which requires autoCommit=false.
                 boolean hasResultSet = stmt.execute(trimmedSql);
                 long elapsed = System.currentTimeMillis() - start;
                 if (hasResultSet) {
@@ -127,24 +113,28 @@ public final class JdbcExecutor {
         return unchecked(() -> {
             ResultSetMetaData meta = rs.getMetaData();
             int colCount = meta.getColumnCount();
-            List<String> columns = new ArrayList<>();
-            List<String> columnTypes = new ArrayList<>();
+            List<String> columns = new ArrayList<>(colCount);
+            List<String> columnTypes = new ArrayList<>(colCount);
+            // Cache JDBC column metadata once; some drivers resolve it lazily,
+            // and row reading is the hot path.
+            int[] sqlTypeByIndex = new int[colCount];
             String[] typeNameByIndex = new String[colCount];
             for (int i = 1; i <= colCount; i++) {
                 columns.add(meta.getColumnLabel(i));
+                sqlTypeByIndex[i - 1] = safeColumnSqlType(meta, i);
                 String typeName = safeColumnTypeName(meta, i);
                 columnTypes.add(typeName);
                 typeNameByIndex[i - 1] = typeName;
             }
 
-            List<List<Object>> rows = new ArrayList<>();
+            List<List<Object>> rows = new ArrayList<>(initialRowCapacity(maxRows));
             boolean truncated = false;
             while (rs.next()) {
                 if (rows.size() >= maxRows) {
                     truncated = true;
                     break;
                 }
-                rows.add(rowValues(rs, valueReader, typeNameByIndex));
+                rows.add(rowValues(rs, valueReader, sqlTypeByIndex, typeNameByIndex));
             }
 
             return new QueryResult(columns, columnTypes, rows, 0L, executionTimeMs, truncated);
@@ -204,23 +194,7 @@ public final class JdbcExecutor {
         return unchecked(() -> {
             expireIdleSessions(targetSessions, System.currentTimeMillis(), QUERY_SESSION_IDLE_TIMEOUT_MILLIS);
             String trimmedSql = trimSql(sql);
-            String upperSql = trimmedSql.toUpperCase(Locale.ROOT).trim();
             long start = System.currentTimeMillis();
-
-            if ("BEGIN".equals(upperSql) || "BEGIN TRANSACTION".equals(upperSql)) {
-                conn.setAutoCommit(false);
-                return emptyQueryPageResult(start);
-            }
-            if ("COMMIT".equals(upperSql)) {
-                conn.commit();
-                conn.setAutoCommit(true);
-                return emptyQueryPageResult(start);
-            }
-            if ("ROLLBACK".equals(upperSql)) {
-                conn.rollback();
-                conn.setAutoCommit(true);
-                return emptyQueryPageResult(start);
-            }
 
             applySchema(conn, schema, setSchemaSql);
 
@@ -230,6 +204,8 @@ public final class JdbcExecutor {
                 if (options.getFetchSize() != null && options.getFetchSize() > 0) {
                     stmt.setFetchSize(options.getFetchSize());
                 }
+                // Keep script transaction-control statements in the SQL stream.
+                // JDBC transaction APIs are reserved for executeTransaction.
                 boolean hasResultSet = stmt.execute(trimmedSql);
                 long elapsed = System.currentTimeMillis() - start;
                 if (!hasResultSet) {
@@ -249,9 +225,12 @@ public final class JdbcExecutor {
                 int colCount = meta.getColumnCount();
                 List<String> columns = new ArrayList<>(colCount);
                 List<String> columnTypes = new ArrayList<>(colCount);
+                // Cache JDBC column metadata once; fetching a page should only read row values.
+                int[] sqlTypeByIndex = new int[colCount];
                 String[] typeNameByIndex = new String[colCount];
                 for (int i = 1; i <= colCount; i++) {
                     columns.add(meta.getColumnLabel(i));
+                    sqlTypeByIndex[i - 1] = safeColumnSqlType(meta, i);
                     String typeName = safeColumnTypeName(meta, i);
                     columnTypes.add(typeName);
                     typeNameByIndex[i - 1] = typeName;
@@ -262,6 +241,7 @@ public final class JdbcExecutor {
                     rs,
                     columns,
                     columnTypes,
+                    sqlTypeByIndex,
                     typeNameByIndex,
                     Math.max(options.getMaxRows(), 1),
                     valueReader
@@ -477,7 +457,7 @@ public final class JdbcExecutor {
         return unchecked(() -> {
             session.lastAccessedAtMillis = System.currentTimeMillis();
             int effectivePageSize = Math.max(pageSize, 1);
-            List<List<Object>> rows = new ArrayList<>();
+            List<List<Object>> rows = new ArrayList<>(initialRowCapacity(effectivePageSize));
 
             if (session.pendingRow != null) {
                 rows.add(session.pendingRow);
@@ -489,7 +469,7 @@ public final class JdbcExecutor {
                     closeSession(targetSessions, session.id);
                     return new QueryPageResult(session.columns, session.columnTypes, rows, 0L, executionTimeMs, false, null, false);
                 }
-                rows.add(rowValues(session.resultSet, session.valueReader, session.typeNameByIndex));
+                rows.add(rowValues(session.resultSet, session.valueReader, session.sqlTypeByIndex, session.typeNameByIndex));
                 session.rowsRead += 1;
             }
 
@@ -505,7 +485,7 @@ public final class JdbcExecutor {
                 return new QueryPageResult(session.columns, session.columnTypes, rows, 0L, executionTimeMs, false, null, false);
             }
 
-            session.pendingRow = rowValues(session.resultSet, session.valueReader, session.typeNameByIndex);
+            session.pendingRow = rowValues(session.resultSet, session.valueReader, session.sqlTypeByIndex, session.typeNameByIndex);
             session.rowsRead += 1;
             return new QueryPageResult(session.columns, session.columnTypes, rows, 0L, executionTimeMs, false, session.id, true);
         });
@@ -545,17 +525,29 @@ public final class JdbcExecutor {
         }
     }
 
-    private List<Object> rowValues(ResultSet rs, ResultValueReader valueReader, String[] typeNameByIndex) throws SQLException {
-        ResultSetMetaData meta = rs.getMetaData();
-        int colCount = meta.getColumnCount();
+    static int safeColumnSqlType(ResultSetMetaData meta, int columnIndex) {
+        try {
+            return meta.getColumnType(columnIndex);
+        } catch (SQLException ignored) {
+            return Types.OTHER;
+        }
+    }
+
+    private List<Object> rowValues(
+        ResultSet rs,
+        ResultValueReader valueReader,
+        int[] sqlTypeByIndex,
+        String[] typeNameByIndex
+    ) throws SQLException {
+        int colCount = sqlTypeByIndex.length;
         List<Object> row = new ArrayList<>(colCount);
         for (int i = 1; i <= colCount; i++) {
-            int sqlType = meta.getColumnType(i);
+            int sqlType = sqlTypeByIndex[i - 1];
             Object value;
             if (valueReader instanceof ColumnAwareResultValueReader) {
                 String typeName = typeNameByIndex != null && i - 1 < typeNameByIndex.length
                     ? typeNameByIndex[i - 1]
-                    : safeColumnTypeName(meta, i);
+                    : "";
                 value = ((ColumnAwareResultValueReader) valueReader).read(rs, i, sqlType, typeName);
             } else {
                 value = valueReader.read(rs, i, sqlType);
@@ -563,6 +555,13 @@ public final class JdbcExecutor {
             row.add(value);
         }
         return row;
+    }
+
+    private static int initialRowCapacity(int requestedRows) {
+        if (requestedRows <= 0) {
+            return 0;
+        }
+        return Math.min(requestedRows, 1024);
     }
 
     private void applySchema(Connection conn, String schema, Function<String, String> setSchemaSql) throws SQLException {
@@ -692,6 +691,7 @@ public final class JdbcExecutor {
         private final ResultSet resultSet;
         private final List<String> columns;
         private final List<String> columnTypes;
+        private final int[] sqlTypeByIndex;
         private final String[] typeNameByIndex;
         private final int maxRows;
         private final ResultValueReader valueReader;
@@ -705,6 +705,7 @@ public final class JdbcExecutor {
             ResultSet resultSet,
             List<String> columns,
             List<String> columnTypes,
+            int[] sqlTypeByIndex,
             String[] typeNameByIndex,
             int maxRows,
             ResultValueReader valueReader
@@ -714,6 +715,7 @@ public final class JdbcExecutor {
             this.resultSet = resultSet;
             this.columns = columns;
             this.columnTypes = columnTypes;
+            this.sqlTypeByIndex = sqlTypeByIndex;
             this.typeNameByIndex = typeNameByIndex;
             this.maxRows = maxRows;
             this.valueReader = valueReader;

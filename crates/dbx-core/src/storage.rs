@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use log::warn;
 use rusqlite::{params, params_from_iter, Connection, DatabaseName, OpenFlags, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::ai::{AiChatMessage, AiConfig, AiConversation};
+use crate::ai::{AiChatMessage, AiConfig, AiConversation, AiProvider};
 use crate::connection_secrets::{
     MQ_AUTH_API_KEY_VALUE_KEY, MQ_AUTH_CLIENT_SECRET_KEY, MQ_AUTH_PASSWORD_KEY, MQ_AUTH_SECRET_PREFIX,
     MQ_AUTH_TOKEN_KEY, MQ_TOKEN_SIGNING_KEY, MQ_TOKEN_SIGNING_SECRET_PREFIX,
@@ -195,6 +196,10 @@ const SCHEMA_STATEMENTS: &[&str] = &[
     )",
     "CREATE TABLE IF NOT EXISTS ai_config (
         id INTEGER PRIMARY KEY CHECK (id = 1),
+        config_json TEXT NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS ai_provider_configs (
+        provider TEXT PRIMARY KEY,
         config_json TEXT NOT NULL
     )",
     "CREATE TABLE IF NOT EXISTS ai_conversations (
@@ -525,6 +530,10 @@ fn transport_layer_proxy_password_key(index: usize, layer: &TransportLayerConfig
     format!("{}{}.proxy_password", TRANSPORT_LAYER_SECRET_PREFIX, transport_layer_secret_segment(index, layer))
 }
 
+fn transport_layer_http_tunnel_token_key(index: usize, layer: &TransportLayerConfig) -> String {
+    format!("{}{}.http_tunnel_token", TRANSPORT_LAYER_SECRET_PREFIX, transport_layer_secret_segment(index, layer))
+}
+
 fn scrub_transport_layer_secrets(config: &mut ConnectionConfig) {
     for layer in &mut config.transport_layers {
         match layer {
@@ -534,6 +543,9 @@ fn scrub_transport_layer_secrets(config: &mut ConnectionConfig) {
             }
             TransportLayerConfig::Proxy(proxy) => {
                 proxy.password.clear();
+            }
+            TransportLayerConfig::HttpTunnel(http) => {
+                http.token.clear();
             }
         }
     }
@@ -692,6 +704,15 @@ impl Storage {
 
 // AI Config
 
+fn ai_provider_key(provider: &AiProvider) -> String {
+    serde_json::to_value(provider).ok().and_then(|value| value.as_str().map(ToOwned::to_owned)).unwrap_or_default()
+}
+
+fn ai_provider_from_key(provider: &str) -> Result<AiProvider, String> {
+    serde_json::from_value(serde_json::Value::String(provider.to_string()))
+        .map_err(|_| format!("Invalid AI provider: {provider}"))
+}
+
 impl Storage {
     pub async fn save_ai_config(&self, config: &AiConfig) -> Result<(), String> {
         let json = serde_json::to_string(config).map_err(|e| e.to_string())?;
@@ -712,6 +733,65 @@ impl Storage {
             })
             .await?;
         json.map(|value| serde_json::from_str(&value).map_err(|e| e.to_string())).transpose()
+    }
+
+    pub async fn save_ai_provider_config(&self, provider: &str, config: &AiConfig) -> Result<(), String> {
+        let parsed_provider = ai_provider_from_key(provider)?;
+        let mut config = config.clone();
+        let config_provider = ai_provider_key(&config.provider);
+        if config_provider != provider {
+            warn!(
+                "save_ai_provider_config: config.provider ({}) does not match provider key ({}), normalizing",
+                config_provider, provider
+            );
+            config.provider = parsed_provider;
+        }
+        let provider = provider.to_string();
+        let json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO ai_provider_configs (provider, config_json) VALUES (?1, ?2)",
+                params![provider, json],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn load_ai_provider_configs(&self) -> Result<HashMap<String, AiConfig>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT provider, config_json FROM ai_provider_configs")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .map_err(|e| e.to_string())?;
+            let mut map = HashMap::new();
+            for row in rows {
+                let (provider, json) = row.map_err(|e| e.to_string())?;
+                match serde_json::from_str::<AiConfig>(&json) {
+                    Ok(mut config) => {
+                        if let Ok(parsed_provider) = ai_provider_from_key(&provider) {
+                            let config_provider = ai_provider_key(&config.provider);
+                            if config_provider != provider {
+                                warn!(
+                                    "load_ai_provider_configs: stored config.provider ({}) does not match provider key ({}), normalizing",
+                                    config_provider, provider
+                                );
+                                config.provider = parsed_provider;
+                            }
+                            map.insert(provider, config);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to deserialize AI config for provider '{}': {}", provider, e);
+                    }
+                }
+            }
+            Ok(map)
+        })
+        .await
     }
 }
 
@@ -1090,6 +1170,14 @@ impl Storage {
                                 &proxy.password,
                             )?;
                         }
+                        TransportLayerConfig::HttpTunnel(http) => {
+                            persist_secret_in_tx(
+                                &tx,
+                                &config.id,
+                                &transport_layer_http_tunnel_token_key(index, layer),
+                                &http.token,
+                            )?;
+                        }
                     }
                 }
                 persist_secret_in_tx(&tx, &config.id, "redis_sentinel_password", &config.redis_sentinel_password)?;
@@ -1153,7 +1241,7 @@ impl Storage {
                                 TransportLayerConfig::Ssh(layer) => {
                                     self.get_secret(&id, &ssh_tunnel_password_key(index, layer)).await?
                                 }
-                                TransportLayerConfig::Proxy(_) => None,
+                                TransportLayerConfig::Proxy(_) | TransportLayerConfig::HttpTunnel(_) => None,
                             })
                             .unwrap_or_default();
                         ssh.key_passphrase = self
@@ -1166,7 +1254,7 @@ impl Storage {
                                 TransportLayerConfig::Ssh(layer) => {
                                     self.get_secret(&id, &ssh_tunnel_key_passphrase_key(index, layer)).await?
                                 }
-                                TransportLayerConfig::Proxy(_) => None,
+                                TransportLayerConfig::Proxy(_) | TransportLayerConfig::HttpTunnel(_) => None,
                             })
                             .unwrap_or_default();
                     }
@@ -1180,6 +1268,12 @@ impl Storage {
                                 }
                                 _ => None,
                             })
+                            .unwrap_or_default();
+                    }
+                    TransportLayerConfig::HttpTunnel(http) => {
+                        http.token = self
+                            .get_secret(&id, &transport_layer_http_tunnel_token_key(index, &layer_for_key))
+                            .await?
                             .unwrap_or_default();
                     }
                 }

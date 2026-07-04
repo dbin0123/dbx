@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use mysql_async::prelude::Queryable;
@@ -17,6 +17,7 @@ use crate::agent_manager::{JavaRuntimeMode, DEFAULT_JRE_KEY};
 use crate::database_capabilities;
 use crate::db;
 use crate::db::agent_driver::AgentMethod;
+use crate::db::http_tunnel::HttpTunnelManager;
 use crate::db::proxy_tunnel::ProxyTunnelManager;
 use crate::db::ssh_tunnel::TunnelManager;
 use crate::models::connection::{
@@ -37,7 +38,7 @@ const POOL_CLOSE_TIMEOUT_SECS: u64 = 3;
 #[cfg(feature = "duckdb-bundled")]
 mod duckdb_types {
     use std::sync::Arc;
-    pub type DuckDbHandle = Arc<std::sync::Mutex<duckdb::Connection>>;
+    pub type DuckDbHandle = Arc<crate::db::duckdb_driver::DuckDbConnection>;
     pub type ExternalTabularHandle = Arc<crate::external::ExternalPool>;
 }
 #[cfg(not(feature = "duckdb-bundled"))]
@@ -96,6 +97,22 @@ pub enum PoolKind {
     Nacos,
 }
 
+/// Held connection for a manual transaction session
+pub enum TxnConnection {
+    Postgres(Box<deadpool_postgres::Object>),
+    Mysql(mysql_async::Conn),
+}
+
+pub struct TransactionSession {
+    pub connection: Arc<Mutex<TxnConnection>>,
+    pub pool_key: String,
+    pub last_activity: std::time::Instant,
+    pub busy: bool,
+    pub connection_id: String,
+    pub database: String,
+    pub schema: Option<String>,
+}
+
 macro_rules! agent_connection_pool_database_type {
     () => {
         DatabaseType::Dameng
@@ -145,6 +162,7 @@ pub struct AppState {
     pub running_queries: RunningQueries,
     pub tunnels: TunnelManager,
     pub proxy_tunnels: ProxyTunnelManager,
+    pub http_tunnels: HttpTunnelManager,
     pub storage: Storage,
     pub plugins: PluginRegistry,
     pub agent_manager: crate::agent_manager::AgentManager,
@@ -152,6 +170,7 @@ pub struct AppState {
     /// PostgreSQL TLS cancel context, keyed by pool_key.
     /// Used to reconstruct a TLS connector compatible with the original connection when cancelling.
     postgres_cancel_contexts: Arc<RwLock<HashMap<String, db::postgres::PostgresCancelContext>>>,
+    pub transaction_sessions: Arc<RwLock<HashMap<String, TransactionSession>>>,
     #[cfg(feature = "mq-admin")]
     pub mq_registry: crate::mq::MqAdminRegistry,
 }
@@ -233,7 +252,8 @@ pub async fn connect_mysql_metadata_pool(
     let idle_timeout_secs = Some(db_config.idle_timeout_secs);
     let extra_setup_queries = oceanbase_mysql_setup_queries(db_config);
     if db_config.needs_bare_mysql() {
-        return match db::mysql::connect_bare_with_pool_limit_and_setup(
+        return match connect_bare_mysql_pool_with_setup(
+            db_config,
             &url,
             connect_timeout,
             max_connections,
@@ -248,7 +268,8 @@ pub async fn connect_mysql_metadata_pool(
                     log::info!(
                         "MySQL metadata connection without a default database failed ({err}); retrying with configured default database."
                     );
-                    db::mysql::connect_bare_with_pool_limit_and_setup(
+                    connect_bare_mysql_pool_with_setup(
+                        db_config,
                         &fallback_url,
                         connect_timeout,
                         max_connections,
@@ -311,7 +332,8 @@ pub async fn connect_bare_metadata_pool(
     let url = connection_url_for_endpoint(db_config, host, port);
     let extra_setup_queries = oceanbase_mysql_setup_queries(db_config);
     if db_config.effective_database().is_none() {
-        return db::mysql::connect_bare_with_pool_limit_and_setup(
+        return connect_bare_mysql_pool_with_setup(
+            db_config,
             &url,
             connect_timeout,
             max_connections,
@@ -324,7 +346,8 @@ pub async fn connect_bare_metadata_pool(
     unscoped_config.database = None;
     let unscoped_url = connection_url_for_endpoint(&unscoped_config, host, port);
     if unscoped_url == url {
-        return db::mysql::connect_bare_with_pool_limit_and_setup(
+        return connect_bare_mysql_pool_with_setup(
+            db_config,
             &url,
             connect_timeout,
             max_connections,
@@ -334,8 +357,9 @@ pub async fn connect_bare_metadata_pool(
     }
 
     let preferred =
-        db::mysql::connect_bare_with_pool_limit_and_setup(&url, connect_timeout, max_connections, &extra_setup_queries);
-    let unscoped = db::mysql::connect_bare_with_pool_limit_and_setup(
+        connect_bare_mysql_pool_with_setup(db_config, &url, connect_timeout, max_connections, &extra_setup_queries);
+    let unscoped = connect_bare_mysql_pool_with_setup(
+        db_config,
         &unscoped_url,
         connect_timeout,
         max_connections,
@@ -363,6 +387,30 @@ pub async fn connect_bare_metadata_pool(
                 )),
             },
         },
+    }
+}
+
+async fn connect_bare_mysql_pool_with_setup(
+    db_config: &ConnectionConfig,
+    url: &str,
+    connect_timeout: std::time::Duration,
+    max_connections: usize,
+    extra_setup_queries: &[String],
+) -> Result<db::mysql::MySqlPool, String> {
+    if db_config.bare_mysql_uses_tls() {
+        let idle_timeout_secs = Some(db_config.idle_timeout_secs);
+        db::mysql::connect_with_ca_cert_pool_limit_idle_and_setup(
+            url,
+            Some(&db_config.ca_cert_path),
+            connect_timeout,
+            max_connections,
+            idle_timeout_secs,
+            extra_setup_queries,
+        )
+        .await
+    } else {
+        db::mysql::connect_bare_with_pool_limit_and_setup(url, connect_timeout, max_connections, extra_setup_queries)
+            .await
     }
 }
 
@@ -411,6 +459,7 @@ impl AppState {
             running_queries: RunningQueries::default(),
             tunnels: TunnelManager::new(),
             proxy_tunnels: ProxyTunnelManager::new(),
+            http_tunnels: HttpTunnelManager::new(),
             storage,
             plugins: PluginRegistry::new(plugin_dir),
             agent_manager: crate::agent_manager::AgentManager::new_with_base_dir_and_app_version(
@@ -419,6 +468,7 @@ impl AppState {
             ),
             nacos_registry: crate::nacos::NacosAdminRegistry::new(),
             postgres_cancel_contexts: Arc::new(RwLock::new(HashMap::new())),
+            transaction_sessions: Arc::new(RwLock::new(HashMap::new())),
             #[cfg(feature = "mq-admin")]
             mq_registry: crate::mq::MqAdminRegistry::new(),
         }
@@ -733,7 +783,14 @@ impl AppState {
                     connect_bare_metadata_pool(&db_config, &host, port, connect_timeout, mysql_pool_max_connections)
                         .await?
                 } else {
-                    db::mysql::connect_bare_with_pool_limit(&url, connect_timeout, mysql_pool_max_connections).await?
+                    connect_bare_mysql_pool_with_setup(
+                        &db_config,
+                        &url,
+                        connect_timeout,
+                        mysql_pool_max_connections,
+                        &oceanbase_mysql_setup_queries(&db_config),
+                    )
+                    .await?
                 };
                 PoolKind::Mysql(pool, MysqlMode::Bare)
             }
@@ -791,7 +848,7 @@ impl AppState {
                     )
                 } else if db_config.uses_redis_sentinel() {
                     db::redis_driver::RedisConnection::Direct(tokio::sync::Mutex::new(
-                        db::redis_driver::connect_sentinel(&db_config).await?,
+                        self.connect_redis_sentinel(connection_id, &db_config).await?,
                     ))
                 } else {
                     db::redis_driver::RedisConnection::Direct(tokio::sync::Mutex::new(
@@ -1021,8 +1078,17 @@ impl AppState {
                 // connection_id is recognized as valid.
                 let mqc = self.mq_admin_config_for_connection(connection_id, &config).await?;
                 let kafka_launch = crate::mq::service::resolve_kafka_launch_spec(&mqc, self);
-                let adapter = self.mq_registry.build_transient_config(mqc, kafka_launch).await?;
-                adapter.test_connection().await?;
+                let adapter = match self.mq_registry.get_or_build_config(connection_id, mqc, kafka_launch).await {
+                    Ok(adapter) => adapter,
+                    Err(err) => {
+                        self.mq_registry.drop_connection(connection_id).await;
+                        return Err(err);
+                    }
+                };
+                if let Err(err) = adapter.test_connection().await {
+                    self.mq_registry.drop_connection(connection_id).await;
+                    return Err(err);
+                }
                 PoolKind::MessageQueue
             }
             #[cfg(not(feature = "mq-admin"))]
@@ -1060,10 +1126,141 @@ impl AppState {
             remote_port,
             &self.tunnels,
             &self.proxy_tunnels,
+            &self.http_tunnels,
         )
         .await?;
 
         Ok(("127.0.0.1".to_string(), local_port))
+    }
+
+    pub async fn connect_redis_sentinel(
+        &self,
+        connection_id: &str,
+        config: &ConnectionConfig,
+    ) -> Result<redis::aio::MultiplexedConnection, String> {
+        let transport_layers = config.effective_transport_layers();
+        if transport_layers.is_empty() {
+            return db::redis_driver::connect_sentinel(config).await;
+        }
+
+        let result = async {
+            let sentinel_nodes = db::redis_driver::redis_sentinel_node_endpoints(config)?;
+            let connect_timeout = std::time::Duration::from_secs(config.effective_connect_timeout_secs());
+            let layer_count = transport_layers.len();
+            let mut last_error = None;
+
+            for sentinel in sentinel_nodes {
+                let sentinel_tunnel_id = redis_sentinel_transport_id(connection_id, "sentinel", &sentinel);
+                let sentinel_local_port = match db::transport_layer_tunnel::start_transport_layers(
+                    &sentinel_tunnel_id,
+                    &transport_layers,
+                    &sentinel.host,
+                    sentinel.port,
+                    &self.tunnels,
+                    &self.proxy_tunnels,
+                    &self.http_tunnels,
+                )
+                .await
+                {
+                    Ok(port) => port,
+                    Err(err) => {
+                        last_error =
+                            Some(format!("Redis Sentinel {}:{} transport failed: {err}", sentinel.host, sentinel.port));
+                        continue;
+                    }
+                };
+
+                let master =
+                    match db::redis_driver::discover_sentinel_master(config, "127.0.0.1", sentinel_local_port).await {
+                        Ok(master) => master,
+                        Err(err) => {
+                            last_error = Some(format!(
+                                "Redis Sentinel {}:{} master lookup failed: {err}",
+                                sentinel.host, sentinel.port
+                            ));
+                            db::transport_layer_tunnel::stop_transport_layers(
+                                &sentinel_tunnel_id,
+                                layer_count,
+                                &self.tunnels,
+                                &self.proxy_tunnels,
+                                &self.http_tunnels,
+                            )
+                            .await;
+                            continue;
+                        }
+                    };
+
+                let master_tunnel_id = redis_sentinel_transport_id(connection_id, "master", &master);
+                let master_local_port = match db::transport_layer_tunnel::start_transport_layers(
+                    &master_tunnel_id,
+                    &transport_layers,
+                    &master.host,
+                    master.port,
+                    &self.tunnels,
+                    &self.proxy_tunnels,
+                    &self.http_tunnels,
+                )
+                .await
+                {
+                    Ok(port) => port,
+                    Err(err) => {
+                        last_error = Some(format!(
+                            "Redis Sentinel master {}:{} transport failed: {err}",
+                            master.host, master.port
+                        ));
+                        db::transport_layer_tunnel::stop_transport_layers(
+                            &sentinel_tunnel_id,
+                            layer_count,
+                            &self.tunnels,
+                            &self.proxy_tunnels,
+                            &self.http_tunnels,
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+
+                match db::redis_driver::connect_standalone(config, "127.0.0.1", master_local_port, connect_timeout)
+                    .await
+                {
+                    Ok(con) => return Ok(con),
+                    Err(err) => {
+                        last_error = Some(format!(
+                            "Redis Sentinel master {}:{} connection failed: {err}",
+                            master.host, master.port
+                        ));
+                        db::transport_layer_tunnel::stop_transport_layers(
+                            &master_tunnel_id,
+                            layer_count,
+                            &self.tunnels,
+                            &self.proxy_tunnels,
+                            &self.http_tunnels,
+                        )
+                        .await;
+                        db::transport_layer_tunnel::stop_transport_layers(
+                            &sentinel_tunnel_id,
+                            layer_count,
+                            &self.tunnels,
+                            &self.proxy_tunnels,
+                            &self.http_tunnels,
+                        )
+                        .await;
+                    }
+                }
+            }
+
+            Err(last_error.unwrap_or_else(|| "Redis Sentinel master discovery failed".to_string()))
+        }
+        .await;
+
+        if result.is_err() {
+            let redis_sentinel_prefix = redis_sentinel_transport_prefix(connection_id);
+            self.tunnels.stop_tunnels_with_prefix(&redis_sentinel_prefix).await;
+            self.proxy_tunnels.stop_tunnels_with_prefix(&redis_sentinel_prefix).await;
+            self.http_tunnels.stop_tunnels_with_prefix(&redis_sentinel_prefix).await;
+        }
+
+        result
     }
 
     pub async fn connect_redis_cluster(
@@ -1092,6 +1289,7 @@ impl AppState {
             let redis_cluster_prefix = redis_cluster_transport_prefix(connection_id);
             self.tunnels.stop_tunnels_with_prefix(&redis_cluster_prefix).await;
             self.proxy_tunnels.stop_tunnels_with_prefix(&redis_cluster_prefix).await;
+            self.http_tunnels.stop_tunnels_with_prefix(&redis_cluster_prefix).await;
         }
 
         result
@@ -1113,6 +1311,7 @@ impl AppState {
                 node.port,
                 &self.tunnels,
                 &self.proxy_tunnels,
+                &self.http_tunnels,
             )
             .await?;
             routes.push(db::redis_driver::RedisNodeRoute {
@@ -1431,6 +1630,76 @@ impl AppState {
         }
     }
 
+    #[cfg(feature = "duckdb-bundled")]
+    pub fn spawn_duckdb_pool_cleanup(&self, pool_key: String, con: DuckDbHandle) {
+        let connections = self.connections.clone();
+        let keepalive_tasks = self.keepalive_tasks.clone();
+        let pool_activity = self.pool_activity.clone();
+        let postgres_cancel_contexts = self.postgres_cancel_contexts.clone();
+        tokio::spawn(async move {
+            while Arc::strong_count(&con) > 2 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            if let Some(handle) = keepalive_tasks.write().await.remove(&pool_key) {
+                handle.abort();
+            }
+            pool_activity.write().await.remove(&pool_key);
+            postgres_cancel_contexts.write().await.remove(&pool_key);
+            let removed = {
+                let mut conns = connections.write().await;
+                match conns.get(&pool_key) {
+                    Some(PoolKind::DuckDb(current)) if Arc::ptr_eq(current, &con) => conns.remove(&pool_key),
+                    _ => None,
+                }
+            };
+            if let Some(pool) = removed {
+                // Keep the old DuckDB pool marked as draining until it is no longer
+                // visible in the pool map, otherwise a concurrent query could reuse it.
+                con.clear_draining();
+                drop(con);
+                close_pool_kind_with_timeout(pool_key, pool).await;
+            }
+        });
+    }
+
+    #[cfg(feature = "duckdb-bundled")]
+    pub fn spawn_duckdb_draining_cleanup(
+        &self,
+        pool_key: String,
+        con: DuckDbHandle,
+        task: JoinHandle<Result<db::QueryResult, String>>,
+    ) {
+        let connections = self.connections.clone();
+        let keepalive_tasks = self.keepalive_tasks.clone();
+        let pool_activity = self.pool_activity.clone();
+        let postgres_cancel_contexts = self.postgres_cancel_contexts.clone();
+        tokio::spawn(async move {
+            let _ = task.await;
+            while Arc::strong_count(&con) > 2 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            if let Some(handle) = keepalive_tasks.write().await.remove(&pool_key) {
+                handle.abort();
+            }
+            pool_activity.write().await.remove(&pool_key);
+            postgres_cancel_contexts.write().await.remove(&pool_key);
+            let removed = {
+                let mut conns = connections.write().await;
+                match conns.get(&pool_key) {
+                    Some(PoolKind::DuckDb(current)) if Arc::ptr_eq(current, &con) => conns.remove(&pool_key),
+                    _ => None,
+                }
+            };
+            if let Some(pool) = removed {
+                // Keep the old DuckDB pool marked as draining until it is no longer
+                // visible in the pool map, otherwise a concurrent query could reuse it.
+                con.clear_draining();
+                drop(con);
+                close_pool_kind_with_timeout(pool_key, pool).await;
+            }
+        });
+    }
+
     pub async fn close_database_pool(&self, connection_id: &str, database: Option<&str>) -> Result<bool, String> {
         let db_type = {
             let configs = self.configs.read().await;
@@ -1557,15 +1826,22 @@ impl AppState {
         let redis_cluster_prefix = redis_cluster_transport_prefix(connection_id);
         self.tunnels.stop_tunnels_with_prefix(&redis_cluster_prefix).await;
         self.proxy_tunnels.stop_tunnels_with_prefix(&redis_cluster_prefix).await;
+        self.http_tunnels.stop_tunnels_with_prefix(&redis_cluster_prefix).await;
+        let redis_sentinel_prefix = redis_sentinel_transport_prefix(connection_id);
+        self.tunnels.stop_tunnels_with_prefix(&redis_sentinel_prefix).await;
+        self.proxy_tunnels.stop_tunnels_with_prefix(&redis_sentinel_prefix).await;
+        self.http_tunnels.stop_tunnels_with_prefix(&redis_sentinel_prefix).await;
         db::transport_layer_tunnel::stop_transport_layers(
             connection_id,
             layer_count,
             &self.tunnels,
             &self.proxy_tunnels,
+            &self.http_tunnels,
         )
         .await;
         self.tunnels.stop_tunnel(connection_id).await;
         self.proxy_tunnels.stop_tunnel(connection_id).await;
+        self.http_tunnels.stop_tunnel(connection_id).await;
     }
 
     /// Health-check the base connection pool for a given connection_id.
@@ -2024,6 +2300,23 @@ fn redis_cluster_transport_id(connection_id: &str, endpoint: &db::redis_driver::
     )
 }
 
+fn redis_sentinel_transport_prefix(connection_id: &str) -> String {
+    format!("{connection_id}:redis-sentinel:")
+}
+
+fn redis_sentinel_transport_id(
+    connection_id: &str,
+    role: &str,
+    endpoint: &db::redis_driver::RedisNodeEndpoint,
+) -> String {
+    format!(
+        "{}{role}:{host}:{port}",
+        redis_sentinel_transport_prefix(connection_id),
+        host = endpoint.host,
+        port = endpoint.port
+    )
+}
+
 fn session_scoped_pool_key(base_pool_key: String, client_session_id: Option<&str>) -> String {
     normalize_client_session_id(client_session_id)
         .map(|session| format!("{base_pool_key}:session:{session}"))
@@ -2403,8 +2696,9 @@ mod tests {
     use super::{
         agent_connect_timeout, connection_remote_endpoint, connection_url_for_endpoint, database_connection_config,
         metadata_connection_config, mysql_metadata_fallback_url, oceanbase_mysql_setup_queries,
-        prestosql_jdbc_config_for_endpoint, redacted_connection_url_for_endpoint, uses_bare_mysql_pool, uses_tcp_probe,
-        validate_h2_database_path, AppState, PoolKind, PRESTOSQL_JDBC_DRIVER_CLASS,
+        prestosql_jdbc_config_for_endpoint, redacted_connection_url_for_endpoint, redis_sentinel_transport_id,
+        redis_sentinel_transport_prefix, uses_bare_mysql_pool, uses_tcp_probe, validate_h2_database_path, AppState,
+        PoolKind, PRESTOSQL_JDBC_DRIVER_CLASS,
     };
     use crate::agent_connection::{
         agent_connect_params, mongo_legacy_error_with_auth_hint, mongo_uses_legacy_driver,
@@ -3196,6 +3490,17 @@ mod tests {
         assert_eq!(
             super::session_scoped_pool_key_for(Some(DatabaseType::DuckDb), "duckdb-conn".to_string(), Some("tab-1")),
             "duckdb-conn"
+        );
+    }
+
+    #[test]
+    fn redis_sentinel_transport_ids_are_connection_scoped_by_role_and_endpoint() {
+        let endpoint = db::redis_driver::RedisNodeEndpoint { host: "10.0.0.8".to_string(), port: 6379 };
+
+        assert_eq!(redis_sentinel_transport_prefix("redis-prod"), "redis-prod:redis-sentinel:");
+        assert_eq!(
+            redis_sentinel_transport_id("redis-prod", "master", &endpoint),
+            "redis-prod:redis-sentinel:master:10.0.0.8:6379"
         );
     }
 

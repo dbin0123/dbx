@@ -39,6 +39,8 @@ const RedisDashboard = defineAsyncComponent(() => import("@/components/redis/Red
 const EtcdKeyBrowser = defineAsyncComponent(() => import("@/components/etcd/EtcdKeyBrowser.vue"));
 const ZooKeeperKeyBrowser = defineAsyncComponent(() => import("@/components/zookeeper/ZooKeeperKeyBrowser.vue"));
 const DocumentBrowser = defineAsyncComponent(() => import("@/components/document/DocumentBrowser.vue"));
+const MongoGridFsBrowser = defineAsyncComponent(() => import("@/components/document/MongoGridFsBrowser.vue"));
+const MongoBucketBrowser = defineAsyncComponent(() => import("@/components/document/MongoBucketBrowser.vue"));
 const VectorBrowser = defineAsyncComponent(() => import("@/components/vector/VectorBrowser.vue"));
 const MqAdminConsole = defineAsyncComponent(() => import("@/components/mq/MqAdminConsole.vue"));
 const NacosAdminConsole = defineAsyncComponent(() => import("@/components/nacos/NacosAdminConsole.vue"));
@@ -110,6 +112,7 @@ const props = defineProps<{
   formatSqlRequest: { id: number; tabId: string } | null;
   selectedSql: string;
   cursorPos: number;
+  blockDangerousRedisCommands: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -132,6 +135,7 @@ const emit = defineEmits<{
   clickTable: [tableName: string];
   viewTableData: [tableName: string];
   viewTableDdl: [tableName: string];
+  editTableStructure: [tableName: string];
   openObjectTable: [target: { tableName: string; schema?: string }];
   objectSchemaChange: [schema: string | undefined];
   structureEditorSaved: [commentChanged: boolean];
@@ -560,6 +564,10 @@ function onHandleViewTableDdl(tableName: string) {
   emit("viewTableDdl", tableName);
 }
 
+function onHandleEditTableStructure(tableName: string) {
+  emit("editTableStructure", tableName);
+}
+
 function onHandleCloseColumnPanel() {
   showColumnInfo.value = false;
   columnInfoColumns.value = [];
@@ -680,6 +688,7 @@ defineExpose({ focusSearch, refreshData, handleModRTarget, requestQueryEditorExe
               @save="emit('saveSql')"
               @click-table="onHandleClickTable"
               @view-table-data="onHandleViewTableData"
+              @edit-table-structure="onHandleEditTableStructure"
               @view-table-ddl="onHandleViewTableDdl"
               @click-column="onHandleClickColumn"
               @close-column-panel="onHandleCloseColumnPanel"
@@ -1081,7 +1090,7 @@ defineExpose({ focusSearch, refreshData, handleModRTarget, requestQueryEditorExe
                 </DropdownMenuItem>
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger class="gap-2">
-                    <FileUp class="h-4 w-4" />
+                    <Download class="h-4 w-4" />
                     {{ t("tableToolbox.exportData") }}
                   </DropdownMenuSubTrigger>
                   <DropdownMenuPortal>
@@ -1249,7 +1258,7 @@ defineExpose({ focusSearch, refreshData, handleModRTarget, requestQueryEditorExe
     <!-- Redis mode: key browser -->
     <template v-else-if="activeTab.mode === 'redis'">
       <div class="flex-1 min-h-0">
-        <RedisKeyBrowser ref="redisKeyBrowserRef" :key="activeTab.id" :connection-id="activeTab.connectionId" :db="Number(activeTab.database)" />
+        <RedisKeyBrowser ref="redisKeyBrowserRef" :key="activeTab.id" :connection-id="activeTab.connectionId" :db="Number(activeTab.database)" :block-dangerous-redis-commands="props.blockDangerousRedisCommands" />
       </div>
     </template>
 
@@ -1278,6 +1287,18 @@ defineExpose({ focusSearch, refreshData, handleModRTarget, requestQueryEditorExe
     <template v-else-if="activeTab.mode === 'mongo'">
       <div class="flex-1 min-h-0">
         <DocumentBrowser :key="activeTab.id" :connection-id="activeTab.connectionId" :database="activeTab.database" :collection="activeTab.sql" :database-type="activeEffectiveDatabaseType" />
+      </div>
+    </template>
+
+    <template v-else-if="activeTab.mode === 'mongo-gridfs'">
+      <div class="flex-1 min-h-0">
+        <MongoGridFsBrowser :key="activeTab.id" :connection-id="activeTab.connectionId" :database="activeTab.database" />
+      </div>
+    </template>
+
+    <template v-else-if="activeTab.mode === 'mongo-bucket'">
+      <div class="flex-1 min-h-0">
+        <MongoBucketBrowser :key="activeTab.id" :connection-id="activeTab.connectionId" :database="activeTab.database" :bucket="activeTab.mongoBucket?.bucketName || activeTab.sql" />
       </div>
     </template>
 

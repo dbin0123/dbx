@@ -125,7 +125,8 @@ pub fn build_executable_object_source_statements(input: EditableObjectSourceSqlI
         if input.object_type == ObjectSourceKind::View {
             return Ok(vec![build_sqlserver_alter_view_sql(input.schema.as_deref(), &input.name, source)]);
         }
-        return Ok(vec![replace_sqlserver_create_with_create_or_alter(source)]);
+        // CREATE OR ALTER requires SQL Server 2016 SP1+, while ALTER keeps existing routines executable on older servers.
+        return Ok(vec![replace_sqlserver_create_with_alter(source)]);
     }
 
     if matches!(
@@ -137,6 +138,13 @@ pub fn build_executable_object_source_statements(input: EditableObjectSourceSqlI
             | DatabaseType::Questdb
     ) && input.object_type == ObjectSourceKind::View
     {
+        if let Some(sql) = executable_postgres_view_ddl(source) {
+            return Ok(vec![sql]);
+        }
+        if source_starts_with_alter(source) {
+            // ALTER VIEW is already executable DDL, but it is not a view body.
+            return Ok(vec![ensure_semicolon(source)]);
+        }
         return Ok(vec![format!(
             "CREATE OR REPLACE VIEW {} AS\n{}",
             postgres_qualified_name(input.schema.as_deref(), &input.name),
@@ -157,13 +165,26 @@ pub fn build_executable_object_source_sql(input: EditableObjectSourceSqlInput) -
 ///
 /// This is the *editable* presentation shown to the user when they open a view,
 /// procedure, or function for editing. For SQL Server the raw `CREATE VIEW` /
-/// `CREATE PROCEDURE` is rewritten to `CREATE OR ALTER` so the user doesn't see
-/// a mismatched CREATE statement for an already-existing object. Callers that
+/// `CREATE PROCEDURE` is rewritten to `ALTER` so the user doesn't see a
+/// mismatched CREATE statement for an already-existing object. Callers that
 /// only need the first statement should use this instead of calling
 /// `build_executable_object_source_statements` and discarding rename-cleanup
 /// statements.
 pub fn build_editable_object_source(input: EditableObjectSourceSqlInput) -> String {
     let source = input.source.clone();
+    if matches!(
+        input.database_type,
+        DatabaseType::Postgres
+            | DatabaseType::Gaussdb
+            | DatabaseType::Kwdb
+            | DatabaseType::OpenGauss
+            | DatabaseType::Questdb
+    ) && input.object_type == ObjectSourceKind::View
+        && source_starts_with_create_or_alter(&source)
+    {
+        // Some providers return full view DDL instead of a bare SELECT body.
+        return ensure_semicolon(source.trim());
+    }
     match build_executable_object_source_statements(input) {
         Ok(statements) => statements.into_iter().next().unwrap_or_default(),
         Err(_) => ensure_semicolon(source.trim()),
@@ -283,6 +304,29 @@ fn ensure_semicolon(sql: &str) -> String {
     } else {
         format!("{trimmed};")
     }
+}
+
+fn source_starts_with_create_or_alter(source: &str) -> bool {
+    Regex::new(r"(?i)^\s*(?:CREATE|ALTER)\s+").unwrap().is_match(source)
+}
+
+fn source_starts_with_alter(source: &str) -> bool {
+    Regex::new(r"(?i)^\s*ALTER\s+").unwrap().is_match(source)
+}
+
+fn executable_postgres_view_ddl(source: &str) -> Option<String> {
+    let trimmed = source.trim();
+    if Regex::new(r"(?i)^CREATE\s+OR\s+REPLACE\s+").unwrap().is_match(trimmed) {
+        return Some(ensure_semicolon(trimmed));
+    }
+
+    let create_view = Regex::new(r"(?i)^CREATE\s+((?:(?:TEMP|TEMPORARY)\s+)?(?:RECURSIVE\s+)?VIEW\s+)").unwrap();
+    if create_view.is_match(trimmed) {
+        let replaced = create_view.replace(trimmed, "CREATE OR REPLACE $1");
+        return Some(ensure_semicolon(replaced.as_ref()));
+    }
+
+    None
 }
 
 fn postgres_qualified_name(schema: Option<&str>, name: &str) -> String {
@@ -413,11 +457,8 @@ fn routine_name_changed(source_name: &str, saved_name: &str) -> bool {
     !source_name.eq_ignore_ascii_case(saved_name)
 }
 
-fn replace_sqlserver_create_with_create_or_alter(source: &str) -> String {
-    Regex::new(r"(?i)^(?:CREATE\s+(?:OR\s+ALTER\s+)?|ALTER\s+)")
-        .unwrap()
-        .replace(source, "CREATE OR ALTER ")
-        .to_string()
+fn replace_sqlserver_create_with_alter(source: &str) -> String {
+    Regex::new(r"(?i)^(?:CREATE\s+(?:OR\s+ALTER\s+)?|ALTER\s+)").unwrap().replace(source, "ALTER ").to_string()
 }
 
 fn build_sqlserver_alter_view_sql(schema: Option<&str>, name: &str, source: &str) -> String {
@@ -464,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlserver_edited_source_saves_as_create_or_alter() {
+    fn sqlserver_edited_source_saves_as_alter() {
         let sql = build_executable_object_source_sql(EditableObjectSourceSqlInput {
             database_type: DatabaseType::SqlServer,
             object_type: ObjectSourceKind::Procedure,
@@ -473,11 +514,11 @@ mod tests {
             source: "CREATE PROCEDURE dbo.usp_demo AS SELECT 1;".to_string(),
         })
         .unwrap();
-        assert_eq!(sql, "CREATE OR ALTER PROCEDURE dbo.usp_demo AS SELECT 1;");
+        assert_eq!(sql, "ALTER PROCEDURE dbo.usp_demo AS SELECT 1;");
     }
 
     #[test]
-    fn sqlserver_alter_source_saves_as_create_or_alter() {
+    fn sqlserver_alter_source_saves_as_alter() {
         let sql = build_executable_object_source_sql(EditableObjectSourceSqlInput {
             database_type: DatabaseType::SqlServer,
             object_type: ObjectSourceKind::Procedure,
@@ -486,7 +527,33 @@ mod tests {
             source: "ALTER PROCEDURE dbo.usp_demo AS SELECT 1;".to_string(),
         })
         .unwrap();
-        assert_eq!(sql, "CREATE OR ALTER PROCEDURE dbo.usp_demo AS SELECT 1;");
+        assert_eq!(sql, "ALTER PROCEDURE dbo.usp_demo AS SELECT 1;");
+    }
+
+    #[test]
+    fn sqlserver_create_function_source_saves_as_alter() {
+        let sql = build_executable_object_source_sql(EditableObjectSourceSqlInput {
+            database_type: DatabaseType::SqlServer,
+            object_type: ObjectSourceKind::Function,
+            schema: Some("dbo".to_string()),
+            name: "fn_demo".to_string(),
+            source: "CREATE FUNCTION dbo.fn_demo() RETURNS INT AS BEGIN RETURN 1 END;".to_string(),
+        })
+        .unwrap();
+        assert_eq!(sql, "ALTER FUNCTION dbo.fn_demo() RETURNS INT AS BEGIN RETURN 1 END;");
+    }
+
+    #[test]
+    fn sqlserver_create_or_alter_function_source_saves_as_alter() {
+        let sql = build_executable_object_source_sql(EditableObjectSourceSqlInput {
+            database_type: DatabaseType::SqlServer,
+            object_type: ObjectSourceKind::Function,
+            schema: Some("dbo".to_string()),
+            name: "fn_demo".to_string(),
+            source: "CREATE OR ALTER FUNCTION dbo.fn_demo() RETURNS INT AS BEGIN RETURN 1 END;".to_string(),
+        })
+        .unwrap();
+        assert_eq!(sql, "ALTER FUNCTION dbo.fn_demo() RETURNS INT AS BEGIN RETURN 1 END;");
     }
 
     #[test]
@@ -545,6 +612,67 @@ mod tests {
             sql,
             "CREATE OR REPLACE VIEW \"public\".\"active users\" AS\nSELECT id, name FROM users WHERE active;"
         );
+    }
+
+    #[test]
+    fn postgres_view_create_source_opens_without_rewrapping_or_reformatting() {
+        let source = "CREATE OR REPLACE VIEW public.active_users AS SELECT id, name FROM users WHERE active = true";
+        let sql = build_editable_object_source(EditableObjectSourceSqlInput {
+            database_type: DatabaseType::Postgres,
+            object_type: ObjectSourceKind::View,
+            schema: Some("public".to_string()),
+            name: "active_users".to_string(),
+            source: source.to_string(),
+        });
+
+        assert_eq!(sql, format!("{source};"));
+    }
+
+    #[test]
+    fn postgres_view_create_source_saves_as_create_or_replace_view() {
+        let sql = build_executable_object_source_sql(EditableObjectSourceSqlInput {
+            database_type: DatabaseType::Postgres,
+            object_type: ObjectSourceKind::View,
+            schema: Some("public".to_string()),
+            name: "active_users".to_string(),
+            source: "CREATE VIEW public.active_users AS SELECT id, name FROM users WHERE active = true".to_string(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            sql,
+            "CREATE OR REPLACE VIEW public.active_users AS SELECT id, name FROM users WHERE active = true;"
+        );
+    }
+
+    #[test]
+    fn postgres_view_create_or_replace_source_saves_without_rewrapping() {
+        let source = "CREATE OR REPLACE VIEW public.active_users AS SELECT id, name FROM users WHERE active = true";
+        let sql = build_executable_object_source_sql(EditableObjectSourceSqlInput {
+            database_type: DatabaseType::Postgres,
+            object_type: ObjectSourceKind::View,
+            schema: Some("public".to_string()),
+            name: "active_users".to_string(),
+            source: source.to_string(),
+        })
+        .unwrap();
+
+        assert_eq!(sql, format!("{source};"));
+    }
+
+    #[test]
+    fn postgres_view_alter_source_saves_without_body_wrapping() {
+        let source = "ALTER VIEW public.active_users SET (security_barrier = true)";
+        let sql = build_executable_object_source_sql(EditableObjectSourceSqlInput {
+            database_type: DatabaseType::Postgres,
+            object_type: ObjectSourceKind::View,
+            schema: Some("public".to_string()),
+            name: "active_users".to_string(),
+            source: source.to_string(),
+        })
+        .unwrap();
+
+        assert_eq!(sql, format!("{source};"));
     }
 
     #[test]
@@ -681,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlserver_procedure_source_opened_for_editing_shows_create_or_alter() {
+    fn sqlserver_procedure_source_opened_for_editing_shows_alter() {
         let sql = build_editable_object_source(EditableObjectSourceSqlInput {
             database_type: DatabaseType::SqlServer,
             object_type: ObjectSourceKind::Procedure,
@@ -689,7 +817,7 @@ mod tests {
             name: "usp_demo".to_string(),
             source: "CREATE PROCEDURE dbo.usp_demo AS SELECT 1;".to_string(),
         });
-        assert_eq!(sql, "CREATE OR ALTER PROCEDURE dbo.usp_demo AS SELECT 1;");
+        assert_eq!(sql, "ALTER PROCEDURE dbo.usp_demo AS SELECT 1;");
     }
 
     #[test]

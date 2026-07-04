@@ -183,12 +183,18 @@ pub fn build_agent_list(am: &AgentManager, registry: Option<&AgentRegistry>) -> 
     let use_managed_jre = local_state.java_runtime.mode == JavaRuntimeMode::Managed;
     agent_catalog::driver_store_entries()
         .map(|(key, label)| {
-            let installed = am.is_driver_installed(key);
+            let jar_valid = am.is_driver_jar_valid(key);
+            let native_installed = am.driver_native_path(key).exists();
+            let launch_config_installed = am.driver_launch_config_path(key).exists();
+            let installed = jar_valid || native_installed || launch_config_installed;
             let local = local_state.installed_drivers.get(key);
             let remote = registry.and_then(|r| agent_registry_driver(r, key));
             let remote_requires_java_runtime = remote.is_some_and(remote_driver_requires_java_runtime);
-            let requires_java_runtime =
-                if installed { am.driver_requires_java_runtime(key) } else { remote_requires_java_runtime };
+            let requires_java_runtime = if installed {
+                jar_valid && !native_installed && !launch_config_installed
+            } else {
+                remote_requires_java_runtime
+            };
             let jre_key = remote
                 .map(|r| r.jre.clone())
                 .or_else(|| local.map(|l| l.jre.clone()))
@@ -299,6 +305,10 @@ pub fn install_local_agent(am: &AgentManager, db_type: &str, source: PathBuf) ->
     let parent = jar_path.parent().ok_or_else(|| format!("Invalid driver path: {}", jar_path.display()))?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     std::fs::copy(&source, &jar_path).map_err(|e| format!("Failed to copy local agent jar: {e}"))?;
+    if !am.is_driver_jar_valid(db_type) {
+        std::fs::remove_file(&jar_path).ok();
+        return Err(format!("Local agent jar is invalid or corrupt: {}", source.display()));
+    }
 
     let mut local_state = am.load_state();
     local_state.installed_drivers.insert(
@@ -488,7 +498,25 @@ async fn install_agent_driver_with_batch(
 ) -> Result<(), String> {
     match fetch_registry().await {
         Ok(registry) => {
-            install_agent_driver_from_registry(am, &registry, db_type, progress, current, total_drivers).await
+            match install_agent_driver_from_registry(am, &registry, db_type, progress, current, total_drivers).await {
+                Ok(()) => Ok(()),
+                Err(registry_err) => {
+                    if let Some(local_jar) = find_local_agent_jar(db_type) {
+                        install_local_agent_with_registry_jre(
+                            am,
+                            &registry,
+                            db_type,
+                            local_jar,
+                            progress,
+                            current,
+                            total_drivers,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                    Err(registry_err)
+                }
+            }
         }
         Err(registry_err) => {
             if let Some(local_jar) = find_local_agent_jar(db_type) {
@@ -502,6 +530,75 @@ async fn install_agent_driver_with_batch(
     }
 }
 
+async fn ensure_jre_from_registry(
+    am: &AgentManager,
+    registry: &AgentRegistry,
+    jre_key: &str,
+    db_type: &str,
+    progress: &impl Fn(AgentProgressEvent),
+    current: Option<u32>,
+    total_drivers: Option<u32>,
+) -> Result<(), String> {
+    let jre_info = registry.resolve_jre(jre_key).ok_or_else(|| format!("No JRE definition for version: {jre_key}"))?;
+    let platform = AgentManager::current_platform();
+    let platform_jre = jre_info
+        .platforms
+        .get(platform)
+        .ok_or_else(|| format!("No JRE {jre_key} available for platform: {platform}"))?;
+    let jre_archive = am.base_dir().join("jre-download.tar.gz");
+    progress(AgentProgressEvent::transfer("jre", 0, platform_jre.size).with_batch(
+        Some(db_type),
+        current,
+        total_drivers,
+    ));
+    download_with_progress(
+        am,
+        progress,
+        "jre",
+        &platform_jre.url,
+        &r2_path_with_cache_buster(&github_url_to_r2_path(&platform_jre.url, "jre"), &jre_info.version),
+        &jre_archive,
+        platform_jre.size,
+        Some(CacheIdentity::Jre { key: jre_key, version: &jre_info.version }),
+        Some(db_type),
+        current,
+        total_drivers,
+    )
+    .await?;
+    progress(AgentProgressEvent::transfer("jre-extract", 0, 0).with_batch(Some(db_type), current, total_drivers));
+    let jre_dir = am.jre_dir(jre_key);
+    // Stop daemons first (Windows ERROR_ACCESS_DENIED, Issue #1100).
+    am.stop_daemons().await;
+    replace_old_jre_dir(am, &jre_dir)?;
+    extract_tar_gz(&jre_archive, &jre_dir)?;
+    std::fs::remove_file(&jre_archive).ok();
+    Ok(())
+}
+
+async fn install_local_agent_with_registry_jre(
+    am: &AgentManager,
+    registry: &AgentRegistry,
+    db_type: &str,
+    local_jar: PathBuf,
+    progress: &impl Fn(AgentProgressEvent),
+    current: Option<u32>,
+    total_drivers: Option<u32>,
+) -> Result<(), String> {
+    let jre_key = DEFAULT_JRE_KEY;
+    if jre_needs_install(am, registry, jre_key) {
+        ensure_jre_from_registry(am, registry, jre_key, db_type, progress, current, total_drivers).await?;
+    }
+    install_local_agent(am, db_type, local_jar)?;
+    if let Some(jre_info) = registry.resolve_jre(jre_key) {
+        let mut local_state = am.load_state();
+        local_state.jre_versions.insert(jre_key.to_string(), jre_info.version.clone());
+        am.save_state(&local_state)?;
+    }
+    am.stop_daemon_by_key(db_type).await;
+    progress(AgentProgressEvent::step("done"));
+    Ok(())
+}
+
 async fn install_agent_driver_from_registry(
     am: &AgentManager,
     registry: &AgentRegistry,
@@ -512,9 +609,8 @@ async fn install_agent_driver_from_registry(
 ) -> Result<(), String> {
     let Some(driver) = agent_registry_driver(registry, db_type) else {
         if let Some(local_jar) = find_local_agent_jar(db_type) {
-            install_local_agent(am, db_type, local_jar)?;
-            am.stop_daemon_by_key(db_type).await;
-            progress(AgentProgressEvent::step("done"));
+            install_local_agent_with_registry_jre(am, registry, db_type, local_jar, progress, current, total_drivers)
+                .await?;
             return Ok(());
         }
         return Err(format!("Unknown driver type: {db_type}"));
@@ -526,46 +622,13 @@ async fn install_agent_driver_from_registry(
     let needs_jre = requires_java_runtime && jre_needs_install(am, registry, jre_key);
 
     if needs_jre {
-        let jre_info =
-            registry.resolve_jre(jre_key).ok_or_else(|| format!("No JRE definition for version: {jre_key}"))?;
-        let platform = AgentManager::current_platform();
-        let platform_jre = jre_info
-            .platforms
-            .get(platform)
-            .ok_or_else(|| format!("No JRE {jre_key} available for platform: {platform}"))?;
-        let jre_archive = am.base_dir().join("jre-download.tar.gz");
-        progress(AgentProgressEvent::transfer("jre", 0, platform_jre.size).with_batch(
-            Some(db_type),
-            current,
-            total_drivers,
-        ));
-        download_with_progress(
-            am,
-            progress,
-            "jre",
-            &platform_jre.url,
-            &r2_path_with_cache_buster(&github_url_to_r2_path(&platform_jre.url, "jre"), &jre_info.version),
-            &jre_archive,
-            platform_jre.size,
-            Some(CacheIdentity::Jre { key: jre_key, version: &jre_info.version }),
-            Some(db_type),
-            current,
-            total_drivers,
-        )
-        .await?;
-        progress(AgentProgressEvent::transfer("jre-extract", 0, 0).with_batch(Some(db_type), current, total_drivers));
-        let jre_dir = am.jre_dir(jre_key);
-        // Stop daemons first (Windows ERROR_ACCESS_DENIED, Issue #1100).
-        am.stop_daemons().await;
-        replace_old_jre_dir(am, &jre_dir)?;
-        extract_tar_gz(&jre_archive, &jre_dir)?;
-        std::fs::remove_file(&jre_archive).ok();
+        ensure_jre_from_registry(am, registry, jre_key, db_type, progress, current, total_drivers).await?;
     }
 
-    let (artifact, target_path) = if let Some(native) = native_artifact {
-        (native, am.driver_native_path(db_type))
+    let (artifact, target_path, is_native_artifact) = if let Some(native) = native_artifact {
+        (native, am.driver_native_path(db_type), true)
     } else if let Some(jar) = jar_artifact {
-        (jar, am.driver_jar_path(db_type))
+        (jar, am.driver_jar_path(db_type), false)
     } else {
         return Err(format!("No driver artifact available for {db_type}"));
     };
@@ -591,7 +654,13 @@ async fn install_agent_driver_from_registry(
         total_drivers,
     )
     .await?;
-    if native_artifact.is_some() {
+    // Some drivers publish both a native agent and a legacy JAR fallback. Only
+    // validate the artifact type that was actually installed.
+    if !is_native_artifact && !am.is_driver_jar_valid(db_type) {
+        std::fs::remove_file(&target_path).ok();
+        return Err(format!("Downloaded driver jar is invalid or corrupt: {}", target_path.display()));
+    }
+    if is_native_artifact {
         mark_executable(&target_path)?;
         std::fs::remove_file(am.driver_jar_path(db_type)).ok();
     } else {
@@ -1161,6 +1230,11 @@ pub fn import_offline_zip(
             mark_executable(&driver_path)?;
             std::fs::remove_file(am.driver_jar_path(db_type)).ok();
         } else {
+            // Offline bundles are user-supplied; reject corrupt JARs before state says the driver is installed.
+            if !am.is_driver_jar_valid(db_type) {
+                std::fs::remove_file(&driver_path).ok();
+                return Err(format!("Offline agent jar is invalid or corrupt: {entry_name}"));
+            }
             std::fs::remove_file(am.driver_native_path(db_type)).ok();
         }
 
@@ -1256,6 +1330,121 @@ mod agent_download_url_tests {
             r2_path_with_cache_buster("agents/drivers/dbx-agent-h2.jar?mirror=r2", "0.5.33"),
             "agents/drivers/dbx-agent-h2.jar?mirror=r2&v=0.5.33"
         );
+    }
+}
+
+#[cfg(test)]
+mod agent_registry_install_tests {
+    use super::*;
+    use crate::agent_manager::{ArtifactInfo, DriverInfo, JavaRuntimeConfig};
+
+    fn test_manager(name: &str) -> AgentManager {
+        let dir = std::env::temp_dir().join(format!("dbx-agent-registry-install-{name}-{}", uuid::Uuid::new_v4()));
+        AgentManager::new_with_base_dir(dir)
+    }
+
+    fn registry_with_native_and_legacy_jar(
+        db_type: &str,
+        version: &str,
+        native_url: &str,
+        native_size: u64,
+    ) -> AgentRegistry {
+        let mut drivers = std::collections::HashMap::new();
+        drivers.insert(
+            db_type.to_string(),
+            DriverInfo {
+                version: version.to_string(),
+                label: db_type.to_string(),
+                min_app_version: "0.1.0".to_string(),
+                jre: DEFAULT_JRE_KEY.to_string(),
+                jar: Some(ArtifactInfo {
+                    url: format!("https://example.com/dbx-agent-{db_type}-legacy-placeholder.jar"),
+                    size: 0,
+                }),
+                native: [(
+                    AgentManager::current_platform().to_string(),
+                    ArtifactInfo { url: native_url.to_string(), size: native_size },
+                )]
+                .into_iter()
+                .collect(),
+            },
+        );
+        AgentRegistry { jre: None, jres: std::collections::HashMap::new(), drivers }
+    }
+
+    fn registry_with_jar(db_type: &str, version: &str, url: &str, size: u64) -> AgentRegistry {
+        let mut drivers = std::collections::HashMap::new();
+        drivers.insert(
+            db_type.to_string(),
+            DriverInfo {
+                version: version.to_string(),
+                label: db_type.to_string(),
+                min_app_version: "0.1.0".to_string(),
+                jre: DEFAULT_JRE_KEY.to_string(),
+                jar: Some(ArtifactInfo { url: url.to_string(), size }),
+                native: std::collections::HashMap::new(),
+            },
+        );
+        AgentRegistry { jre: None, jres: std::collections::HashMap::new(), drivers }
+    }
+
+    fn write_cached_driver_download(
+        am: &AgentManager,
+        db_type: &str,
+        version: &str,
+        url: &str,
+        dest: &Path,
+        bytes: &[u8],
+    ) {
+        let cache_path =
+            cached_download_path(am, url, bytes.len() as u64, Some(CacheIdentity::Driver { db_type, version }), dest);
+        std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        std::fs::write(cache_path, bytes).unwrap();
+    }
+
+    #[tokio::test]
+    async fn registry_install_accepts_native_driver_with_legacy_jar_fallback() {
+        let manager = test_manager("native-with-jar-fallback");
+        let db_type = "oracle";
+        let version = "0.1.31";
+        let native_url = "https://example.com/dbx-agent-oracle";
+        let native_bytes = b"native-agent";
+        let registry = registry_with_native_and_legacy_jar(db_type, version, native_url, native_bytes.len() as u64);
+        let native_path = manager.driver_native_path(db_type);
+        write_cached_driver_download(&manager, db_type, version, native_url, &native_path, native_bytes);
+        let progress = |_| {};
+
+        install_agent_driver_from_registry(&manager, &registry, db_type, &progress, None, None).await.unwrap();
+
+        assert_eq!(std::fs::read(&native_path).unwrap(), native_bytes);
+        assert!(!manager.driver_jar_path(db_type).exists());
+        assert_eq!(manager.load_state().installed_drivers.get(db_type).unwrap().version, version);
+    }
+
+    #[tokio::test]
+    async fn registry_install_rejects_corrupt_downloaded_jar() {
+        let manager = test_manager("corrupt-jar");
+        let db_type = "h2";
+        let version = "0.2.0";
+        let jar_url = "https://example.com/dbx-agent-h2.jar";
+        let jar_bytes = b"jar";
+        let registry = registry_with_jar(db_type, version, jar_url, jar_bytes.len() as u64);
+        let jar_path = manager.driver_jar_path(db_type);
+        write_cached_driver_download(&manager, db_type, version, jar_url, &jar_path, jar_bytes);
+        manager
+            .save_state(&crate::agent_manager::AgentState {
+                java_runtime: JavaRuntimeConfig { mode: JavaRuntimeMode::System, custom_java_path: None },
+                ..Default::default()
+            })
+            .unwrap();
+        let progress = |_| {};
+
+        let err =
+            install_agent_driver_from_registry(&manager, &registry, db_type, &progress, None, None).await.unwrap_err();
+
+        assert!(err.contains("invalid or corrupt"));
+        assert!(!jar_path.exists());
+        assert!(!manager.load_state().installed_drivers.contains_key(db_type));
     }
 }
 

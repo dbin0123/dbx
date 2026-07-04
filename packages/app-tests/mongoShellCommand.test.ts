@@ -4,15 +4,20 @@ import {
   evaluateMongoAggregateSafety,
   evaluateMongoWriteSafety,
   mongoAggregateWriteStage,
+  mongoCollectionStatsToQueryResult,
   mongoCountToQueryResult,
   mongoDocumentsToQueryResult,
   mongoIndexesToQueryResult,
   parseMongoAggregateCommand,
+  parseMongoCollectionStatsCommand,
+  parseMongoCommand,
   parseMongoCountDocumentsCommand,
   parseMongoFindCommand,
   parseMongoGetIndexesCommand,
   parseMongoVersionCommand,
   parseMongoWriteCommand,
+  splitMongoCommands,
+  splitMongoCommandRanges,
 } from "../../apps/desktop/src/lib/mongoShellCommand.ts";
 import { buildMongoUpdateDocument as buildMongoDocumentUpdate, formatMongoShellLiteral as formatMongoDocumentShellLiteral } from "../../apps/desktop/src/lib/mongoDocumentValues.ts";
 
@@ -89,6 +94,21 @@ test("parseMongoFindCommand rejects unsupported mongo shell commands", () => {
 test("parseMongoVersionCommand parses db.version", () => {
   assert.deepEqual(parseMongoVersionCommand("db.version();"), { kind: "version" });
   assert.equal(parseMongoVersionCommand("db.jobs.version()"), null);
+});
+
+test("parseMongoCommand normalizes outer comments around a command", () => {
+  const parsed = parseMongoCommand(`
+    // current database
+    use accounting;
+    // keep working here
+  `);
+  assert.deepEqual(parsed, {
+    text: "use accounting;",
+    command: {
+      kind: "use",
+      database: "accounting",
+    },
+  });
 });
 
 test("parseMongoWriteCommand accepts unquoted insert and update commands", () => {
@@ -171,6 +191,27 @@ test("parseMongoCountDocumentsCommand parses db collection countDocuments", () =
   });
 });
 
+test("parseMongoCountDocumentsCommand parses legacy count helpers", () => {
+  assert.deepEqual(parseMongoCountDocumentsCommand("db.products.count({ active: true })"), {
+    collection: "products",
+    filter: '{ "active": true }',
+  });
+  assert.deepEqual(parseMongoCountDocumentsCommand('db.getCollection("audit.logs").count()'), {
+    collection: "audit.logs",
+    filter: "{}",
+  });
+  assert.deepEqual(parseMongoCountDocumentsCommand("db.products.find({ active: true }).count()"), {
+    collection: "products",
+    filter: '{ "active": true }',
+  });
+  assert.equal(parseMongoFindCommand("db.products.find({ active: true }).count()"), null);
+  assert.deepEqual(parseMongoCommand("db.products.find({ active: true }).count()")?.command, {
+    kind: "countDocuments",
+    collection: "products",
+    filter: '{ "active": true }',
+  });
+});
+
 test("parseMongoAggregateCommand parses db collection aggregate", () => {
   assert.deepEqual(parseMongoAggregateCommand('db.products.aggregate([{"$match":{"active":true}},{"$count":"total"}])'), {
     collection: "products",
@@ -209,6 +250,130 @@ test("parseMongoGetIndexesCommand parses collection index commands", () => {
     collection: "audit.logs",
   });
   assert.equal(parseMongoGetIndexesCommand("db.web_log.getIndexes({})"), null);
+});
+
+test("parseMongoCollectionStatsCommand parses collection stats commands", () => {
+  assert.deepEqual(parseMongoCollectionStatsCommand("db.users.stats()"), {
+    collection: "users",
+    metric: "stats",
+  });
+  assert.deepEqual(parseMongoCollectionStatsCommand("db.users.dataSize();"), {
+    collection: "users",
+    metric: "dataSize",
+  });
+  assert.deepEqual(parseMongoCollectionStatsCommand("db.users.storageSize(1024)"), {
+    collection: "users",
+    metric: "storageSize",
+    scale: 1024,
+  });
+  assert.deepEqual(parseMongoCollectionStatsCommand("db.users.totalIndexSize()"), {
+    collection: "users",
+    metric: "totalIndexSize",
+  });
+  assert.deepEqual(parseMongoCollectionStatsCommand('db.getCollection("audit.logs").stats()'), {
+    collection: "audit.logs",
+    metric: "stats",
+  });
+  // A non-numeric argument is rejected rather than silently ignored.
+  assert.equal(parseMongoCollectionStatsCommand('db.users.storageSize("big")'), null);
+});
+
+test("parseMongoCommand tags collection stats commands with the collectionStats kind", () => {
+  const parsed = parseMongoCommand("db.users.stats()");
+  assert.ok(parsed);
+  assert.deepEqual(parsed.command, { kind: "collectionStats", collection: "users", metric: "stats" });
+});
+
+test("mongoCollectionStatsToQueryResult formats stats and single-metric results", () => {
+  const stats = {
+    count: 12,
+    size: 4096,
+    avgObjSize: 341,
+    storageSize: 8192,
+    totalIndexSize: 2048,
+    nindexes: 3,
+  };
+  assert.deepEqual(mongoCollectionStatsToQueryResult("stats", stats, 5), {
+    columns: ["count", "size", "avgObjSize", "storageSize", "totalIndexSize", "nindexes"],
+    rows: [[12, 4096, 341, 8192, 2048, 3]],
+    affected_rows: 1,
+    execution_time_ms: 5,
+  });
+  assert.deepEqual(mongoCollectionStatsToQueryResult("dataSize", stats, 0), {
+    columns: ["dataSize"],
+    rows: [[4096]],
+    affected_rows: 1,
+    execution_time_ms: 0,
+  });
+  assert.deepEqual(mongoCollectionStatsToQueryResult("totalIndexSize", {}, 0), {
+    columns: ["totalIndexSize"],
+    rows: [[null]],
+    affected_rows: 1,
+    execution_time_ms: 0,
+  });
+});
+
+test("splitMongoCommands keeps semicolon-separated mongo commands in order", () => {
+  const commands = splitMongoCommands(`
+    db.users.insertOne({ name: "A" });
+    db.users.insertOne({ name: "B" });
+  `);
+  assert.deepEqual(
+    commands.map(({ text, command }) => ({ kind: command.kind, text })),
+    [
+      { kind: "insert", text: 'db.users.insertOne({ name: "A" })' },
+      { kind: "insert", text: 'db.users.insertOne({ name: "B" })' },
+    ],
+  );
+});
+
+test("splitMongoCommands splits top-level line starts without semicolons", () => {
+  const commands = splitMongoCommands(`
+    use accounting
+    db.getCollection("entries")
+      .find({ status: "open" })
+      .limit(5)
+  `);
+  assert.deepEqual(
+    commands.map(({ text, command }) => ({ kind: command.kind, text })),
+    [
+      { kind: "use", text: "use accounting" },
+      { kind: "find", text: 'db.getCollection("entries")\n      .find({ status: "open" })\n      .limit(5)' },
+    ],
+  );
+});
+
+test("splitMongoCommandRanges preserve document offsets for newline-separated commands", () => {
+  const source = `
+    use accounting
+    db.getCollection("entries")
+      .find({ status: "open" })
+      .limit(5)
+  `;
+  const commands = splitMongoCommandRanges(source);
+
+  assert.deepEqual(
+    commands.map(({ from, to, text, command }) => ({
+      from,
+      to,
+      text,
+      kind: command.kind,
+    })),
+    [
+      {
+        from: source.indexOf("use accounting"),
+        to: source.indexOf("use accounting") + "use accounting".length,
+        text: "use accounting",
+        kind: "use",
+      },
+      {
+        from: source.indexOf('db.getCollection("entries")'),
+        to: source.indexOf('      .limit(5)') + "      .limit(5)".length,
+        text: 'db.getCollection("entries")\n      .find({ status: "open" })\n      .limit(5)',
+        kind: "find",
+      },
+    ],
+  );
 });
 
 test("evaluateMongoAggregateSafety blocks write stages unless MCP write flags allow them", () => {

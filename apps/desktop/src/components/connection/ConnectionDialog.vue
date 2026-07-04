@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { uuid } from "@/lib/utils";
 import { useI18n } from "vue-i18n";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -13,7 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
-import type { ConnectionConfig, DatabaseType, JdbcDriverInfo, JdbcMavenBundleInfo, ProxyTunnelConfig, SshTunnelConfig, TransportLayerConfig } from "@/types/database";
+import type { ConnectionConfig, DatabaseType, HttpTunnelConfig, JdbcDriverInfo, JdbcMavenBundleInfo, ProxyTunnelConfig, SshTunnelConfig, TransportLayerConfig } from "@/types/database";
 import type { MqAdminConfig, MqAuth, MqSystemKind } from "@/types/mq";
 import type { NacosAdminConfig, NacosAuthConfig } from "@/types/nacos";
 import { useConnectionStore } from "@/stores/connectionStore";
@@ -30,12 +30,14 @@ import { h2ConnectionModeForConfig, h2FileJdbcUrlWithPath, h2FilePathFromJdbcUrl
 import { firstZooKeeperEndpoint, normalizeZooKeeperConnectString } from "@/lib/zookeeperConnection";
 import { isLocalFileTypeDb } from "@/lib/connectionFile";
 import { MQ_PINNED_VERSION_OPTIONS, pinnedVersionToSelection, selectionToPinnedVersion } from "@/lib/mqPinnedVersionOptions";
-import { mongodbAuthFailureHint, mongoUrlParam, setMongoUrlParam } from "@/lib/mongoConnectionOptions";
+import { mongodbAuthFailureHint, mongoUrlParam, mongoUrlParamIsTrue, normalizeMongoTlsFormState, setMongoUrlParam, setMongoUrlParamBoolean } from "@/lib/mongoConnectionOptions";
+import { mysqlCleartextPasswordAuthEnabled, setMysqlCleartextPasswordAuthEnabled } from "@/lib/mysqlConnectionOptions";
 import { copyToClipboard } from "@/lib/clipboard";
-import { appendAgentDriverUpdateHint, hasAgentDriverUpdate, showAgentDriverInstallHint, type AgentDriverInstallState } from "@/lib/agentDriverInstallHint";
+import { agentDriverInstallKey, appendAgentDriverUpdateHint, hasAgentDriverUpdate, showAgentDriverInstallHint, type AgentDriverInstallState } from "@/lib/agentDriverInstallHint";
 import { prestoSqlBuiltinDriverPaths } from "@/lib/prestoSqlBuiltinDriver";
 import { SQLITE_DATABASE_FILE_EXTENSIONS } from "@/lib/databaseFileDetection";
 import { connectionAttemptOriginalErrorMessage, connectionAttemptTimeoutMessage, connectionAttemptTimeoutMs } from "@/lib/connectionAttemptTimeout";
+import { driverInstallProgressPercent, type DriverInstallProgress } from "@/lib/driverInstallProgressUi";
 import { ArrowLeft, ArrowDown, ArrowUp, CheckSquare, ChevronRight, CircleHelp, Copy, ExternalLink, FilePlus2, FolderOpen, GripVertical, Grid3X3, KeyRound, Link2, List, ListFilter, Loader2, Pipette, Plus, Search, ShieldCheck, Square, Trash2 } from "@lucide/vue";
 import { buildDraftVisibleDatabasesConnectionId, connectionCanChooseVisibleDatabases, initialVisibleDatabaseSelection, visibleDatabaseSelectionIsStale } from "@/lib/connectionVisibleDatabases";
 import { canSaveVisibleDatabaseSelection, connectionUsesVisibleSchemaFilter, filterDatabaseNamesForVisiblePicker, isSystemDatabaseName, normalizeVisibleDatabaseSelection, buildDraftVisibleSchemasConnectionId, normalizeVisibleSchemaSelection } from "@/lib/visibleDatabases";
@@ -111,7 +113,16 @@ const store = useConnectionStore();
 const isTesting = ref(false);
 const isSaving = ref(false);
 const testResult = ref<{ ok: boolean; message: string } | null>(null);
+const showAgentInstallDialog = ref(false);
+const agentInstallRunning = ref(false);
+const agentInstallDriverKey = ref("");
+const agentInstallLabel = ref("");
+const agentInstallProgress = ref<DriverInstallProgress | null>(null);
+const agentInstallError = ref("");
+const showConnectionErrorDialog = ref(false);
+const connectionErrorDetail = ref("");
 const editingId = ref<string | null>(null);
+const draftTestConnectionId = ref(uuid());
 const showVisibleDatabasesDialog = ref(false);
 const isLoadingVisibleDatabases = ref(false);
 const visibleDatabaseNames = ref<string[]>([]);
@@ -125,6 +136,7 @@ const visibleSchemaNames = ref<string[]>([]);
 const visibleSchemaInitialSelection = ref<string[]>([]);
 const visibleSchemaError = ref("");
 let testRunId = 0;
+let unlistenAgentInstallProgress: (() => void) | null = null;
 
 function initialConfigTab(): ConfigTab {
   return props.initialTab ?? "connection";
@@ -222,6 +234,17 @@ function defaultProxyTunnel(): ProxyTunnelConfig {
   };
 }
 
+function defaultHttpTunnel(): HttpTunnelConfig {
+  return {
+    id: uuid(),
+    name: "",
+    enabled: true,
+    url: "",
+    token: "",
+    connect_timeout_secs: 10,
+  };
+}
+
 function normalizeProxyTunnel(layer: Partial<ProxyTunnelConfig>): ProxyTunnelConfig {
   return {
     id: layer.id || uuid(),
@@ -235,9 +258,23 @@ function normalizeProxyTunnel(layer: Partial<ProxyTunnelConfig>): ProxyTunnelCon
   };
 }
 
+function normalizeHttpTunnel(layer: Partial<HttpTunnelConfig>): HttpTunnelConfig {
+  return {
+    id: layer.id || uuid(),
+    name: layer.name || "",
+    enabled: layer.enabled !== false,
+    url: layer.url || "",
+    token: layer.token || "",
+    connect_timeout_secs: Number(layer.connect_timeout_secs) || 10,
+  };
+}
+
 function normalizeTransportLayer(layer: Partial<TransportLayerConfig>): TransportLayerConfig {
   if (layer.type === "proxy") {
     return { type: "proxy", ...normalizeProxyTunnel(layer) };
+  }
+  if (layer.type === "http_tunnel") {
+    return { type: "http_tunnel", ...normalizeHttpTunnel(layer) };
   }
   return { type: "ssh", ...normalizeSshTunnel(layer as Partial<SshTunnelConfig>) };
 }
@@ -868,6 +905,91 @@ function connectionErrorWithDriverUpdateHint(config: ConnectionConfig, message: 
   return appendAgentDriverUpdateHint(message, t("connection.agentDriverUpdateConnectionHint"));
 }
 
+function installedAgentDriver(drivers: readonly AgentDriverInstallState[], key: string): AgentDriverInstallState | undefined {
+  return drivers.find((driver) => driver.db_type === key);
+}
+
+async function refreshLocalAgentDrivers(): Promise<AgentDriverInstallState[]> {
+  const drivers = await api.listInstalledAgentsLocal();
+  agentDrivers.value = drivers;
+  return drivers;
+}
+
+function beginAgentDriverInstall(driverKey: string, label: string) {
+  agentInstallDriverKey.value = driverKey;
+  agentInstallLabel.value = label;
+  agentInstallProgress.value = null;
+  agentInstallError.value = "";
+  agentInstallRunning.value = true;
+  showAgentInstallDialog.value = true;
+}
+
+function finishAgentDriverInstall() {
+  agentInstallRunning.value = false;
+  agentInstallProgress.value = null;
+  agentInstallError.value = "";
+  showAgentInstallDialog.value = false;
+}
+
+function failAgentDriverInstall(error: unknown) {
+  agentInstallRunning.value = false;
+  agentInstallError.value = errorMessage(error);
+  showAgentInstallDialog.value = true;
+}
+
+function showConnectionError(message: string) {
+  connectionErrorDetail.value = translateBackendError(t, message);
+  showConnectionErrorDialog.value = true;
+}
+
+function setAgentInstallDialogOpen(value: boolean) {
+  if (value || canCloseAgentInstallDialog.value) {
+    showAgentInstallDialog.value = value;
+  }
+}
+
+function handleAgentInstallProgress(payload: DriverInstallProgress) {
+  if (!agentInstallRunning.value || !agentInstallDriverKey.value) return;
+  if (payload.db_type && payload.db_type !== agentInstallDriverKey.value) return;
+  if (payload.step === "done" || payload.step === "all-done") {
+    agentInstallProgress.value = null;
+    return;
+  }
+  agentInstallProgress.value = payload;
+}
+
+function formatInstallSize(bytes: number): string {
+  if (!bytes) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function ensureRequiredAgentDriverInstalled(config: ConnectionConfig): Promise<void> {
+  const driverKey = agentDriverInstallKey(config.db_type, config.driver_profile);
+  if (!driverKey) return;
+
+  let drivers = agentDrivers.value.length ? agentDrivers.value : await refreshLocalAgentDrivers();
+  if (!showAgentDriverInstallHint(config.db_type, drivers, config.driver_profile)) return;
+  if (installedAgentDriver(drivers, driverKey)?.installed === true) return;
+
+  drivers = await refreshLocalAgentDrivers();
+  if (installedAgentDriver(drivers, driverKey)?.installed === true) return;
+
+  const label = config.driver_label || driverKey;
+  testResult.value = { ok: true, message: `Installing ${label} driver...` };
+  beginAgentDriverInstall(driverKey, label);
+  try {
+    await api.installAgent(driverKey);
+    await refreshLocalAgentDrivers();
+    finishAgentDriverInstall();
+  } catch (error) {
+    testResult.value = { ok: false, message: errorMessage(error) };
+    failAgentDriverInstall(error);
+    throw error;
+  }
+}
+
 function isSqlServerLegacyUnencryptedMode(params: string | undefined): boolean {
   const normalized = (params || "").trim().replace(/^\?/, "").replace(/;/g, "&");
   if (!normalized) return false;
@@ -1237,16 +1359,22 @@ const selectedTransportLayer = computed(() => {
 });
 const selectedSshLayer = computed(() => (selectedTransportLayer.value?.type === "ssh" ? selectedTransportLayer.value : null));
 const selectedProxyLayer = computed(() => (selectedTransportLayer.value?.type === "proxy" ? selectedTransportLayer.value : null));
+const selectedHttpTunnelLayer = computed(() => (selectedTransportLayer.value?.type === "http_tunnel" ? selectedTransportLayer.value : null));
+
+function transportLayerDefaultName(layer: TransportLayerConfig, index: number): string {
+  if (layer.type === "proxy") return `Proxy ${index + 1}`;
+  if (layer.type === "http_tunnel") return t("connection.httpTunnelDefaultName", { index: index + 1 });
+  return t("connection.sshHopDefaultName", { index: index + 1 });
+}
+
+function transportLayerDisplayName(layer: TransportLayerConfig, index: number): string {
+  const target = layer.type === "http_tunnel" ? layer.url?.trim() : layer.host?.trim();
+  return layer.name?.trim() || target || transportLayerDefaultName(layer, index);
+}
+
 const transportPathSegments = computed(() => {
   const layers = transportLayers.value.filter((layer) => layer.enabled !== false);
-  return [
-    "DBX",
-    ...layers.map((layer, index) => {
-      const fallback = layer.type === "proxy" ? `Proxy ${index + 1}` : `SSH ${index + 1}`;
-      return layer.name?.trim() || layer.host?.trim() || fallback;
-    }),
-    form.value.host || "Database",
-  ];
+  return ["DBX", ...layers.map(transportLayerDisplayName), form.value.host || "Database"];
 });
 
 function defaultDatabaseForProfile() {
@@ -1491,12 +1619,19 @@ const sqliteExtensionPaths = computed({
     form.value.url_params = setSqliteExtensionPaths(form.value.url_params, value);
   },
 });
-const tlsCapableDatabaseTypes = new Set<DatabaseType>(["mysql", "postgres", "redshift", "gaussdb", "kwdb", "opengauss", "questdb", "redis", "etcd", "clickhouse", "elasticsearch", "qdrant", "milvus", "weaviate", "chromadb", "influxdb"]);
+const tlsCapableDatabaseTypes = new Set<DatabaseType>(["mysql", "starrocks", "postgres", "redshift", "gaussdb", "kwdb", "opengauss", "questdb", "redis", "etcd", "clickhouse", "elasticsearch", "qdrant", "milvus", "weaviate", "chromadb", "influxdb"]);
 const supportsTlsToggle = computed(() => tlsCapableDatabaseTypes.has(form.value.db_type));
 const supportsCaCertificatePath = computed(() => form.value.db_type === "clickhouse");
 const supportsGenericUrlParams = computed(() => form.value.db_type !== "manticoresearch");
-const bareMysqlProfiles = new Set(["doris", "starrocks", "selectdb", "oceanbase"]);
-const supportsMysqlTlsOptions = computed(() => form.value.db_type === "mysql" && !bareMysqlProfiles.has(selectedType.value));
+const bareMysqlProfiles = new Set(["doris", "selectdb", "oceanbase"]);
+const supportsMysqlTlsOptions = computed(() => form.value.db_type === "starrocks" || (form.value.db_type === "mysql" && !bareMysqlProfiles.has(selectedType.value)));
+const supportsMysqlCleartextPasswordAuth = computed(() => form.value.db_type === "mysql" && !bareMysqlProfiles.has(selectedType.value));
+const mysqlCleartextPasswordAuth = computed({
+  get: () => mysqlCleartextPasswordAuthEnabled(form.value.url_params),
+  set: (value: boolean) => {
+    form.value.url_params = setMysqlCleartextPasswordAuthEnabled(form.value.url_params, value);
+  },
+});
 const mysqlTlsMode = computed({
   get: () => mysqlTlsModeFromParams(form.value.url_params, form.value.ssl),
   set: (value: string) => {
@@ -1633,6 +1768,18 @@ const testResultMessage = computed(() => {
   if (!testResult.value) return "";
   return testResult.value.ok ? t("connection.testSuccess") : translateBackendError(t, testResult.value.message);
 });
+const agentInstallPercent = computed(() => driverInstallProgressPercent(agentInstallProgress.value));
+const agentInstallProgressLabel = computed(() => {
+  const progress = agentInstallProgress.value;
+  if (agentInstallError.value) return "安装失败";
+  if (!agentInstallRunning.value) return "等待安装";
+  if (!progress) return "准备安装驱动...";
+  if (progress.step === "jre-extract") return "解压 JRE...";
+  const label = progress.step === "jre" ? "下载 JRE" : progress.step === "driver" ? "下载驱动" : progress.step || "安装驱动";
+  if (!progress.total) return `${label}...`;
+  return `${label} ${formatInstallSize(progress.downloaded ?? 0)} / ${formatInstallSize(progress.total)} (${agentInstallPercent.value ?? 0}%)`;
+});
+const canCloseAgentInstallDialog = computed(() => !agentInstallRunning.value || !!agentInstallError.value);
 const sqlServerLegacyUnencryptedModeEnabled = computed({
   get: () => form.value.db_type === "sqlserver" && isSqlServerLegacyUnencryptedMode(form.value.url_params),
   set: (enabled: boolean) => {
@@ -1670,6 +1817,20 @@ const mongoAuthMechanism = computed({
     form.value.url_params = setMongoUrlParam(form.value.url_params, "authMechanism", value === "default" ? "" : value);
   },
 });
+const mongoTlsAllowInvalidCertificates = computed({
+  get: () => mongoUrlParamIsTrue(form.value.url_params, "tlsAllowInvalidCertificates"),
+  set: (value: boolean) => {
+    let next = setMongoUrlParamBoolean(form.value.url_params, "tlsAllowInvalidCertificates", value);
+    next = setMongoUrlParam(next, "tlsAllowInvalidHostnames", "");
+    form.value.url_params = next;
+  },
+});
+const mongoRetryWrites = computed({
+  get: () => mongoUrlParamIsTrue(form.value.url_params, "retryWrites", true),
+  set: (value: boolean) => {
+    form.value.url_params = setMongoUrlParamBoolean(form.value.url_params, "retryWrites", value, true);
+  },
+});
 const mongoDriverMode = computed({
   get: () => (form.value.driver_profile === "mongodb-legacy" ? "legacy" : "auto"),
   set: (value: string) => {
@@ -1704,8 +1865,9 @@ async function testConnection() {
   const runId = ++testRunId;
   isTesting.value = true;
   testResult.value = null;
-  const config = connectionConfigForSubmit(editingId.value || uuid());
+  const config = connectionConfigForSubmit(editingId.value || draftTestConnectionId.value);
   try {
+    await ensureRequiredAgentDriverInstalled(config);
     const msg = await testConnectionWithTimeout(config, runId);
     if (runId !== testRunId) return;
     if (config.db_type === "mongodb" && /legacy driver/i.test(msg)) {
@@ -1722,6 +1884,9 @@ async function testConnection() {
       configTab.value = "advanced";
     }
     testResult.value = fallbackMessage ? { ok: true, message: fallbackMessage } : { ok: false, message };
+    if (!fallbackMessage) {
+      showConnectionError(message);
+    }
   } finally {
     if (runId === testRunId) {
       isTesting.value = false;
@@ -1938,6 +2103,11 @@ function connectionConfigForSubmit(id: string): ConnectionConfig {
     config.driver_profile = "mongodb";
     config.driver_label = "MongoDB";
   }
+  if (config.db_type === "mongodb") {
+    const mongoTls = normalizeMongoTlsFormState(!!config.ssl, config.url_params, config.ca_cert_path);
+    config.url_params = mongoTls.urlParams;
+    config.ca_cert_path = mongoTls.caCertPath;
+  }
   if (config.db_type !== "oracle") {
     config.sysdba = undefined;
     config.oracle_connection_type = undefined;
@@ -2020,7 +2190,7 @@ function connectionConfigForSubmit(id: string): ConnectionConfig {
     config.client_cert_path = undefined;
     config.client_key_path = undefined;
   }
-  if (config.db_type !== "mysql" && config.db_type !== "clickhouse" && config.db_type !== "etcd") {
+  if (config.db_type !== "mysql" && config.db_type !== "clickhouse" && config.db_type !== "etcd" && config.db_type !== "starrocks" && config.db_type !== "mongodb") {
     config.ca_cert_path = undefined;
   } else {
     config.ca_cert_path = config.ca_cert_path?.trim() || "";
@@ -2304,6 +2474,8 @@ function resetTestState() {
   testRunId += 1;
   isTesting.value = false;
   testResult.value = null;
+  showConnectionErrorDialog.value = false;
+  connectionErrorDetail.value = "";
 }
 
 function resetVisibleDatabaseDraftState() {
@@ -2494,6 +2666,26 @@ async function copyTestResult() {
   }
 }
 
+async function copyAgentInstallError() {
+  if (!agentInstallError.value) return;
+  try {
+    await copyToClipboard(agentInstallError.value);
+    toast(t("grid.copied"));
+  } catch (e: any) {
+    toast(t("grid.copyFailed", { message: e?.message || String(e) }), 5000);
+  }
+}
+
+async function copyConnectionErrorDetail() {
+  if (!connectionErrorDetail.value) return;
+  try {
+    await copyToClipboard(connectionErrorDetail.value);
+    toast(t("grid.copied"));
+  } catch (e: any) {
+    toast(t("grid.copyFailed", { message: e?.message || String(e) }), 5000);
+  }
+}
+
 function resetForm() {
   editingId.value = null;
   form.value = defaultForm();
@@ -2588,8 +2780,13 @@ watch(
   open,
   (value) => {
     if (!value) {
+      const draftId = editingId.value ? null : draftTestConnectionId.value;
       submittedOneTimePrefillKey.value = null;
       resetForm();
+      if (draftId) {
+        void api.disconnectDb(draftId).catch(() => undefined);
+        draftTestConnectionId.value = uuid();
+      }
       return;
     }
     if (!props.editConfig) {
@@ -2672,6 +2869,14 @@ function addProxyTunnel() {
   resetTestState();
 }
 
+function addHttpTunnel() {
+  const next: TransportLayerConfig = { type: "http_tunnel", ...defaultHttpTunnel() };
+  next.name = t("connection.httpTunnelDefaultName", { index: 1 });
+  form.value.transport_layers = [next, ...transportLayers.value];
+  selectedTransportLayerId.value = next.id;
+  resetTestState();
+}
+
 function duplicateTransportLayer(layer: TransportLayerConfig) {
   const next = normalizeTransportLayer({ ...layer, id: uuid(), name: layer.name ? `${layer.name} copy` : "" });
   form.value.transport_layers = [...transportLayers.value, next];
@@ -2709,10 +2914,11 @@ function dropTransportLayer(targetId: string) {
   resetTestState();
 }
 
-function changeSelectedTransportLayerType(type: "ssh" | "proxy") {
+function changeSelectedTransportLayerType(type: "ssh" | "proxy" | "http_tunnel") {
   const selected = selectedTransportLayer.value;
   if (!selected || selected.type === type) return;
-  const replacement: TransportLayerConfig = type === "proxy" ? { type: "proxy", ...defaultProxyTunnel(), id: selected.id, name: selected.name } : { type: "ssh", ...defaultSshTunnel(), id: selected.id, name: selected.name };
+  const replacement: TransportLayerConfig =
+    type === "proxy" ? { type: "proxy", ...defaultProxyTunnel(), id: selected.id, name: selected.name } : type === "http_tunnel" ? { type: "http_tunnel", ...defaultHttpTunnel(), id: selected.id, name: selected.name } : { type: "ssh", ...defaultSshTunnel(), id: selected.id, name: selected.name };
   form.value.transport_layers = transportLayers.value.map((layer) => (layer.id === selected.id ? replacement : layer));
   resetTestState();
 }
@@ -2728,7 +2934,16 @@ function validateTransportLayers(config: LegacyConnectionConfig) {
   const layers = config.transport_layers || [];
   layers.forEach((layer, index) => {
     if (layer.enabled === false) return;
-    const label = layer.name?.trim() || t("connection.sshHopDefaultName", { index: index + 1 });
+    const label = layer.name?.trim() || transportLayerDefaultName(layer, index);
+    if (layer.type === "http_tunnel") {
+      if (index !== 0) throw new Error(t("connection.httpTunnelInvalidOrder", { hop: label }));
+      if (!layer.url?.trim()) throw new Error(t("connection.httpTunnelInvalidUrl", { hop: label }));
+      const timeout = Number(layer.connect_timeout_secs);
+      if (!Number.isFinite(timeout) || timeout < 1 || timeout > 300) {
+        throw new Error(t("connection.httpTunnelInvalidTimeout", { hop: label }));
+      }
+      return;
+    }
     if (!layer.host?.trim()) throw new Error(t("connection.sshHopInvalidHost", { hop: label }));
     const port = Number(layer.port);
     if (!Number.isFinite(port) || port < 1 || port > 65535) {
@@ -2755,11 +2970,14 @@ async function save() {
   try {
     if (editingId.value) {
       const updated = connectionConfigForSubmit(editingId.value);
+      await ensureRequiredAgentDriverInstalled(updated);
       await store.updateConnection(updated);
       store.stopEditing();
     } else {
-      const config = connectionConfigForSubmit(uuid());
+      const config = connectionConfigForSubmit(draftTestConnectionId.value);
+      await ensureRequiredAgentDriverInstalled(config);
       await store.addConnection(config);
+      draftTestConnectionId.value = uuid();
       if (config.db_type === "jdbc") {
         open.value = false;
         return;
@@ -2780,7 +2998,9 @@ async function save() {
     }
     open.value = false;
   } catch (e: any) {
-    testResult.value = { ok: false, message: mongodbAuthFailureHint(String(e?.message || e)) };
+    const message = mongodbAuthFailureHint(String(e?.message || e));
+    testResult.value = { ok: false, message };
+    showConnectionError(message);
   } finally {
     isSaving.value = false;
   }
@@ -3049,6 +3269,15 @@ function onJdbcDriverSelect(id: any) {
   addJdbcDriverPaths(item.paths);
   jdbcManualClasspathOpen.value = false;
 }
+
+onMounted(async () => {
+  unlistenAgentInstallProgress = await api.listenAgentInstallProgress(handleAgentInstallProgress);
+});
+
+onUnmounted(() => {
+  unlistenAgentInstallProgress?.();
+  unlistenAgentInstallProgress = null;
+});
 
 function openExternalUrl(url: string) {
   if (isTauriRuntime()) {
@@ -3482,7 +3711,7 @@ function openExternalUrl(url: string) {
                   <template v-if="mqAuthKind === 'token'">
                     <div class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">Token</Label>
-                      <Input v-model="mqToken" type="password" class="col-span-3" />
+                      <PasswordInput v-model="mqToken" class="col-span-3" />
                     </div>
                   </template>
                   <template v-else-if="mqAuthKind === 'basic'">
@@ -3492,7 +3721,7 @@ function openExternalUrl(url: string) {
                     </div>
                     <div class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">{{ t("connection.password") }}</Label>
-                      <Input v-model="mqBasicPassword" type="password" class="col-span-3" />
+                      <PasswordInput v-model="mqBasicPassword" class="col-span-3" />
                     </div>
                     <div v-if="mqSystemKind === 'kafka'" class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">SASL Mechanism</Label>
@@ -3515,7 +3744,7 @@ function openExternalUrl(url: string) {
                     </div>
                     <div class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">Value</Label>
-                      <Input v-model="mqApiKeyValue" type="password" class="col-span-3" />
+                      <PasswordInput v-model="mqApiKeyValue" class="col-span-3" />
                     </div>
                   </template>
                   <template v-else-if="mqAuthKind === 'oauth2'">
@@ -3529,7 +3758,7 @@ function openExternalUrl(url: string) {
                     </div>
                     <div class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">Client Secret</Label>
-                      <Input v-model="mqOauthClientSecret" type="password" class="col-span-3" />
+                      <PasswordInput v-model="mqOauthClientSecret" class="col-span-3" />
                     </div>
                     <div class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">Audience</Label>
@@ -3823,6 +4052,40 @@ function openExternalUrl(url: string) {
                         <span>{{ t("connection.sslEnable") }}</span>
                       </label>
                     </div>
+                    <template v-if="form.ssl">
+                      <div class="grid grid-cols-4 items-start gap-4">
+                        <Label :class="connectionLabelClass">{{ t("connection.mongoTlsAllowInvalidCertificates") }}</Label>
+                        <label class="col-span-3 flex items-start gap-2 cursor-pointer">
+                          <input v-model="mongoTlsAllowInvalidCertificates" type="checkbox" class="mr-0 mt-0.5" />
+                          <span class="text-xs leading-5 text-muted-foreground">
+                            {{ t("connection.mongoTlsAllowInvalidCertificatesHint") }}
+                          </span>
+                        </label>
+                      </div>
+                      <div class="grid grid-cols-4 items-start gap-4">
+                        <Label :class="connectionLabelClass">{{ t("connection.mongoRetryWrites") }}</Label>
+                        <label class="col-span-3 flex items-start gap-2 cursor-pointer">
+                          <input v-model="mongoRetryWrites" type="checkbox" class="mr-0 mt-0.5" />
+                          <span class="text-xs leading-5 text-muted-foreground">
+                            {{ t("connection.mongoRetryWritesHint") }}
+                          </span>
+                        </label>
+                      </div>
+                      <div class="grid grid-cols-4 items-center gap-4">
+                        <Label :class="connectionLabelClass">{{ t("connection.caCertPath") }}</Label>
+                        <div class="col-span-3 flex items-center gap-1">
+                          <Input v-model="form.ca_cert_path" class="flex-1" :placeholder="t('connection.caCertPathPlaceholder')" />
+                          <Tooltip v-if="isDesktop">
+                            <TooltipTrigger as-child>
+                              <Button variant="outline" size="icon" class="h-9 w-9 shrink-0" @click="browseCaCertPath">
+                                <FolderOpen class="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>{{ t("connection.caCertPathBrowse") }}</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </div>
+                    </template>
                     <div class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">{{ t("connection.user") }}</Label>
                       <Input v-model="form.username" class="col-span-3" />
@@ -3854,7 +4117,7 @@ function openExternalUrl(url: string) {
                     </div>
                     <div class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">{{ t("connection.urlParams") }}</Label>
-                      <Input v-model="form.url_params" class="col-span-3" placeholder="authSource=admin&authMechanism=SCRAM-SHA-1" />
+                      <Input v-model="form.url_params" class="col-span-3" placeholder="replicaSet=rs0&authSource=admin" />
                     </div>
                   </template>
                 </template>
@@ -4051,7 +4314,7 @@ function openExternalUrl(url: string) {
             </TabsContent>
 
             <TabsContent v-if="supportsTlsToggle" value="tls" class="m-0">
-              <div class="connection-form-body grid gap-4 py-4 pr-2 max-h-[65vh] overflow-y-auto">
+              <div class="connection-form-body grid gap-4 py-4 pr-2 max-h-[65vh] overflow-y-auto overflow-x-hidden">
                 <div v-if="!supportsPostgresTlsOptions && !supportsMysqlTlsOptions" class="grid grid-cols-4 items-center gap-4">
                   <Label :class="connectionLabelSmallClass">SSL/TLS</Label>
                   <label class="col-span-3 flex items-center gap-2 cursor-pointer">
@@ -4131,6 +4394,16 @@ function openExternalUrl(url: string) {
                 </template>
 
                 <template v-if="supportsMysqlTlsOptions">
+                  <div v-if="supportsMysqlCleartextPasswordAuth" class="grid grid-cols-4 items-start gap-4">
+                    <Label :class="[connectionLabelSmallPaddedClass, 'min-w-0 break-words']">{{ t("connection.mysqlCleartextPasswordAuth") }}</Label>
+                    <div class="col-span-3 flex min-w-0 items-start justify-between gap-4">
+                      <p class="min-w-0 text-[11px] leading-4 text-muted-foreground break-words">
+                        {{ t("connection.mysqlCleartextPasswordAuthHint") }}
+                      </p>
+                      <Switch v-model="mysqlCleartextPasswordAuth" class="mt-0.5 shrink-0" />
+                    </div>
+                  </div>
+
                   <div class="grid grid-cols-4 items-center gap-4">
                     <Label :class="connectionLabelSmallClass">{{ t("connection.mysqlTlsMode") }}</Label>
                     <Select v-model="mysqlTlsMode">
@@ -4365,17 +4638,17 @@ function openExternalUrl(url: string) {
             </TabsContent>
 
             <TabsContent v-if="canUseTransportLayers" value="transport" class="m-0">
-              <div class="connection-form-body grid gap-4 py-4 pr-2 max-h-[65vh] overflow-y-auto">
-                <div class="connection-label-wide-grid grid grid-cols-4 items-start gap-4">
+              <div class="connection-form-body grid gap-4 py-4 pr-2 max-h-[65vh] overflow-y-auto overflow-x-hidden">
+                <div class="connection-label-wide-grid grid min-w-0 grid-cols-4 items-start gap-4">
                   <Label :class="connectionLabelSmallPaddedClass">{{ t("connection.sshHops") }}</Label>
-                  <div class="col-span-3 grid gap-3">
-                    <div class="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+                  <div class="col-span-3 grid min-w-0 gap-3">
+                    <div class="flex min-w-0 flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
                       <template v-for="(segment, index) in transportPathSegments" :key="`${segment}-${index}`">
-                        <span class="rounded border bg-muted/40 px-2 py-1">{{ segment }}</span>
+                        <span class="inline-block max-w-full truncate rounded border bg-muted/40 px-2 py-1">{{ segment }}</span>
                         <ChevronRight v-if="index < transportPathSegments.length - 1" class="h-3 w-3" />
                       </template>
                     </div>
-                    <div class="grid gap-2">
+                    <div class="grid min-w-0 gap-2">
                       <button
                         v-for="(hop, index) in transportLayers"
                         :key="hop.id"
@@ -4392,7 +4665,7 @@ function openExternalUrl(url: string) {
                         <span class="w-5 shrink-0 text-muted-foreground">{{ index + 1 }}</span>
                         <input v-model="hop.enabled" type="checkbox" class="mr-0" @click.stop />
                         <span class="min-w-0 flex-1 truncate">
-                          {{ hop.name || hop.host || (hop.type === "proxy" ? `Proxy ${index + 1}` : t("connection.sshHopDefaultName", { index: index + 1 })) }}
+                          {{ transportLayerDisplayName(hop, index) }}
                         </span>
                         <Tooltip>
                           <TooltipTrigger as-child>
@@ -4412,7 +4685,7 @@ function openExternalUrl(url: string) {
                         </Tooltip>
                       </button>
                     </div>
-                    <div class="flex items-center gap-2">
+                    <div class="flex min-w-0 flex-wrap items-center gap-2">
                       <Button type="button" variant="outline" size="sm" @click="addSshTunnel">
                         <Plus class="mr-1.5 h-3.5 w-3.5" />
                         {{ t("connection.sshHopAdd") }}
@@ -4420,6 +4693,10 @@ function openExternalUrl(url: string) {
                       <Button type="button" variant="outline" size="sm" @click="addProxyTunnel">
                         <Plus class="mr-1.5 h-3.5 w-3.5" />
                         {{ t("connection.proxy") }}
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" @click="addHttpTunnel">
+                        <Plus class="mr-1.5 h-3.5 w-3.5" />
+                        {{ t("connection.httpTunnelAdd") }}
                       </Button>
                       <Button v-if="selectedTransportLayer" type="button" variant="outline" size="sm" @click="duplicateTransportLayer(selectedTransportLayer)">
                         <Copy class="mr-1.5 h-3.5 w-3.5" />
@@ -4447,6 +4724,7 @@ function openExternalUrl(url: string) {
                       <SelectContent>
                         <SelectItem value="ssh">SSH</SelectItem>
                         <SelectItem value="proxy">Proxy</SelectItem>
+                        <SelectItem value="http_tunnel">{{ t("connection.httpTunnel") }}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -4532,6 +4810,20 @@ function openExternalUrl(url: string) {
                       <PasswordInput v-model="selectedProxyLayer.password" class="col-span-3" :placeholder="t('connection.proxyPasswordPlaceholder')" :disabled="selectedProxyLayer.enabled === false" />
                     </div>
                   </template>
+                  <template v-else-if="selectedHttpTunnelLayer">
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelSmallClass">{{ t("connection.httpTunnelUrl") }}</Label>
+                      <Input v-model="selectedHttpTunnelLayer.url" class="col-span-3" placeholder="https://dbx.example.com/dbx_tunnel.php" :disabled="selectedHttpTunnelLayer.enabled === false" />
+                    </div>
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelSmallClass">{{ t("connection.httpTunnelToken") }}</Label>
+                      <PasswordInput v-model="selectedHttpTunnelLayer.token" class="col-span-3" :placeholder="t('connection.httpTunnelTokenPlaceholder')" :disabled="selectedHttpTunnelLayer.enabled === false" />
+                    </div>
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelSmallClass">{{ t("connection.httpTunnelConnectTimeout") }}</Label>
+                      <Input v-model.number="selectedHttpTunnelLayer.connect_timeout_secs" type="number" min="1" max="300" step="1" class="col-span-3" :disabled="selectedHttpTunnelLayer.enabled === false" />
+                    </div>
+                  </template>
                 </template>
               </div>
             </TabsContent>
@@ -4571,6 +4863,65 @@ function openExternalUrl(url: string) {
           </Button>
         </DialogFooter>
       </template>
+    </DialogContent>
+  </Dialog>
+
+  <Dialog :open="showAgentInstallDialog" @update:open="setAgentInstallDialogOpen">
+    <DialogContent class="sm:max-w-[520px]" @interact-outside.prevent @escape-key-down.prevent>
+      <DialogHeader>
+        <DialogTitle>{{ agentInstallError ? "驱动安装失败" : "正在安装驱动" }}</DialogTitle>
+      </DialogHeader>
+
+      <div class="space-y-4">
+        <div class="rounded-lg border bg-muted/20 p-4">
+          <div class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <div class="truncate text-sm font-medium">{{ agentInstallLabel || agentInstallDriverKey }}</div>
+              <div class="mt-1 text-xs text-muted-foreground">{{ agentInstallProgressLabel }}</div>
+            </div>
+            <Loader2 v-if="agentInstallRunning && !agentInstallError" class="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+          </div>
+          <div v-if="!agentInstallError" class="mt-4 h-2 overflow-hidden rounded-full bg-muted">
+            <div class="h-full rounded-full bg-primary transition-all" :class="{ 'animate-pulse': agentInstallPercent === null }" :style="{ width: `${agentInstallPercent ?? 35}%` }" />
+          </div>
+        </div>
+
+        <div v-if="agentInstallError" class="space-y-2">
+          <div class="text-sm font-medium text-destructive">完整错误</div>
+          <pre class="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-3 text-xs leading-5 text-destructive">{{ agentInstallError }}</pre>
+        </div>
+      </div>
+
+      <DialogFooter class="gap-2">
+        <Button v-if="agentInstallError" variant="outline" @click="copyAgentInstallError">
+          <Copy class="mr-1.5 h-3.5 w-3.5" />
+          复制错误
+        </Button>
+        <Button :disabled="!canCloseAgentInstallDialog" @click="showAgentInstallDialog = false">
+          {{ agentInstallError ? "关闭" : "安装中..." }}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+
+  <Dialog v-model:open="showConnectionErrorDialog">
+    <DialogContent class="sm:max-w-[560px]">
+      <DialogHeader>
+        <DialogTitle>连接失败</DialogTitle>
+      </DialogHeader>
+
+      <div class="space-y-2">
+        <div class="text-sm text-muted-foreground">完整错误信息</div>
+        <pre class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-3 text-xs leading-5 text-destructive">{{ connectionErrorDetail }}</pre>
+      </div>
+
+      <DialogFooter class="gap-2">
+        <Button variant="outline" @click="copyConnectionErrorDetail">
+          <Copy class="mr-1.5 h-3.5 w-3.5" />
+          复制错误
+        </Button>
+        <Button @click="showConnectionErrorDialog = false">关闭</Button>
+      </DialogFooter>
     </DialogContent>
   </Dialog>
 
@@ -4676,9 +5027,5 @@ function openExternalUrl(url: string) {
 .connection-dialog-content[data-wide="true"] .connection-form-body {
   width: min(100%, 36rem);
   margin-inline: auto;
-}
-
-.connection-dialog-content .grid.grid-cols-4.connection-label-wide-grid {
-  grid-template-columns: 7.75rem repeat(3, minmax(0, 1fr));
 }
 </style>

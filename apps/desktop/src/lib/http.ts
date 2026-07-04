@@ -64,6 +64,8 @@ import type {
   KvPutResponse,
   KvDeleteResponse,
   MongoDocumentResult,
+  MongoCollectionStatsResult,
+  MongoGridFsBucketInfo,
   HistoryEntry,
   SqlFileRequest,
   SqlFilePreview,
@@ -88,6 +90,7 @@ import type {
   BuildExplainSqlOptions,
   ExplainSqlBuildResult,
   DroppedFilePreviewSqlOptions,
+  MongoGridFsFileInfo,
 } from "./tauri";
 import type { QueryEditability } from "@/lib/sqlAnalysis";
 import type {
@@ -111,7 +114,7 @@ import type { CreateDatabaseSqlOptions } from "@/lib/createDatabaseSql";
 import type { DatabaseNameSqlOptions, DropTableChildObjectSqlOptions, DropObjectSqlOptions, DuplicateTableStructureSqlOptions, CopyTableDataSqlOptions, SchemaNameSqlOptions, TableAdminSqlOptions } from "@/lib/dbAdminSql";
 import type { BuildDatabaseSqlExportOptions, BuildExportInsertStatementsOptions } from "@/lib/databaseExport";
 import type { DataCompareFromTablesOptions, DataCompareFromTablesPreparation, DataCompareSyncPlan, DataCompareSyncPlanOptions, DataComparePreparation, DataComparePreparationOptions } from "@/lib/dataCompare";
-import { apiUrl } from "@/lib/webPath";
+import { apiUrl, apiWebSocketUrl } from "@/lib/webPath";
 import type { DataGridSavePreparation } from "./tauri";
 import type {
   NacosConfigHistoryKey,
@@ -661,6 +664,22 @@ export async function executeInTransaction(connectionId: string, database: strin
   return post("/api/query/execute-in-transaction", { connectionId, database, statements, schema });
 }
 
+export async function beginManualTransaction(_connectionId: string, _database: string, _schema?: string): Promise<string> {
+  throw new Error("Manual transaction management is only available in the desktop app.");
+}
+
+export async function executeInManualTransaction(_txnSessionId: string, _sql: string, _database: string, _schema?: string, _maxRows?: number): Promise<QueryResult[]> {
+  throw new Error("Manual transaction management is only available in the desktop app.");
+}
+
+export async function commitManualTransaction(_txnSessionId: string): Promise<QueryResult> {
+  throw new Error("Manual transaction management is only available in the desktop app.");
+}
+
+export async function rollbackManualTransaction(_txnSessionId: string): Promise<QueryResult> {
+  throw new Error("Manual transaction management is only available in the desktop app.");
+}
+
 export async function cancelQuery(executionId: string): Promise<boolean> {
   const result = await post<boolean | { cancelled?: boolean }>("/api/query/cancel", { executionId });
   return typeof result === "boolean" ? result : result.cancelled === true;
@@ -985,6 +1004,14 @@ export async function saveAiConfig(config: AiConfig): Promise<void> {
   return post("/api/ai/config", { config });
 }
 
+export async function saveAiProviderConfig(provider: string, config: AiConfig): Promise<void> {
+  return post("/api/ai/provider-config", { provider, config });
+}
+
+export async function loadAiProviderConfigs(): Promise<Record<string, AiConfig>> {
+  return get("/api/ai/provider-configs");
+}
+
 export async function loadAiConfig(): Promise<AiConfig | null> {
   return get("/api/ai/config");
 }
@@ -1000,6 +1027,14 @@ export async function loadDesktopSettings(): Promise<DesktopSettings> {
 
 export async function saveDesktopSettings(settings: DesktopSettings): Promise<void> {
   safeLocalStorageSet(DESKTOP_SETTINGS_STORAGE_KEY, JSON.stringify({ ...DEFAULT_DESKTOP_SETTINGS, ...settings }));
+}
+
+export async function completeAppClose(_action: "quit" | "hide"): Promise<void> {
+  return undefined;
+}
+
+export async function requestAppClose(): Promise<void> {
+  return undefined;
 }
 
 export interface DriverStoreMigrationResult {
@@ -1603,6 +1638,10 @@ export async function redisPubSubPublish(connectionId: string, db: number, chann
   return post("/api/redis/pubsub/publish", { connectionId, db, channel, message });
 }
 
+export async function redisPubSubConnect(connectionId: string): Promise<WebSocket> {
+  return new WebSocket(apiWebSocketUrl(`/api/redis/pubsub/ws?connectionId=${encodeURIComponent(connectionId)}`));
+}
+
 export async function redisSlowlogGet(connectionId: string, count: number, nodeHost?: string, nodePort?: number): Promise<RedisSlowlogEntry[]> {
   return post("/api/redis/slowlog-get", { connectionId, count, nodeHost, nodePort });
 }
@@ -1756,6 +1795,10 @@ export async function vectorListCollections(connectionId: string, database?: str
   return documentListCollections(connectionId, database || "default");
 }
 
+export async function vectorGetCollectionDetail(connectionId: string, database: string, collection: string): Promise<CollectionInfo> {
+  return post("/api/mongo/vector-collection-detail", { connectionId, database, collection });
+}
+
 export async function mongoFindDocuments(connectionId: string, database: string, collection: string, skip: number, limit: number, filter?: string, projection?: string, sort?: string, executionId?: string): Promise<MongoDocumentResult> {
   return documentFindDocuments(connectionId, database, collection, skip, limit, filter, projection, sort, executionId);
 }
@@ -1764,12 +1807,65 @@ export async function documentFindDocuments(connectionId: string, database: stri
   return post("/api/document-store/find-documents", { connectionId, database, collection, skip, limit, filter, projection, sort, executionId });
 }
 
+export async function documentListGridFsFiles(connectionId: string, database: string, bucket: string): Promise<MongoGridFsFileInfo[]> {
+  return post("/api/document-store/list-gridfs-files", { connectionId, database, bucket });
+}
+
+export async function documentListGridFsBuckets(connectionId: string, database: string): Promise<MongoGridFsBucketInfo[]> {
+  return post("/api/document-store/list-gridfs-buckets", { connectionId, database });
+}
+
+export async function documentCreateGridFsBucket(connectionId: string, database: string, bucket: string): Promise<void> {
+  return post("/api/document-store/create-gridfs-bucket", { connectionId, database, bucket });
+}
+
+export async function documentDeleteGridFsBucket(connectionId: string, database: string, bucket: string): Promise<void> {
+  return post("/api/document-store/delete-gridfs-bucket", { connectionId, database, bucket });
+}
+
+export async function documentDownloadGridFsFile(connectionId: string, database: string, bucket: string, fileId: string): Promise<Uint8Array> {
+  const res = await fetch(apiUrl("/api/document-store/download-gridfs-file"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ connectionId, database, bucket, fileId }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const data = (await res.json()) as number[];
+  return new Uint8Array(data);
+}
+
+export async function documentUploadGridFsFile(connectionId: string, database: string, bucket: string, fileName: string, data: Uint8Array, contentType?: string): Promise<string> {
+  const body = new FormData();
+  body.append("connectionId", connectionId);
+  body.append("database", database);
+  body.append("bucket", bucket);
+  body.append("fileName", fileName);
+  if (contentType) body.append("contentType", contentType);
+  const bytes = new Uint8Array(data.byteLength);
+  bytes.set(data);
+  body.append("file", new Blob([bytes], { type: contentType || "application/octet-stream" }), fileName);
+  const res = await fetch(apiUrl("/api/document-store/upload-gridfs-file"), {
+    method: "POST",
+    body,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function documentDeleteGridFsFile(connectionId: string, database: string, bucket: string, fileId: string): Promise<void> {
+  return post("/api/document-store/delete-gridfs-file", { connectionId, database, bucket, fileId });
+}
+
 export async function mongoServerVersion(connectionId: string, database: string, executionId?: string): Promise<string> {
   return post("/api/mongo/server-version", { connectionId, database, executionId });
 }
 
 export async function mongoAggregateDocuments(connectionId: string, database: string, collection: string, pipelineJson: string, maxRows?: number, executionId?: string): Promise<MongoDocumentResult> {
   return post("/api/mongo/aggregate-documents", { connectionId, database, collection, pipelineJson, maxRows, executionId });
+}
+
+export async function mongoCollectionStats(connectionId: string, database: string, collection: string, scale?: number, executionId?: string): Promise<MongoCollectionStatsResult> {
+  return post("/api/mongo/collection-stats", { connectionId, database, collection, scale, executionId });
 }
 
 export async function mongoCreateIndex(connectionId: string, database: string, collection: string, keysJson: string, optionsJson?: string): Promise<{ name: string }> {

@@ -1,4 +1,5 @@
 import type { SqlExecutionCandidate } from "./sqlExecutionTarget";
+import { splitMongoCommandRanges } from "./mongoShellCommand";
 import type { DatabaseType } from "@/types/database";
 
 /**
@@ -99,6 +100,7 @@ const WITH_MAIN_STATEMENT_KEYWORDS = new Set(["SELECT", "INSERT", "UPDATE", "DEL
 const EXPLAIN_STATEMENT_KEYWORDS = new Set(["SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "ALTER", "DROP"]);
 const CREATE_BODY_KEYWORDS = new Set(["SELECT", "WITH", "BEGIN", "DECLARE"]);
 const INSERT_BODY_KEYWORDS = new Set(["SELECT", "WITH"]);
+const ALTER_BODY_KEYWORDS = new Set(["ADD", "ALTER", "COMMENT", "DROP", "MODIFY", "RENAME", "SET"]);
 const ORACLE_LIKE_PL_SQL_DATABASES: ReadonlySet<DatabaseType> = new Set(["oracle", "dameng", "gaussdb", "yashandb", "oscar", "oceanbase-oracle"]);
 const ORACLE_PL_SQL_BLOCK_STARTERS = new Set(["DECLARE", "BEGIN"]);
 const ORACLE_PL_SQL_CREATE_OBJECT_TYPES = new Set(["FUNCTION", "PROCEDURE", "TRIGGER", "PACKAGE", "PACKAGE BODY", "TYPE", "TYPE BODY"]);
@@ -354,6 +356,13 @@ export function statementRangeAtCursor(sql: string, cursorPos: number, databaseT
     if (pos >= statement.from && pos <= statement.to) {
       return rangeForCursorInSoftRanges(sql, softRanges, pos) ?? rangeFor(statement, sql);
     }
+    const next = statements[index + 1];
+    // A caret after a statement's semicolon still belongs to that statement
+    // until the next statement's text begins.
+    if (pos > statement.to && (!next || pos < next.from) && isCursorInSameLineDelimiterGap(sql, statement.to, pos)) {
+      return rangeForCursorInSoftRanges(sql, softRanges, pos) ?? rangeFor(statement, sql);
+    }
+
     // Cursor in indentation or inter-statement whitespace immediately before
     // the statement should still target that statement, while the returned
     // execution range remains tight around the SQL text itself.
@@ -366,7 +375,6 @@ export function statementRangeAtCursor(sql: string, cursorPos: number, databaseT
       return rangeForCursorInSoftRanges(sql, softRanges, pos) ?? rangeFor(statement, sql);
     }
 
-    const next = statements[index + 1];
     if (pos > statement.to && (!next || pos < next.hitFrom) && isCursorOnStatementLine(sql, pos, statement)) {
       return rangeForCursorInSoftRanges(sql, softRanges, pos) ?? rangeFor(statement, sql);
     }
@@ -441,6 +449,10 @@ function splitStatementRangeAtSoftStarts(sql: string, statement: RawStatement, d
     }
 
     if (currentBodyKeyword === "UPDATE" && lineStart.keyword === "SET") {
+      continue;
+    }
+
+    if (currentBodyKeyword === "ALTER" && ALTER_BODY_KEYWORDS.has(lineStart.keyword)) {
       continue;
     }
 
@@ -639,11 +651,18 @@ function softStatementKeywordAt(sql: string, pos: number, databaseType?: Databas
   const match = /^[A-Za-z_][\w$]*/.exec(sql.slice(pos));
   if (!match) return null;
   const keyword = match[0].toUpperCase();
+  if (keyword === "REPLACE" && nextNonWhitespaceChar(sql, pos + match[0].length) === "(") return null;
   return softStatementStartKeywords(databaseType).has(keyword) ? keyword : null;
 }
 
 function softStatementStartKeywords(databaseType?: DatabaseType): Set<string> {
   return new Set([...COMMON_SOFT_STATEMENT_START_KEYWORDS, ...(databaseType ? (DATABASE_SOFT_STATEMENT_KEYWORDS[databaseType] ?? []) : [])]);
+}
+
+function nextNonWhitespaceChar(sql: string, pos: number): string | null {
+  let i = pos;
+  while (i < sql.length && isSqlWhitespace(sql[i])) i += 1;
+  return i < sql.length ? sql[i] : null;
 }
 
 function isExplainLikeKeyword(keyword: string | null): boolean {
@@ -1098,6 +1117,7 @@ function normalizeSql(sql: string): string {
  */
 export function executableStatementRanges(sql: string, databaseType?: DatabaseType): SqlTextRange[] {
   if (databaseType === "redis") return redisExecutableCommandRanges(sql);
+  if (databaseType === "mongodb") return splitMongoCommandRanges(sql).map(({ from, to, text }) => ({ from, to, sql: text }));
   return splitSqlStatementRanges(sql, databaseType).flatMap((statement) => splitStatementRangeAtSoftStarts(sql, statement, databaseType).map((range) => rangeFor(range, sql)));
 }
 

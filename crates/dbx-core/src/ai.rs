@@ -177,7 +177,6 @@ pub struct AiCompletionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_contract: Option<AiTaskContract>,
     pub max_tokens: Option<u32>,
-    pub temperature: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -466,8 +465,16 @@ fn responses_token_usage(event: &serde_json::Value) -> Option<TokenUsage> {
     Some(TokenUsage { input_tokens: input as u32, output_tokens: output as u32 })
 }
 
+fn is_openai_api_endpoint(endpoint: &str) -> bool {
+    reqwest::Url::parse(endpoint)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.eq_ignore_ascii_case("api.openai.com")))
+        .unwrap_or(false)
+}
+
 fn is_openai_api_config(config: &AiConfig) -> bool {
-    matches!(config.provider, AiProvider::Openai) || config.endpoint.to_ascii_lowercase().contains("api.openai.com")
+    // OpenAI provider can be routed through a custom proxy while still requiring OpenAI request semantics.
+    matches!(config.provider, AiProvider::Openai) || is_openai_api_endpoint(&config.endpoint)
 }
 
 fn is_openai_reasoning_model(model: &str) -> bool {
@@ -475,8 +482,20 @@ fn is_openai_reasoning_model(model: &str) -> bool {
     model.starts_with("gpt-5") || model.starts_with("o1") || model.starts_with("o3") || model.starts_with("o4")
 }
 
-/// Kimi K2.5+ models (including K2.7-Code) require fixed sampling parameters:
-/// temperature=1.0, top_p=0.95, n=1. Any other value returns an error.
+fn uses_openai_max_completion_tokens(config: &AiConfig) -> bool {
+    is_openai_api_config(config) && is_openai_reasoning_model(&config.model)
+}
+
+fn set_chat_completion_token_limit(body: &mut serde_json::Value, config: &AiConfig, max_tokens: u32) {
+    if uses_openai_max_completion_tokens(config) {
+        body["max_completion_tokens"] = json!(max_tokens);
+    } else {
+        body["max_tokens"] = json!(max_tokens);
+    }
+}
+
+/// Kimi K2.5+ models (including K2.7-Code) handle thinking flags differently
+/// and reject the OpenAI-compatible `extra_body.chat_template_kwargs` toggle.
 ///
 /// Matches `kimi-k2.5`, `kimi-k2.6`, `kimi-k2.7-code`, K3+, and future versions,
 /// while excluding older K2 variants (`kimi-k2`, `kimi-k2-thinking`, etc.).
@@ -494,25 +513,6 @@ fn is_kimi_model(model: &str) -> bool {
     } else {
         false
     }
-}
-
-pub fn supports_temperature(config: &AiConfig) -> bool {
-    !(is_kimi_model(&config.model) || is_openai_api_config(config) && is_openai_reasoning_model(&config.model))
-}
-
-fn add_temperature_if_supported_for_config(body: &mut serde_json::Value, config: &AiConfig, temperature: Option<f32>) {
-    if supports_temperature(config) {
-        body["temperature"] = temperature_value(temperature);
-    }
-}
-
-pub fn add_temperature_if_supported(body: &mut serde_json::Value, request: &AiCompletionRequest) {
-    add_temperature_if_supported_for_config(body, &request.config, request.temperature);
-}
-
-fn temperature_value(temperature: Option<f32>) -> serde_json::Value {
-    let value = ((temperature.unwrap_or(0.2) as f64) * 100.0).round() / 100.0;
-    json!(value)
 }
 
 fn responses_text(data: &serde_json::Value) -> String {
@@ -858,7 +858,6 @@ pub async fn call_claude(client: &reqwest::Client, request: AiCompletionRequest)
     let body = json!({
         "model": request.config.model,
         "max_tokens": request.max_tokens.unwrap_or(2048),
-        "temperature": temperature_value(request.temperature),
         "system": claude_system_prompt(&request.system_prompt),
         "messages": request.messages,
     });
@@ -893,9 +892,8 @@ pub async fn call_openai_compatible(client: &reqwest::Client, request: AiComplet
     let mut body_obj = json!({
         "model": request.config.model,
         "messages": messages,
-        "max_tokens": request.max_tokens.unwrap_or(2048),
     });
-    add_temperature_if_supported(&mut body_obj, &request);
+    set_chat_completion_token_limit(&mut body_obj, &request.config, request.max_tokens.unwrap_or(2048));
     if !request.config.enable_thinking && !is_kimi_model(&request.config.model) {
         body_obj["extra_body"] = json!({
             "chat_template_kwargs": { "enable_thinking": false }
@@ -922,12 +920,11 @@ pub async fn call_openai_compatible(client: &reqwest::Client, request: AiComplet
 pub async fn call_responses_api(client: &reqwest::Client, request: AiCompletionRequest) -> Result<String, String> {
     let headers = maybe_bearer_headers(&request.config)?;
 
-    let mut body = json!({
+    let body = json!({
         "model": request.config.model,
         "input": build_responses_input(&request.system_prompt, &request.messages),
         "max_output_tokens": responses_max_output_tokens(request.max_tokens),
     });
-    add_temperature_if_supported(&mut body, &request);
 
     let res = client
         .post(resolve_endpoint(&request.config))
@@ -963,7 +960,6 @@ pub async fn call_gemini(client: &reqwest::Client, request: AiCompletionRequest)
         "contents": contents,
         "generationConfig": {
             "maxOutputTokens": request.max_tokens.unwrap_or(2048),
-            "temperature": temperature_value(request.temperature),
         },
     });
 
@@ -1080,7 +1076,6 @@ pub async fn test_connection_core(config: &AiConfig) -> Result<AiTestConnectionR
             let body = json!({
                 "model": &model,
                 "max_tokens": 16,
-                "temperature": temperature_value(Some(0.0)),
                 "system": CLAUDE_DEFAULT_SYSTEM,
                 "messages": [{ "role": "user", "content": TEST_PROMPT }],
                 "stream": true,
@@ -1106,7 +1101,7 @@ pub async fn test_connection_core(config: &AiConfig) -> Result<AiTestConnectionR
                 .query(&[("key", config.api_key.as_str()), ("alt", "sse")])
                 .json(&json!({
                     "contents": [{ "parts": [{ "text": TEST_PROMPT }], "role": "user" }],
-                    "generationConfig": { "maxOutputTokens": 16, "temperature": temperature_value(Some(0.0)) },
+                    "generationConfig": { "maxOutputTokens": 16 },
                 }))
                 .send()
                 .await
@@ -1121,7 +1116,6 @@ pub async fn test_connection_core(config: &AiConfig) -> Result<AiTestConnectionR
             let body = json!({
                 "model": &model,
                 "max_tokens": 16,
-                "temperature": temperature_value(Some(0.0)),
                 "system": CLAUDE_DEFAULT_SYSTEM,
                 "messages": [{ "role": "user", "content": TEST_PROMPT }],
                 "stream": true,
@@ -1150,14 +1144,14 @@ pub async fn test_connection_core(config: &AiConfig) -> Result<AiTestConnectionR
                 })
             } else {
                 let messages = vec![json!({ "role": "user", "content": TEST_PROMPT })];
-                json!({
+                let mut body = json!({
                     "model": &model,
                     "messages": messages,
-                    "max_tokens": 16,
                     "stream": true,
-                })
+                });
+                set_chat_completion_token_limit(&mut body, config, 16);
+                body
             };
-            add_temperature_if_supported_for_config(&mut body_obj, config, Some(0.0));
             if config.api_style != AiApiStyle::Responses && !config.enable_thinking && !is_kimi_model(&config.model) {
                 body_obj["extra_body"] = json!({
                     "chat_template_kwargs": { "enable_thinking": false }
@@ -1331,7 +1325,6 @@ async fn stream_claude(
     let body = json!({
         "model": request.config.model,
         "max_tokens": request.max_tokens.unwrap_or(2048),
-        "temperature": temperature_value(request.temperature),
         "system": claude_system_prompt(&request.system_prompt),
         "messages": request.messages,
         "stream": true,
@@ -1411,10 +1404,9 @@ async fn stream_openai(
     let mut body_obj = json!({
         "model": request.config.model,
         "messages": messages,
-        "max_tokens": request.max_tokens.unwrap_or(2048),
         "stream": true,
     });
-    add_temperature_if_supported(&mut body_obj, request);
+    set_chat_completion_token_limit(&mut body_obj, &request.config, request.max_tokens.unwrap_or(2048));
     if !request.config.enable_thinking && !is_kimi_model(&request.config.model) {
         body_obj["extra_body"] = json!({
             "chat_template_kwargs": { "enable_thinking": false }
@@ -1497,13 +1489,12 @@ async fn stream_responses_api(
 ) -> Result<(), String> {
     let headers = maybe_bearer_headers(&request.config)?;
 
-    let mut body = json!({
+    let body = json!({
         "model": request.config.model,
         "input": build_responses_input(&request.system_prompt, &request.messages),
         "max_output_tokens": responses_max_output_tokens(request.max_tokens),
         "stream": true,
     });
-    add_temperature_if_supported(&mut body, request);
 
     let res = client
         .post(resolve_endpoint(&request.config))
@@ -1587,7 +1578,6 @@ async fn stream_gemini(
         "contents": contents,
         "generationConfig": {
             "maxOutputTokens": request.max_tokens.unwrap_or(2048),
-            "temperature": temperature_value(request.temperature),
         },
     });
 
@@ -1792,7 +1782,7 @@ async fn stream_claude_with_tools(
 
     let tool_json: Vec<serde_json::Value> = tools.iter().map(|t| t.to_anthropic_tool()).collect();
 
-    let mut body = json!({
+    let body = json!({
         "model": request.config.model,
         "max_tokens": request.max_tokens.unwrap_or(4096),
         "system": claude_system_prompt(&request.system_prompt),
@@ -1800,7 +1790,6 @@ async fn stream_claude_with_tools(
         "tools": tool_json,
         "stream": true,
     });
-    add_temperature_if_supported(&mut body, request);
 
     let res = client
         .post(resolve_endpoint(&request.config))
@@ -1968,13 +1957,12 @@ async fn stream_openai_with_tools(
     let mut body = json!({
         "model": request.config.model,
         "messages": messages,
-        "max_tokens": request.max_tokens.unwrap_or(4096),
         "tools": tool_json,
         "tool_choice": "auto",
         "stream": true,
         "stream_options": { "include_usage": true },
     });
-    add_temperature_if_supported(&mut body, request);
+    set_chat_completion_token_limit(&mut body, &request.config, request.max_tokens.unwrap_or(4096));
 
     let res = client
         .post(resolve_endpoint(&request.config))
@@ -2077,7 +2065,7 @@ async fn stream_responses_with_tools(
     let headers = maybe_bearer_headers(&request.config)?;
     let tool_json: Vec<serde_json::Value> = tools.iter().map(responses_function_tool).collect();
 
-    let mut body = json!({
+    let body = json!({
         "model": request.config.model,
         "input": build_responses_input_with_tools(&request.system_prompt, &request.messages),
         "max_output_tokens": responses_max_output_tokens(request.max_tokens),
@@ -2085,7 +2073,6 @@ async fn stream_responses_with_tools(
         "tool_choice": "auto",
         "stream": true,
     });
-    add_temperature_if_supported(&mut body, request);
 
     let res = client
         .post(resolve_endpoint(&request.config))
@@ -2456,14 +2443,14 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use super::{
-        add_temperature_if_supported_for_config, build_ai_http_client, build_responses_input_with_tools,
-        claude_headers, claude_system_prompt, drain_next_stream_line, emit_responses_function_call_item, gemini_text,
-        is_kimi_model, openai_response_text, openai_stream_reasoning, openai_stream_text, parse_model_list_response,
-        resolve_endpoint, resolve_model_list_endpoint, responses_function_tool, responses_max_output_tokens,
-        responses_stream_text, responses_text, responses_token_usage, stream_data_payload, supports_temperature,
-        temperature_value, uses_anthropic_messages_api, validate_config, AiApiStyle, AiAuthMethod, AiConfig, AiMessage,
-        AiModelInfo, AiProvider, AiReasoningLevel, StreamToolEvent, StreamingToolCallAccumulator, ToolCallRef,
-        AUTHORIZATION, CLAUDE_DEFAULT_SYSTEM, TEST_PROMPT,
+        build_ai_http_client, build_responses_input_with_tools, claude_headers, claude_system_prompt,
+        drain_next_stream_line, emit_responses_function_call_item, gemini_text, is_kimi_model, openai_response_text,
+        openai_stream_reasoning, openai_stream_text, parse_model_list_response, resolve_endpoint,
+        resolve_model_list_endpoint, responses_function_tool, responses_max_output_tokens, responses_stream_text,
+        responses_text, responses_token_usage, set_chat_completion_token_limit, stream_data_payload,
+        uses_anthropic_messages_api, validate_config, AiApiStyle, AiAuthMethod, AiConfig, AiMessage, AiModelInfo,
+        AiProvider, AiReasoningLevel, StreamToolEvent, StreamingToolCallAccumulator, ToolCallRef, AUTHORIZATION,
+        CLAUDE_DEFAULT_SYSTEM, TEST_PROMPT,
     };
 
     /// Reproduce the "Unknown tool:" bug: some OpenAI-compatible providers
@@ -3057,15 +3044,21 @@ mod tests {
     }
 
     #[test]
-    fn temperature_value_rounds_f32_to_provider_safe_precision() {
-        assert_eq!(temperature_value(Some(0.15)), serde_json::json!(0.15));
-        assert_eq!(temperature_value(Some(0.149)), serde_json::json!(0.15));
-        assert_eq!(temperature_value(None), serde_json::json!(0.2));
-        assert_eq!(serde_json::to_string(&temperature_value(Some(0.15))).unwrap(), "0.15");
+    fn detects_kimi_models_that_skip_extra_body_thinking_toggle() {
+        assert!(is_kimi_model("kimi-k2.7-code"));
+        assert!(is_kimi_model("kimi-k2.6"));
+        assert!(is_kimi_model("kimi-k2.5"));
+        assert!(is_kimi_model("kimi-k3"));
+
+        // Older K2 variants should not skip OpenAI-compatible thinking toggles.
+        assert!(!is_kimi_model("kimi-k2"));
+        assert!(!is_kimi_model("kimi-k2-thinking"));
+        assert!(!is_kimi_model("kimi-k2-0711-preview"));
+        assert!(!is_kimi_model("kimi-k2.4"));
     }
 
     #[test]
-    fn omits_temperature_for_openai_reasoning_models() {
+    fn uses_max_completion_tokens_for_openai_reasoning_chat_completions() {
         let mut config = AiConfig {
             provider: AiProvider::Openai,
             api_key: "key".to_string(),
@@ -3082,57 +3075,55 @@ mod tests {
             codex_cli_env: Default::default(),
         };
 
-        assert!(!supports_temperature(&config));
+        let mut body = serde_json::json!({
+            "model": &config.model,
+            "messages": [{ "role": "user", "content": TEST_PROMPT }],
+            "stream": true,
+        });
+        set_chat_completion_token_limit(&mut body, &config, 1024);
 
-        config.model = "o4-mini".to_string();
-        assert!(!supports_temperature(&config));
+        assert_eq!(body.get("max_completion_tokens"), Some(&serde_json::json!(1024)));
+        assert!(body.get("max_tokens").is_none());
 
         config.model = "gpt-4o".to_string();
-        assert!(supports_temperature(&config));
+        let mut body = serde_json::json!({
+            "model": &config.model,
+            "messages": [{ "role": "user", "content": TEST_PROMPT }],
+            "stream": true,
+        });
+        set_chat_completion_token_limit(&mut body, &config, 1024);
+
+        assert_eq!(body.get("max_tokens"), Some(&serde_json::json!(1024)));
+        assert!(body.get("max_completion_tokens").is_none());
+
+        config.endpoint = "http://localhost:11434/v1".to_string();
+        config.model = "gpt-5-proxy".to_string();
+        let mut body = serde_json::json!({
+            "model": &config.model,
+            "messages": [{ "role": "user", "content": TEST_PROMPT }],
+            "stream": true,
+        });
+        set_chat_completion_token_limit(&mut body, &config, 1024);
+
+        assert_eq!(body.get("max_completion_tokens"), Some(&serde_json::json!(1024)));
+        assert!(body.get("max_tokens").is_none());
 
         config.provider = AiProvider::OpenaiCompatible;
         config.endpoint = "http://localhost:11434/v1".to_string();
         config.model = "gpt-5-local".to_string();
-        assert!(supports_temperature(&config));
+        let mut body = serde_json::json!({
+            "model": &config.model,
+            "messages": [{ "role": "user", "content": TEST_PROMPT }],
+            "stream": true,
+        });
+        set_chat_completion_token_limit(&mut body, &config, 1024);
 
-        // Kimi K2.5+ models: temperature is forced to 1.0 by the API
-        config.model = "kimi-k2.7-code".to_string();
-        assert!(!supports_temperature(&config));
-        assert!(is_kimi_model(&config.model));
-
-        config.model = "kimi-k2.6".to_string();
-        assert!(!supports_temperature(&config));
-        assert!(is_kimi_model(&config.model));
-
-        config.model = "kimi-k2.5".to_string();
-        assert!(!supports_temperature(&config));
-        assert!(is_kimi_model(&config.model));
-
-        // K3+ should also be matched
-        config.model = "kimi-k3".to_string();
-        assert!(!supports_temperature(&config));
-        assert!(is_kimi_model(&config.model));
-
-        // Older K2 variants should NOT be matched (they support custom temperature)
-        config.model = "kimi-k2".to_string();
-        assert!(supports_temperature(&config));
-        assert!(!is_kimi_model(&config.model));
-
-        config.model = "kimi-k2-thinking".to_string();
-        assert!(supports_temperature(&config));
-        assert!(!is_kimi_model(&config.model));
-
-        config.model = "kimi-k2-0711-preview".to_string();
-        assert!(supports_temperature(&config));
-        assert!(!is_kimi_model(&config.model));
-
-        config.model = "kimi-k2.4".to_string();
-        assert!(supports_temperature(&config));
-        assert!(!is_kimi_model(&config.model));
+        assert_eq!(body.get("max_tokens"), Some(&serde_json::json!(1024)));
+        assert!(body.get("max_completion_tokens").is_none());
     }
 
     #[test]
-    fn omits_temperature_for_kimi_test_connection_body() {
+    fn omits_extra_body_for_kimi_test_connection_body() {
         let config = AiConfig {
             provider: AiProvider::OpenaiCompatible,
             api_key: "key".to_string(),
@@ -3155,14 +3146,12 @@ mod tests {
             "stream": true,
         });
 
-        add_temperature_if_supported_for_config(&mut body, &config, Some(0.0));
         if !config.enable_thinking && !is_kimi_model(&config.model) {
             body["extra_body"] = serde_json::json!({
                 "chat_template_kwargs": { "enable_thinking": false }
             });
         }
 
-        assert!(body.get("temperature").is_none());
         assert!(body.get("extra_body").is_none());
     }
 
