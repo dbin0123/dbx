@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use log;
 use rayon::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -204,20 +205,34 @@ impl FieldMapping {
         let source_params = &trimmed[base_type.len()..];
         let matched = mappings.iter().find(|m| m.source_type.eq_ignore_ascii_case(base_type))?;
 
-        match matched.param_strategy {
+        let result = match matched.param_strategy {
             ParamStrategy::Strip => Some(matched.target_type.clone()),
             ParamStrategy::Custom => match &matched.custom_params {
                 Some(params) if !params.is_empty() => Some(format!("{}{}", matched.target_type, params)),
                 _ => Some(matched.target_type.clone()),
             },
             ParamStrategy::Preserve => {
-                if !source_params.is_empty() && type_supports_params(target_kind, &matched.target_type) {
+                let supports = type_supports_params(target_kind, &matched.target_type);
+                let has_params = !source_params.is_empty();
+                if has_params && supports {
                     Some(format!("{}{}", matched.target_type, source_params))
                 } else {
+                    log::info!(
+                        "apply_with_params[Preserve] source={} target={} strategy={:?} has_params={} supports_params={} -> bare {}",
+                        source_type, matched.target_type, matched.param_strategy, has_params, supports, matched.target_type
+                    );
                     Some(matched.target_type.clone())
                 }
             }
-        }
+        };
+        log::info!(
+            "apply_with_params source={} target_type={} strategy={:?} result={:?}",
+            source_type,
+            matched.target_type,
+            matched.param_strategy,
+            result
+        );
+        result
     }
 }
 
@@ -1630,6 +1645,19 @@ impl SchemaDiffPreparationOptions {
 }
 
 pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffPreparation {
+    if !options.field_mappings.is_empty() {
+        log::info!("prepare_schema_diff field_mappings:");
+        for m in &options.field_mappings {
+            log::info!(
+                "  {} -> {} (strategy={:?}, custom={:?})",
+                m.source_type,
+                m.target_type,
+                m.param_strategy,
+                m.custom_params
+            );
+        }
+        log::info!("  source_dialect={:?} target_dialect={:?}", options.source_dialect, options.target_dialect);
+    }
     let dep_graph = DependencyGraph::build(&options.source_details, &options.source_tables);
 
     let mut diffs = if let Some(ref strategy) = options.shard_strategy {
