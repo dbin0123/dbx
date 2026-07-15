@@ -167,7 +167,7 @@ import { isCancelSearchShortcut, isCopyCurrentRowShortcut, isDeleteCurrentRowSho
 import { dataGridHeaderContentWidth, scrollbarGutterWidth } from "@/lib/dataGrid/dataGridScrollGutter";
 import { canGoNextDataGridPage } from "@/lib/dataGrid/dataGridPagination";
 import { dataGridCountQueryOptions } from "@/lib/dataGrid/dataGridQueryOptions";
-import { dataGridBottomScrollTop, dataGridScrollPosition, isDataGridAtScrollBottom, isDataGridNearScrollBottom, shouldCheckInfiniteScrollAfterScroll, type DataGridScrollPosition } from "@/lib/dataGrid/dataGridInfiniteScroll";
+import { dataGridBottomScrollTop, dataGridScrollPosition, isDataGridAtScrollBottom, isDataGridNearScrollBottom, restoredDataGridScrollLeft, shouldCheckInfiniteScrollAfterScroll, type DataGridScrollPosition } from "@/lib/dataGrid/dataGridInfiniteScroll";
 import { CANVAS_DATA_GRID_ROW_HEIGHT, drawCanvasDataGrid } from "@/lib/dataGrid/canvasDataGridRenderer";
 import { dataGridSaveActionMode, dataGridSaveToolbarState } from "@/lib/dataGrid/dataGridSaveUi";
 import type { QueryEditabilityReason } from "@/lib/sql/sqlAnalysis";
@@ -2912,6 +2912,7 @@ const gridStyle = computed(() => ({
 }));
 const gridHorizontalScrollLeft = ref(0);
 const gridViewportWidth = ref(0);
+let gridScrollLeftBeforeTranspose = 0;
 const renderedColumnOffsets = computed(() => {
   const widths = renderedColumnWidths.value;
   const offsets = Array.from({ length: widths.length + 1 }, () => 0);
@@ -7877,7 +7878,20 @@ function transposeNav(delta: number) {
 }
 
 watch(isTransposeMode, (active) => {
-  if (active) nextTick(updateTransposeViewport);
+  if (active) {
+    gridScrollLeftBeforeTranspose = gridScrollerElement()?.scrollLeft ?? gridHorizontalScrollLeft.value;
+    nextTick(updateTransposeViewport);
+    return;
+  }
+
+  nextTick(() => {
+    const scroller = gridScrollerElement();
+    if (!scroller) return;
+    // Transpose mode replaces the normal grid scroller, so restore its state and
+    // reconnect overflow observers only after Vue mounts the new element.
+    scroller.scrollLeft = restoredDataGridScrollLeft(gridScrollLeftBeforeTranspose, scroller.scrollWidth, scroller.clientWidth);
+    refreshGridScrollerMetrics();
+  });
 });
 
 watch(
