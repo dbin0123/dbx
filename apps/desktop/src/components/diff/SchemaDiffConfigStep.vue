@@ -39,6 +39,7 @@ const emit = defineEmits<{
   (e: "update:targetDatabase", value: string): void;
   (e: "update:targetSchema", value: string): void;
   (e: "update:ignoreComments", value: boolean): void;
+  (e: "update:fieldMappings", value: FieldMappingEntry[]): void;
   (e: "compare"): void;
   (e: "saveConfig"): void;
   (e: "loadConfig"): void;
@@ -69,6 +70,12 @@ const activeFieldMappings = computed(() => props.options?.fieldMappings ?? []);
 const canCompare = computed(() => {
   return props.sourceConnectionId && props.targetConnectionId && props.sourceDatabase && props.targetDatabase && (!isSchemaAware(sourceConfig.value?.db_type) || props.sourceSchema) && (!isSchemaAware(targetConfig.value?.db_type) || props.targetSchema);
 });
+
+const sourceDbType = computed(() => sourceConfig.value?.db_type || "");
+const targetDbType = computed(() => targetConfig.value?.db_type || "");
+const showFieldMapping = computed(() => sourceDbType.value && targetDbType.value && sourceDbType.value !== targetDbType.value);
+
+const activeFieldMappings = computed(() => props.options?.fieldMappings ?? []);
 
 async function loadDatabases(connectionId: string, side: "source" | "target") {
   if (!connectionId) return;
@@ -424,6 +431,9 @@ async function fetchDbVersion(connectionId: string, database: string, schema: st
         {{ t("diff.ignoreComments") }}
       </Label>
     </div>
+
+    <!-- Field Type Mapping (shown only when source/target db types differ) -->
+    <FieldMappingPanel v-if="showFieldMapping" :mappings="activeFieldMappings" :source-db-type="sourceDbType" :target-db-type="targetDbType" @update:mappings="(v: FieldMappingEntry[]) => $emit('update:fieldMappings', v)" />
 
     <!-- Recent Configs Dropdown -->
     <div v-if="recentConfigs.length > 0" class="flex items-center gap-2">

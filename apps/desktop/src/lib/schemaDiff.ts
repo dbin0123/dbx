@@ -110,6 +110,11 @@ export interface TableSchemaDetail {
   ddl?: string;
 }
 
+export interface FieldMappingEntry {
+  sourceType: string;
+  targetType: string;
+}
+
 export interface SchemaDiffPreparationOptions {
   sourceTables: TableInfo[];
   targetTables: TableInfo[];
@@ -135,6 +140,7 @@ export interface SchemaDiffPreparationOptions {
   sourceDialect?: string;
   targetDialect?: string;
   compatibilityThreshold?: number;
+  fieldMappings?: FieldMappingEntry[];
 }
 
 export interface RenameCandidate {

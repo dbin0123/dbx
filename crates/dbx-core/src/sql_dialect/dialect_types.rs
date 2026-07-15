@@ -60,10 +60,27 @@ mod tests {
 
     #[test]
     fn list_dameng_types() {
-        let registry = make_registry_with_types("DuckDB", &["VARCHAR", "INTEGER", "BIGINT", "FLOAT", "DOUBLE"]);
-        let types = list_dialect_type_names_in("DuckDB", &registry);
-        assert!(!types.is_empty(), "DuckDB should have types");
-        assert_eq!(types.len(), 5);
+        let registry = make_registry_with_types(
+            "Dameng",
+            &[
+                "VARCHAR",
+                "VARCHAR2",
+                "INT",
+                "INTEGER",
+                "BIGINT",
+                "FLOAT",
+                "DOUBLE",
+                "DATE",
+                "TIMESTAMP",
+                "CLOB",
+                "BLOB",
+                "TEXT",
+            ],
+        );
+        let types = list_dialect_type_names_in("Dameng", &registry);
+        assert!(!types.is_empty(), "Dameng should have types");
+        assert!(types.contains(&"VARCHAR2".to_string()));
+        assert_eq!(types.len(), 12);
     }
 
     #[test]

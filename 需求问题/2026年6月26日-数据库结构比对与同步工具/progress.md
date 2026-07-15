@@ -391,3 +391,98 @@
 |------|------|
 | script_generator::tests::* (52 tests) | 52/52 通过 |
 | 全量单元测试 (1638 tests) | 1636/1638 通过（2 FAIL 为预存在） |
+
+---
+
+## 会话：2026-06-29
+
+### 阶段间差距分析
+- **状态：** completed
+- **开始时间：** 2026-06-29
+- **完成时间：** 2026-06-29
+- 执行的操作：
+  - 读取 V4 设计文档（582 行）、任务计划（556 行）、代码基线
+  - 探索后端 `crates/dbx-core/src/` 全部 71 个公共模块
+  - 探索前端 `apps/desktop/src/` Vue 3 组件
+  - 三向交叉比对：设计方案 ↔ 任务计划 ↔ 实际代码
+  - 发现 **16 项功能缺口**：
+    - **Backend（5 项）**：OSC 探针、方言热加载+CLI引导、配置治理(阶段10跳过)、状态机缺OSC_SYNCING状态、Prometheus指标不完整
+    - **Frontend（11 项）**：标签管理面板、风险矩阵、回滚并列对比、严格标签告警、冲突矩阵、权限矩阵、影响评估报告UI、OSC状态展示、配置热重载UI、正向/反向执行计划对比、i18n缺 ~50键
+  - 将缺口划分为 4 个新阶段（14-17）并更新 `task_plan.md`
+  - 详细差距分析写入 `findings.md` 新章节
+- 创建/修改的文件：
+  - task_plan.md（更新当前阶段 + 新增阶段 14-17 + 新关键问题 7-10）
+  - findings.md（新增"V4 设计方案差距分析"章节）
+  - progress.md（本次会话记录）
+
+## 五问重启检查
+
+| 问题 | 答案 |
+|------|------|
+| 我在哪里？ | 阶段间分析完成，待开始阶段 14 |
+| 我要去哪里？ | 阶段 14 (OSC探针) → 15 (热加载) → 16 (配置治理) → 17 (前端UI补齐) |
+| 目标是什么？ | 实现 V4 设计文档中全部未覆盖的功能 |
+| 我学到了什么？ | 见 findings.md 差距分析章节 |
+| 我做了什么？ | 三向交叉比对设计方案/任务计划/代码，识别 16 项缺口，规划 4 个新阶段 |
+
+---
+
+## 会话：2026-07-01
+
+### 阶段 16：企业级配置治理补齐（重新开启阶段 10）
+- **状态：** completed
+- **开始时间：** 2026-07-01
+- **完成时间：** 2026-07-01
+- 执行的操作：
+  - 新增 `crates/dbx-core/src/config/governance.rs` 完整模块（~970 行）
+  - 在 `Cargo.toml` 添加 `arc-swap = "1"` 依赖
+  - 在 `storage.rs` 新增 4 张表（`config_audit_log`、`config_version_snapshots`、`config_approval_records`、`config_drift_alerts`）+ 索引 + CRUD 方法
+  - 注册模块到 `config/mod.rs`
+  - 新增 Tauri commands 到 `config_cmd.rs`（15 个命令）
+  - **16.1 配置变更审计与版本管理**：`ConfigAuditor`、`ConfigAuditEntry`、`ConfigVersionSnapshot`、`AuditQuery`/`AuditSummary`、回滚还原
+  - **16.2 审批流集成**：`ApprovalStatus`（Draft/PendingApproval/Approved/Rejected）、`ConfigApproval`、`ApprovalRecord`、敏感域检测、三级审批、Webhook 预留
+  - **16.3 跨环境配置漂移检测**：`ConfigChecksum`（SHA256）、`DriftReport`、`DriftDetector`、`DriftAlert`、告警确认
+  - **16.4 配置热重载 COW 快照**：`ConfigSnapshot`（ArcSwap 包装）、load/apply/apply_silent、审计自动记录
+  - 编写 26 个单元测试（审计 3 + 快照 3 + 回滚 2 + 审批 9 + 漂移 5 + COW 快照 4）
+
+## 五问重启检查
+
+| 问题 | 答案 |
+|------|------|
+| 我在哪里？ | 阶段 16 已完成 |
+| 我要去哪里？ | 阶段 17（前端 UI 补齐） |
+| 目标是什么？ | 实现 V4 设计文档中全部未覆盖的功能 |
+| 我学到了什么？ | Phase 16 的 `governance.rs` 一个文件承载了审计/审批/漂移检测/COW 快照四个子功能；ArcSwap 无需锁即可安全读写；使用 `INSERT OR REPLACE` 简化审批记录更新 |
+| 我做了什么？ | 新增 `config/governance.rs`、扩展 `storage.rs` 添加 4 表 + CRUD、注册到 `config/mod.rs`、添加 15 个 Tauri commands |
+
+---
+
+## 会话：2026-07-01（续）
+
+### 阶段 17：前端 UI 补齐（扩展阶段 13）
+- **状态：** completed
+- **开始时间：** 2026-07-01
+- **完成时间：** 2026-07-01
+- 执行的操作：
+  - **17.13 类型/API 补齐**：新增 `types/governance.ts`（20+ 类型接口），`lib/tauri.ts` 添加 15 个 governance API 函数，`lib/api.ts` 添加对应 forward
+  - **17.10 i18n 键补充**：`en.ts` 新增 9 个命名空间约 60 个键（tag/impact/rollbackComparison/strictTag/conflictMatrix/privilegeMatrix/osc/rebase/configDrift）
+  - **17.7 ImpactReportPanel.vue**：新组件，展示在线影响评估报告（风险等级徽章、策略、锁分析、警告列表）
+  - **17.1 TagManagementPanel.vue**：新组件，标签 CRUD、批量导入导出、白名单编辑、过期管理
+  - **17.3 回滚并列对比**：`SchemaDiffDdlPanel.vue` 增强，新增 Rollback Comparison 标签页（Splitpanes 左右并列 Forward/Rollback SQL + 差异高亮 + 同步滚动）
+  - **17.4 StrictTagAlertPanel.vue**：新组件，严格标签违规告警面板（阻断横幅 + 操作按钮）
+  - **17.5 ConflictMatrix.vue**：新组件，冲突矩阵可视化（颜色编码 + 自动/手动解决）
+  - **17.11 RebasePanel.vue**：新组件，漂移报告与基线重置操作面板
+  - **17.12 ConfigDriftPanel.vue**：新组件，跨环境配置漂移检测与告警确认
+  - **17.8 OscStatusPanel.vue**：新组件，gh-ost/pt-osc 进度条与状态展示
+  - **17.2 风险矩阵**：`SchemaDiffDeployStep.vue` 集成 ImpactReportPanel（可折叠面板）
+  - **17.9 ConfigHotReloadIndicator.vue**：新组件，底部固定位置的热重载提示指示器
+
+## 最终五问重启检查
+
+| 问题 | 答案 |
+|------|------|
+| 我在哪里？ | 所有 17 个阶段全部完成 |
+| 我要去哪里？ | — |
+| 目标是什么？ | 实现 V4 设计文档中的完整数据库结构比对与同步工具 |
+| 我学到了什么？ | 17 个阶段覆盖了方言适配、五层配置、SQL 解析增强、差异计算引擎增强、数据验证器、状态校准器、在线安全评估、状态持久化、脚本生成器、配置治理、风险控制、集成测试、前端 UI、方言 YAML 热加载、OSC 探针、企业级配置治理、前端 UI 补齐 |
+| 我做了什么？ | 所有阶段 1-17 全部完成 |

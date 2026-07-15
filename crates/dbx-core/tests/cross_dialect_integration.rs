@@ -195,7 +195,7 @@ fn generate_schema_sync_sql_mysql_output_format() {
         sync_sql: None,
     }];
 
-    let sql = generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, None, false, None);
+    let sql = generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, None, false, None, &[]);
 
     assert!(sql.contains("CREATE TABLE"), "MySQL SQL should contain CREATE TABLE");
     assert!(sql.contains('`'), "MySQL SQL should use backtick identifiers");
@@ -218,7 +218,7 @@ fn generate_schema_sync_sql_postgres_output_format() {
         sync_sql: None,
     }];
 
-    let sql = generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Postgres, None, false, None);
+    let sql = generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Postgres, None, false, None, &[]);
     assert!(sql.contains("CREATE TABLE"), "PostgreSQL SQL should contain CREATE TABLE");
     assert!(sql.contains("SERIAL"), "PostgreSQL SQL should use SERIAL type");
 }
@@ -240,6 +240,6 @@ fn generate_schema_sync_sql_sqlite_output_format() {
         sync_sql: None,
     }];
 
-    let sql = generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Sqlite, None, false, None);
+    let sql = generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Sqlite, None, false, None, &[]);
     assert!(sql.contains("CREATE TABLE"), "SQLite SQL should contain CREATE TABLE");
 }

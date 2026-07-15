@@ -27,5 +27,6 @@ pub fn generate_schema_sync_sql(
         target_schema.as_deref(),
         cascade_delete.unwrap_or(false),
         None,
+        &[],
     ))
 }

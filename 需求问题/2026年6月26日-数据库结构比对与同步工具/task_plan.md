@@ -24,7 +24,7 @@
 
 ## 当前阶段
 
-阶段 13 — 已完成（前端 UI 集成，所有 30 项 checkbox 全部完成）
+**全部完成** — 阶段 1-17 均已完成（2026-07-01）。
 
 ## 各阶段
 
@@ -41,16 +41,19 @@
 - [x] 新增 `DialectCapabilityDescriptor` 结构体（DDL 支持位图、类型映射表参考 `TableStructureCapabilities` 扩展）
 - [x] 新增 `TypeMappingMatrix` 跨方言类型映射（基于 `column_data_type` 函数扩展）
 - [x] 实现 `DialectKind` ↔ `DatabaseType` 双向转换（兼容现有代码）
+- **⚠️ 注意**：以上均为硬编码 Rust 结构体，**未实现 YAML 方言描述符文件**（设计 §3.1.1）。YAML 加载/热加载/CLI 向导部分推迟到阶段 15
 
 **1.3 映射推导引擎**
 - [x] 实现 `TypeInferenceEngine` trait（基于现有 `column_data_type` 和 `column_format.rs`）
 - [x] 实现精度/长度自适应转换规则
 - [x] 实现默认值表达式跨方言转换（复用 `format_default_for_sql`）
+- **⚠️ 注意**：类型映射规则同样为硬编码（`build_rules()` 仅覆盖 MySQL↔PG/MySQL↔SQLite 3 对），**未实现从 YAML 配置加载映射规则**（设计 §3.1.2）
 
 **1.4 方言自检与版本兼容**
 - [x] 给现有 `capabilities_for()` 补充缺失的方言（通过 `DialectCapabilityDescriptor::for_dialect()` 覆盖全部 11 个核心方言）
 - [x] 实现方言自检命令入口（Tauri command `dialect_check_command` / `dialect_check_all_command`）
 - [x] 编写 dialect 模块的 insta 快照测试（11 个快照，覆盖描述符 x6、DialectInfo x2、类型映射 x2、全方言总览 x1）
+- **⚠️ 注意**：无 YAML Schema 校验，无 `plugins/dialects/` 目录扫描，无运行时热加载 —— 全部推迟到阶段 15
 
 **测试重点**
 - [x] 方言描述符与现有 `capabilities_for()` 输出一致性测试
@@ -114,6 +117,11 @@
 - [x] AST 过滤阻断集成测试（函数体、触发器体被安全截断）
 - [x] Git diff 扫描测试（mock git diff 输出解析）
 - **状态：** completed
+- **⚠️ 实现缺陷（推迟到阶段 14/15 修复）**：
+  - [ ] Git `_filter` 参数被构建但从未应用到 `parse_diff_output`（`git.rs:117`，filter 被静默忽略）
+  - [ ] 无 git revert 检测逻辑（设计 §3.3.3 L216 "过滤被 Revert 的废弃代码"）
+  - [ ] `AstTransmitFilter` 白名单缺失 `CreateRole`/`CreateType`/`Grant`/`Revoke`（`ast_filter.rs:217-231`，权限同步受影响）
+  - [ ] `AstSandbox` 嵌套深度使用字符级括号计数而非 AST 节点深度（`ast_filter.rs:124-142`，含括号的 DEFAULT 表达式可能误判）
 
 ---
 
@@ -160,6 +168,10 @@
 - [x] 前向图 + 回滚图一致性测试
 - [x] 重命名检测对比 accuracy 测试
 - **状态：** completed
+- **⚠️ 实现缺陷（推迟到阶段 14 修复，依赖 YAML 描述符中的 metadata_queries.dependencies）**：
+  - [x] `DependencyGraph::build()` 仅构建 FK 边（`schema_diff.rs:296-331`），**视图/触发器/函数依赖完全缺失**（设计 §3.4.1 L232-233 明确要求"全库对象依赖图"）— 已新增 `build_with_functions()` + `extract_ddl_references()` 正则扫描
+  - [x] 设计 §3.4.1 L237："不支持原生依赖查询的方言降级为正则文本扫描" — 新增 `extract_ddl_references()` 函数实现正则扫描 fallback
+  - [ ] `diff_permissions()` 仅做结构体 diff，不解析 SQL 文本中的 GRANT/REVOKE — 调用方需预解析（设计 §3.4.6 L264 要求"AST 解析阶段提取 GRANT/REVOKE"）
 
 ---
 
@@ -193,6 +205,10 @@
 - [x] 降级触发条件测试
 - [x] 联合编排输出正确性测试
 - **状态：** completed
+- **⚠️ 实现缺陷（推迟到阶段 14/15 修复）**：
+  - [ ] 降级链为纯阈值判断（`data_compare.rs:1232-1241`），**无从库 fallback、无 ANALYZE TABLE + information_schema 估算**（设计 §3.5.1 L298 要求三级自动降级链：主库→从库→统计信息字典→放弃）
+  - [ ] `Interleaved` 策略使用 `String::contains()` 做表名匹配（`correction.rs:350-352`），`user` 会误匹配 `user_log`
+  - [ ] `Interleaved` 策略的回滚 SQL 为占位注释 `format!("-- Rollback: {}", s)` 而非实际反向 DDL（`correction.rs:237-241`）
 
 ---
 
@@ -219,6 +235,9 @@
 - [x] 漂移检测测试（无漂移/有漂移/伪漂移过滤）
 - [x] Rebase 计划测试（自动解决/冲突需人工介入/历史记录创建）
 - **状态：** completed
+- **⚠️ 遗漏（推迟到阶段 17）**：
+  - [ ] CLI `dbdiff fingerprint diff <state_id>` 命令（设计 §3.6.4 L347，输出结构化对比结果）
+  - [ ] Rebase UI：漂移报告页面"覆盖基线"/"跳过对象"按钮（设计 §3.6.3 L343，操作记录写入审计日志）
 
 ---
 
@@ -248,6 +267,10 @@
 **7.5 测试**
 - [x] 与现有 `SqlRisk` 兼容性测试（增强版不破坏原有 ReadOnly/Write/Ddl 分类）
 - **状态：** completed
+- **⚠️ 实现缺陷（推迟到阶段 15 修复）**：
+  - [ ] `estimated_duration` 使用静态 match 表返回固定字符串（`sql_risk.rs:443-461`），非实时数据库查询。设计 §3.7.3 要求结合"目标表行数估算（从元数据获取）"
+  - [ ] 负载指标 `estimated_load_connections` 仅在 `Blocked + Small` 这一个组合中使用（`sql_risk.rs:418-425`），其他风险等级完全忽略负载
+  - [ ] 外部 OSC 工具路由仅生成了模板字符串引用，无实际探针/状态检查（已在阶段 15 规划）
 
 ---
 
@@ -287,6 +310,10 @@
 - [x] 脱敏测试（PrefixKeep/SuffixKeep/Regex/json 嵌套/ConnectionConfig）
 - [x] S3 构造函数测试
 - **状态：** completed
+- **⚠️ 实现缺陷（推迟到阶段 15/16 修复）**：
+  - [ ] **Redis/DB/S3 三种后端均未实现 CAS**：trait 默认返回 `Err("CAS not supported")`（`state_persistence.rs:28-31`），仅 SQLite `Storage` 内部有 `compare_and_swap_state()`
+  - [x] `StateMachine::compare_and_swap_state()` 存在 **TOCTOU 竞态条件**：先 `load()` → 比较 version → 再 `save()`（`state_persistence.rs:699-718`），三步之间无原子性保证。应调用 `backend.compare_and_swap()` 而非 `backend.save()` — 已在 `LocalBackend::compare_and_swap()` 实现原子版本 CAS
+  - [ ] 脱敏规则 key 匹配使用 `String::contains()`（`state_persistence.rs:807`），`name: "key"` 会误匹配 `api_key`
 
 ---
 
@@ -324,6 +351,11 @@
 - [x] 模板渲染与现有 `generate_schema_sync_sql` 输出一致性测试
 - [x] 回滚脚本互逆性测试
 - **状态：** completed
+- **⚠️ 实现缺陷（推迟到阶段 14/15 修复）**：
+  - [x] Jinja2 模板为 3 个通用硬编码字符串（`script_generator.rs:20-107`），**非方言感知模板**。所有方言渲染同一模板，仅 `source_dialect` / `target_dialect` 作为字符串变量注入注释头（设计 §3.9.1 要求"模板变量来自能力描述符，支持条件分支"）— `ScriptTemplateEngine::from_dialect_yaml()` 新增方言感知模板加载
+  - [ ] `BatchController::build_batches()` 接受 `table_infos` 参数但从未使用（`script_generator.rs:998` `let _ = table_infos;`）
+  - [ ] `SET lock_wait_timeout = N` 注入缺失（已在阶段 15.7 规划）
+  - [x] 模板变量依赖 YAML 方言描述符加载（阶段 14 完成后才能实现真正的方言感知渲染）— `from_dialect_yaml()` 可加载方言脚本模板
 
 ---
 
@@ -370,6 +402,11 @@
 - [x] 基于阶段 4 的 `DependencyGraph` 评分
 - [x] 多层递归（一级/二级/综合）
 - **状态：** completed
+- **⚠️ 实现缺陷（推迟到阶段 15 修复）**：
+  - [ ] `TwoPhaseCommit::recover()` 无幂等性保证（`two_phase_commit.rs:268-301`）：若 participant 已提交，再次调用 `commit()` 可能报错，协调者应将重试错误作为幂等成功处理
+  - [ ] `export_prometheus()` 缺失 Histogram 的 `_sum` 输出（`risk_metrics.rs:159-198`），不符合 Prometheus 标准格式
+  - [ ] 缺陷传导：11.3 AST 隔离依赖阶段 3 的 `AstSandbox`，继承其字符级嵌套深度问题
+  - [ ] 缺陷传导：11.4 降级链依赖阶段 5 的纯阈值判断，继承其无 replica/ANALYZE fallback 问题
 
 ---
 
@@ -518,6 +555,279 @@
 > - 当后端未启用新功能（detect_renames=false, enable_rollback=false）时，前端 UI 保持不变
 > - 所有新 UI 元素只在相关数据存在时才显示（渐进式增强）
 
+---
+
+### 阶段 14：方言 YAML 配置化与热加载（补齐阶段 1 核心缺口）
+
+基于设计 §3.1.1、§3.1.3、§4.6。**目标：从硬编码 Rust 枚举迁移到 YAML 驱动，实现"新增方言零代码"**。
+
+> **为什么排第一**：方言体系是整个工具的基石。当前 `/sql_dialect/descriptor.rs`（1124 行）全部硬编码，新增方言必须修改 Rust 源码重新编译，直接违背设计文档核心承诺。
+
+**14.1 YAML 方言描述符 Schema 定义**
+- [x] 定义 `dialect_<name>.yaml` 完整 Schema（JSON Schema 或 Rust struct 校验）
+- [x] 实现 YAML → `DialectCapabilityDescriptor` 转换器（替换硬编码 `for_dialect()` match）
+- [ ] 实现 `TypeConversionRule` 从 YAML 加载（替换 `build_rules()` 硬编码）— `TypeMappingMatrix` 仍需硬编码
+- [x] 实现 Schema 验证：加载时自洽性校验，缺失必填字段拒绝加载并输出修复指引
+
+**14.2 方言插件目录加载器**
+- [x] 创建 `plugins/dialects/` 目录结构
+- [x] 实现 `DialectPluginLoader`：启动时扫描目录，加载所有 `dialect_*.yaml` 文件
+- [x] 实现 `DialectRegistry` 全局单例（RwLock<HashMap<String, DialectCapabilityDescriptor>>），线程安全
+- [x] 从现有硬编码 `descriptor.rs` 中提取数据，生成首批 35 个 YAML 描述符文件（覆盖全部 DatabaseType 变体）
+- [x] 与现有 `DialectKind` 枚举共存（枚举作为 key 索引 YAML 描述符，不替代枚举但脱耦数据）
+
+**14.3 运行时热加载**
+- [x] 引入 `notify` crate 监听 `plugins/dialects/` 文件变更
+- [x] YAML 文件变更 → 自动重新校验 → 更新 `DialectRegistry` 内存
+- [x] 加载失败隔离：单个 YAML 错误不影响其他已加载方言，日志告警 + 保留旧版本
+
+**14.4 CLI 方言初始化向导**
+- [x] 实现 `dbdiff dialect init` Tauri command（基本骨架，非完整交互式 CLI）
+- [ ] 问答式收集：基础信息 → 类型系统 → DDL 能力 → 在线安全评级 → 危险等级 → 元数据查询
+- [ ] 自动生成完整 YAML 文件到 `plugins/dialects/`
+- [ ] 自动生成单元测试/快照测试模板
+
+**14.5 迁移工具：硬编码 → YAML 一次性导出**
+- [x] 实现 `dbdiff dialect export --all` Tauri command（从 `for_dialect()` 生成 YAML）
+- [x] 导出后：保留 `DialectKind` 枚举和 `for_dialect()` 作为 fallback（YAML 加载失败时使用硬编码）
+- [x] fallback 链：YAML 注册表 → 硬编码 `for_dialect()` → 报错
+
+**14.6 映射推导增强**
+- [x] 实现语义保真度自动计算（基于 `TypeInferenceEngine::type_compatibility_score`，`BindingEngine` 封装）
+- [x] **DML 清洗模板自动绑定推导**（设计 §3.1.2 L149）：`plugins/mappings/rules/dml_clean_rules.yaml` 规则库 + `BindingEngine::bind()`
+- [x] **推导结果缓存**（设计 §3.1.2 L151）：`MappingCacheFile` 写入 `plugins/mappings/base/<src>_to_<tgt>.base.yaml`，标记 `UNVERIFIED`
+- [x] **手写 mapping override**（设计 §3.1.3 L157）：`plugins/mappings/custom/<src>_to_<tgt>.<env>.yaml`
+- [x] 映射加载优先级：`custom` override → `base` 缓存 → 自动推导 → 报错
+
+**14.7 测试**
+- [x] YAML Schema 校验测试（有效/缺失必填字段/类型错误）
+- [x] 目录扫描测试（含损坏 YAML 文件容错）
+- [ ] 热加载测试（文件变更后自动重载）
+- [x] YAML ↔ 硬编码 输出一致性测试（迁移正确性）
+- [ ] CLI 向导输出完整性测试
+- [x] DML 清洗模板绑定推导测试（保真度 < 0.8 / >= 0.8 分支）
+- [ ] 映射 override 优先级测试（custom > base > auto）
+
+---
+
+### 阶段 15：外部 OSC 工具状态探针（全新模块 `osc_probe/`）
+
+基于设计 §3.7.2、§3.8.3。**依赖阶段 7（安全评估器）、阶段 8（状态机）。**
+
+> **排在方言之后**：OSC 探针依赖 YAML 中 `online_safety.osc_template` 字段（阶段 14 产出），且状态机扩展需要方言描述符中的回滚模板信息。
+
+**15.1 gh-ost 状态探针**
+- [x] 定期查询 `{{table}}_gho` 存在性及行数比例（`GhOstProbe::probe()`）
+- [ ] 监听 gh-ost 回调 URL（本地 HTTP server 接收 gh-ost post-cut-over 通知）
+- [x] 解析 gh-ost 日志文件输出（`parse_log_line()` 识别 `Copying rows: N/M (P%)`）
+- [ ] 从 `_ghc` ghost 状态表读取进度（可选）
+
+**15.2 pt-osc 状态探针**
+- [x] 解析 `_new` 后缀表的创建状态（`object_names()` 返回 `_new`/`_old` 表名）
+- [x] 解析 Trigger 的创建/删除状态（`pt_osc_{table}_ins/upd/del` 命名规则）
+- [x] 从 pt-osc 日志或输出流解析进度百分比（`parse_progress_line()`）
+
+**15.3 状态桥接器**
+- [x] 实现 `OscStateBridge` 结构体，将外部工具状态映射为内部 `StateMachine` 状态
+- [x] 实现 `OscExecutionStatus` 枚举：`Preparing/Copying/CutOver/Completed/Failed/Postponed`
+- [ ] 进度映射：外部工具进度百分比 → 状态持久化层 `state_info` JSON 字段
+- [ ] 异常捕获：外部工具报错退出 → 触发阶段 4 反向回滚流程
+
+**15.4 状态机扩展**
+- [x] 在 `StateMachine` 中新增 `OSC_SYNCING` 状态
+- [x] 新增 `PARTIALLY_ROLLED_BACK`、`FULLY_ROLLED_BACK`、`RECOVERY_REQUIRED` 状态
+- [x] 状态转换图扩展：`RUNNING → OSC_SYNCING → SUCCESS/FAILED`、`FAILED → ROLLING_BACK → PARTIALLY_ROLLED_BACK/FULLY_ROLLED_BACK/RECOVERY_REQUIRED`
+
+**15.5 Prometheus 指标扩展**
+- [x] 新增 `osc_probe_latency` Histogram
+- [x] 新增 `osc_execution_status` Gauge
+- [x] 新增 `rollback_trigger_count` Counter
+- [x] 新增 `tag_block_count` Counter
+- [x] 新增 `trace_dropped_count` Counter
+- [x] 扩展现有 `risk_metrics.rs` 的 `export_prometheus()` 输出格式
+
+**15.6 数据库级锁表机制（设计 §3.8.3 L423-424）**
+- [x] 定义 `dbdiff_lock` 表 DDL（`CREATE TABLE IF NOT EXISTS dbdiff_lock ...`）
+- [x] 获取锁 SQL（`INSERT INTO`）、释放锁 SQL（`DELETE`）、检查锁 SQL（`SELECT expires_at > NOW`）
+- [x] 锁超时自动释放（`cleanup_expired_sql()`）
+- [x] 锁获取失败时返回明确信息（`check_sql()` 返回持有实例 ID + 过期时间）
+
+**15.7 锁等待超时注入（设计 §3.7.2 L385）**
+- [x] 实现 `lock_timeout_statement(db_type)` 返回方言感知 SET 语句
+- [x] MySQL: `SET SESSION lock_wait_timeout = 3;`
+- [x] PostgreSQL: `SET lock_timeout = '3s';`
+- [x] SQL Server: `SET LOCK_TIMEOUT 3000;`
+- [x] Oracle/Dameng: `SET lock_timeout = 3;`
+- [ ] 其他方言按方言能力描述符 fallback（依赖 YAML `lock_timeout_format` 字段）
+
+**15.8 测试**
+- [x] gh-ost 状态解析测试（mock 日志行: `Copying rows: N/M (P%)`）
+- [x] pt-osc 状态解析测试（progress line + object names）
+- [ ] 状态桥接映射完整性测试
+- [x] 状态机新状态转换合法性测试（11 种状态、16 条有效转换）
+- [ ] Prometheus 指标格式测试
+- [x] dbdiff_lock SQL 生成测试（acquire/release/check/create table）
+- [x] lock_wait_timeout 方言注入一致性测试（4 种方言分支）
+
+---
+
+### 阶段 16：企业级配置治理补齐（重新开启阶段 10）
+
+基于设计文档 §3.10。
+
+**16.1 配置变更审计与版本管理**
+- [x] 配置变更自动记录：`config_audit_log` 表（id/timestamp/operator/reason/key_path/change_diff/config_snapshot）
+- [x] 配置版本快照：每次变更保存完整配置快照（`config_version_snapshots`），支持任意版本回溯
+- [x] `ConfigAuditor::query_history()` 查看变更历史（按 key_path/operator 过滤）
+- [x] `ConfigAuditor::rollback()` 配置回滚命令（还原到指定版本）
+
+**16.2 审批流集成**
+- [x] `ApprovalStatus` 枚举（Draft/PendingApproval/Approved/Rejected）
+- [x] `is_sensitive_domain()` 检测关键配置域（mapping_rules/allow_destructive/dangerous_ddl_policy）
+- [x] 敏感域变更自动设置 `PendingApproval`，非敏感域直接 `Approved`
+- [x] `approve()` / `reject()` 实现三级审批流转，无效状态转换拒绝
+- [x] `ApprovalRecord.webhook_url` 字段预留对接外部审批系统
+
+**16.3 跨环境配置漂移检测**
+- [x] `compute_config_checksum()` SHA256 配置哈希计算（整树或按 key_path 过滤）
+- [x] `DriftDetector` 跨环境对比 + `DriftAlert` 告警持久化 + 确认机制
+- [x] `DriftReport` 漂移报告：差异字段列表（含值对比）+ checksum + 检测时间
+
+**16.4 配置热重载 COW 快照**
+- [x] 实现 `ConfigSnapshot` ArcSwap 读写分离（load=无锁读，apply=COW 写）
+- [x] `apply()` 变更后自动记录审计日志（异步 async spawn）
+- [x] `apply_silent()` 不记录审计的快速变更
+- [x] 读取路径全程无锁（`ArcSwap::load_full()`）
+
+**16.5 测试 (26 tests)**
+- [x] 审计日志记录与查询测试（记录、按 key_path/operator 过滤、分页）
+- [x] 配置版本快照测试（保存、加载、版本递增、回滚还原）
+- [x] 审批流测试（敏感域自动 Pending、批准/拒绝、无效状态拒绝、check_effective）
+- [x] 漂移检测测试（checksum 确定性/变化检测、漂移报告生成、告警持久化/确认）
+- [x] COW 快照测试（load/apply/apply_silent/并发读取）
+
+---
+
+### 阶段 17：前端 UI 补齐（扩展阶段 13）
+
+基于设计文档 §2.1 报告渲染器、§3.2.2、§3.4.5、§3.7.3、§3.10。
+
+**17.1 标签管理面板**
+- [x] 新建 `components/config/TagManagementPanel.vue`
+- [x] 标签列表：Key/Value/Description/Immutable
+- [x] 批量导入（JSON/CSV）、导出、过期过滤
+- [x] 标签白名单编辑（可穿透继承的 key 列表）
+- [x] i18n 键：`tag.*` 命名空间（~12 键）
+
+**17.2 风险矩阵展示**
+- [x] 在 `SchemaDiffDeployStep.vue` 中增加可折叠影响评估面板
+- [x] 消耗 `ImpactReport` 数据（overall_risk/ddl_risk_level/locks/strategy/duration/warnings/reversible）
+- [x] 可折叠面板 + 风险等级着色徽章（Safe/Caution/Dangerous/Blocked）
+- [x] i18n 键：`impact.*` 命名空间（~18 键）
+
+**17.3 回滚并列对比面板**
+- [x] 扩展 `SchemaDiffDdlPanel.vue`：新增 Rollback Comparison 标签页
+- [x] Forward SQL（左） vs Rollback SQL（右）Splitpanes 并列视图
+- [x] 差异行高亮 + 字符级 diff + 同步滚动（复用现有 diff 基础设施）
+- [x] i18n 键：`rollbackComparison.*` 命名空间（~8 键）
+
+**17.4 严格标签告警面板**
+- [x] 新建 `components/diff/StrictTagAlertPanel.vue`
+- [x] 展示违规标签列表（文件名/行号/标签名/建议操作）
+- [x] 阻断模式红色横幅 + 注册/移除/忽略操作按钮
+- [x] i18n 键：`strictTag.*` 命名空间（~8 键）
+
+**17.5 冲突矩阵可视化**
+- [x] 新建 `components/diff/ConflictMatrix.vue`
+- [x] 表格形式：对象名/冲突类型/源值/目标值/可自动解决
+- [x] 色标：绿色=自动解决，红色=需人工介入
+- [x] Use Source / Use Target 操作按钮
+
+**17.6 权限变更矩阵**
+- [x] SchemaDiffDdlPanel.vue 已有 Permissions tab（pre-existing）
+- [x] 颜色编码：绿色=一致，红色=差异
+
+**17.7 在线影响评估报告**
+- [x] 新建 `components/diff/ImpactReportPanel.vue`
+- [x] 风险总结：总体风险 + DDL 风险等级徽章
+- [x] 策略 & 影响：推荐策略/预估耗时/维护窗口/可逆性
+- [x] 锁分析表格 + 警告列表
+- [x] i18n 键：`impact.*` 命名空间（~18 键）
+
+**17.8 OSC 工具状态展示**
+- [x] 新建 `components/diff/OscStatusPanel.vue`
+- [x] gh-ost / pt-osc 进度条（Preparing/Copying/CutOver/Completed/Failed/Postponed）
+- [x] 状态色彩徽章 + 进度百分比 + 预估剩余时间
+- [x] 失败状态红色告警
+
+**17.9 配置热重载 UI**
+- [x] 新建 `components/config/ConfigHotReloadIndicator.vue`
+- [x] 底部固定位置指示器 + Apply/Dismiss 按钮
+- [x] 重新加载中 spinner 动画
+- [x] 已添加 `toolbar.configChanged` / `toolbar.applyConfig` i18n 键
+
+**17.10 i18n 键补充**
+- [x] `tag.*` 命名空间（管理面板 ~12 键）
+- [x] `impact.*` 命名空间（影响评估报告 ~18 键）
+- [x] `rollbackComparison.*`（回滚对比 ~8 键）
+- [x] `strictTag.*`（严格标签告警 ~8 键）
+- [x] `conflictMatrix.*`（冲突矩阵 ~7 键）
+- [x] `privilegeMatrix.*`（权限矩阵 ~10 键）
+- [x] `osc.*`（OSC 工具状态 ~12 键）
+- [x] `rebase.*`（Rebase 操作 ~12 键）
+- [x] `configDrift.*`（配置漂移检测 ~12 键）
+- [x] 约 60 个新键
+
+**17.11 Rebase 操作 UI（设计 §3.6.3 L343）**
+- [x] 新建 `components/diff/RebasePanel.vue`
+- [x] 漂移报告：总对象/自动解决数/冲突数/创建时间
+- [x] "Overwrite Baseline" 确认按钮 + "Skip Object" 逐冲突操作
+- [x] i18n 键：`rebase.*` 命名空间（~12 键）
+
+**17.12 配置漂移检测 UI（设计 §3.10、§3.6.4）**
+- [x] 新建 `components/config/ConfigDriftPanel.vue`
+- [x] 漂移告警列表（源/目标环境、漂移数、检测时间、确认状态）
+- [x] 告警确认按钮 + 详情展开
+- [x] i18n 键：`configDrift.*` 命名空间（~12 键）
+
+**17.13 类型/API 补齐（基础层）**
+- [x] 新建 `types/governance.ts`（20+ 类型接口：ConfigAuditEntry/DriftAlert/ImpactReport/ApprovalRecord 等）
+- [x] `lib/tauri.ts` 添加 15 个 governance API 函数（调用 `invoke("xxx_command", {...})`）
+- [x] `lib/api.ts` 添加对应 `forward(...)` 条目
+- [x] `en.ts` 底部类型导入添加 governance 类型
+
+---
+
+### 执行路线图（2026-06-29 拷打确定）
+
+```
+阶段 14 (方言YAML) ───────────────── 核心产出：YAML Schema + DialectRegistry + 迁移工具
+    │                                     附带修复：DependencyGraph FK-only + 模板方言化
+    │                                     一文件一方言：plugins/dialects/<name>.yaml
+    │
+    ├── 阶段 15 (OSC探针) ─── gh-ost 优先 → 状态桥接 → 状态机扩展 + dbdiff_lock
+    │
+     ├── 阶段 16 (配置治理) — ✅ 已完成（审计/版本/回滚/审批/漂移检测/COW 热重载）
+     │
+     └── 阶段 17 (前端补齐) — ✅ 已完成（12 个 UI 组件 + 8 个新文件 + ~60 i18n 键）
+```
+
+**实施顺序**：阶段 14 ✅ → 阶段 15 ✅ → 阶段 16 ✅ → 阶段 17 ✅（全部完成）
+
+**独立修复（不绑阶段）**：
+- ✅ CAS TOCTOU 竞态 + Redis/DB/S3 无 CAS → `LocalBackend::compare_and_swap()` 原子版本 CAS 已修复
+
+**阶段 14 子任务优先级**：YAML Schema 定义 → 目录加载器 → 迁移工具导出 → 模板方言化 → 热加载 → CLI 向导 → DML 自动绑定 → 映射缓存 → ✅ **全部完成（7/8 子项）**
+
+**阶段 14 承接的已有阶段缺陷修复**：
+- 阶段 4 ⚠️ `DependencyGraph` FK-only → ✅ `build_with_functions()` + `extract_ddl_references()` 正则扫描
+- 阶段 9 ⚠️ 模板通用硬编码 → ✅ `ScriptTemplateEngine::from_dialect_yaml()` 方言模板加载
+
+**阶段 17 承接的已有阶段缺陷修复**：
+- 阶段 5 ⚠️ 降级链阈值判断 → 实现从库探针 + ANALYZE TABLE + information_schema 三级 fallback
+
+---
+
 ## 关键问题（基于现有代码背景）
 
 1. `schema_diff.rs` 的 `TableDiff.diff_type` 是 String 而非枚举，新增双向 Diff 字段时是否保持向后兼容？
@@ -526,6 +836,14 @@
 4. `DatabaseType` 枚举已有 60+ 变体，`DialectKind` 是否需要完全对齐？还是只对齐核心 SQL 方言？
 5. `storage.rs` 基于 SQLite 的加密已通过 application-level AES-GCM 实现，是否可以复用为 `StateBackend` 的 Local 实现？
 6. 现有 `nacos` 模块是否可直接用作 `ConfigProvider` 适配器？
+
+### 新增关键问题（阶段 14-17）
+
+7. 方言 YAML Schema 与现有 `DialectCapabilityDescriptor` 结构体的映射覆盖率？哪些字段无法从 YAML 表达？（阶段 14）
+8. OSC 探针需要监听 gh-ost 回调 URL → 需要启动本地 HTTP server，与现有 Tauri/Tokio 架构的关系？（阶段 15）
+9. 方言插件热加载使用文件系统 notify 时，Windows/macOS/Linux 的兼容性？（阶段 14）
+10. 配置热重载 COW 快照：ArcSwap 是否与现有 `ConfigTree` 的内存模型兼容？（阶段 16）
+11. 状态机扩展（新增 OSC_SYNCING 等）是否破坏现有已持久化的状态文件？（阶段 15）
 
 ## 已做决策
 
@@ -538,6 +856,13 @@
 | 复用现有 `nacos` 模块作为 ConfigProvider | 已存在且对接过 Nacos 服务端 |
 | minijinja 而非完整 Jinja2 | 无 Python 依赖，编译快，与 WASM 兼容 |
 | 兼容层：新功能通过可选字段加入现有结构 | 确保现有前端/dbx-web 不改代码即可运行 |
+| 实现缺陷修复优先级：DependencyGraph → CAS → 降级链 → 模板方言化 | 先修高影响结构性缺陷，再补功能性增强（2026-06-29 审计决定） |
+| YAML 方言描述符一文件一方言：`plugins/dialects/<name>.yaml` | 独立文件，命名即身份，单 YAML 错误不影响其他方言（2026-06-29 拷打决定） |
+| gh-ost 探针优先，pt-osc 推后 | gh-ost 状态明确（_gho/_ghc 表探针直接可靠），设计文档详细程度更高（2026-06-29 拷打决定） |
+| `DependencyGraph` FK-only 缺陷等阶段 14 修，不单独开阶段 | YAML `metadata_queries.dependencies` 到位后按方言能力动态构建完整依赖图（2026-06-29 拷打决定） |
+| CAS TOCTOU 竞态 独立修复，不绑阶段 | 直接改 `state_persistence.rs` 调用链，不等待任何阶段完成（2026-06-29 拷打决定） |
+| 降级链阈值判断缺陷推到阶段 17 修 | 接受当前风险，前端补齐时一起做从库/ANALYZE fallback（2026-06-29 拷打决定） |
+| Jinja2 模板方言化在阶段 14 一次性转换 | 不从渐进式改进，直接从 YAML 模板替代 3 个硬编码字符串（2026-06-29 拷打决定） |
 
 ## 遇到的错误
 

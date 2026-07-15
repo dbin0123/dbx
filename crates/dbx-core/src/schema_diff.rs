@@ -251,6 +251,19 @@ fn type_supports_params(kind: DialectKind, type_name: &str) -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FieldMapping {
+    pub source_type: String,
+    pub target_type: String,
+}
+
+impl FieldMapping {
+    pub fn apply<'a>(mappings: &'a [FieldMapping], source_type: &str) -> Option<&'a str> {
+        mappings.iter().find(|m| m.source_type.eq_ignore_ascii_case(source_type)).map(|m| m.target_type.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SchemaDiffPreparationOptions {
     #[serde(default)]
     pub source_tables: Vec<TableInfo>,
@@ -3023,6 +3036,7 @@ pub fn generate_schema_sync_sql(
     schema: Option<&str>,
     cascade_delete: bool,
     source_dialect: Option<DialectKind>,
+    field_mappings: &[FieldMapping],
 ) -> String {
     generate_schema_sync_sql_inner(
         diffs,
@@ -3644,7 +3658,7 @@ mod tests {
     }
 
     fn gen_sql(diff: TableDiff, db_type: DatabaseType, source_dialect: Option<DialectKind>) -> String {
-        generate_schema_sync_sql(&[diff], &[], &[], &[], &[], db_type, None, false, source_dialect)
+        generate_schema_sync_sql(&[diff], &[], &[], &[], &[], db_type, None, false, source_dialect, &[])
     }
 
     // -- 1. Same-dialect: MySQL (backticks, MODIFY/CHANGE/ADD COLUMN) --
@@ -3998,6 +4012,7 @@ mod tests {
             Some("public"),
             false,
             None,
+            &[],
         );
         assert!(sql.contains("\"public\".\"users\""), "schema prefixed: {sql}");
     }
@@ -4006,8 +4021,18 @@ mod tests {
     fn schema_qualified_mysql() {
         let diffs = make_col_diffs(&[("name2", "varchar(50)")], &[("name", "varchar(50)")], true);
         let table_diff = wrap_table_diff("users", diffs);
-        let sql =
-            generate_schema_sync_sql(&[table_diff], &[], &[], &[], &[], DatabaseType::Mysql, Some("mydb"), false, None);
+        let sql = generate_schema_sync_sql(
+            &[table_diff],
+            &[],
+            &[],
+            &[],
+            &[],
+            DatabaseType::Mysql,
+            Some("mydb"),
+            false,
+            None,
+            &[],
+        );
         assert!(sql.contains("`mydb`.`users`"), "schema prefixed MySQL: {sql}");
     }
 
@@ -4374,7 +4399,7 @@ mod tests {
         }];
 
         assert_eq!(
-            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Postgres, None, false, None),
+            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Postgres, None, false, None, &[]),
             [
                 "ALTER TABLE \"orders\" DROP CONSTRAINT \"orders_user_id_fk\";",
                 "DROP INDEX IF EXISTS \"idx_orders_status\";",
@@ -4409,7 +4434,7 @@ mod tests {
         }];
 
         assert_eq!(
-            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, None, false, None),
+            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, None, false, None, &[]),
             [
                 "-- Alter table: users",
                 "ALTER TABLE `users`",
@@ -4445,7 +4470,18 @@ mod tests {
         }];
 
         assert_eq!(
-            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, Some("target_db"), false, None),
+            generate_schema_sync_sql(
+                &diffs,
+                &[],
+                &[],
+                &[],
+                &[],
+                DatabaseType::Mysql,
+                Some("target_db"),
+                false,
+                None,
+                &[]
+            ),
             [
                 "-- Alter table: notify_channel_config",
                 "ALTER TABLE `target_db`.`notify_channel_config`",
@@ -4478,7 +4514,8 @@ mod tests {
             sync_sql: None,
         }];
 
-        let sql = generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, Some("  "), false, None);
+        let sql =
+            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Mysql, Some("  "), false, None, &[]);
 
         assert!(sql.contains("ALTER TABLE `notify_channel_config`"));
         assert!(!sql.contains("``."));
@@ -4644,7 +4681,18 @@ mod tests {
         }];
 
         assert_eq!(
-            generate_schema_sync_sql(&diffs, &[], &[], &[], &[], DatabaseType::Postgres, Some("sales"), false, None),
+            generate_schema_sync_sql(
+                &diffs,
+                &[],
+                &[],
+                &[],
+                &[],
+                DatabaseType::Postgres,
+                Some("sales"),
+                false,
+                None,
+                &[]
+            ),
             [
                 "-- Alter table: orders",
                 "ALTER TABLE \"sales\".\"orders\"  ADD COLUMN \"status\" text;",
@@ -5699,7 +5747,7 @@ mod tests {
             sync_sql: None,
         };
         let sql =
-            generate_schema_sync_sql(&[table_diff], &[], &[], &[], &[], DatabaseType::Postgres, None, false, None);
+            generate_schema_sync_sql(&[table_diff], &[], &[], &[], &[], DatabaseType::Postgres, None, false, None, &[]);
         assert!(sql.contains("RENAME COLUMN"), "rename: {sql}");
         assert!(sql.contains("CREATE INDEX"), "index: {sql}");
     }
@@ -5737,7 +5785,8 @@ mod tests {
             target_table_comment: None,
             sync_sql: None,
         };
-        let sql = generate_schema_sync_sql(&[table_diff], &[], &[], &[], &[], DatabaseType::Mysql, None, false, None);
+        let sql =
+            generate_schema_sync_sql(&[table_diff], &[], &[], &[], &[], DatabaseType::Mysql, None, false, None, &[]);
         assert!(sql.contains("CHANGE COLUMN"), "rename: {sql}");
         assert!(sql.contains("DROP INDEX"), "drop index: {sql}");
     }
@@ -5924,7 +5973,8 @@ mod tests {
             target_table_comment: Some(Some("old".to_string())),
             sync_sql: None,
         };
-        let sql = generate_schema_sync_sql(&[table_diff], &[], &[], &[], &[], DatabaseType::Mysql, None, false, None);
+        let sql =
+            generate_schema_sync_sql(&[table_diff], &[], &[], &[], &[], DatabaseType::Mysql, None, false, None, &[]);
         assert!(sql.contains("COMMENT ="), "MySQL table comment: {sql}");
     }
 
@@ -6059,7 +6109,8 @@ mod tests {
             target_table_comment: Some(Some("旧表".to_string())),
             sync_sql: None,
         };
-        let sql = generate_schema_sync_sql(&[table_diff], &[], &[], &[], &[], DatabaseType::Mysql, None, false, None);
+        let sql =
+            generate_schema_sync_sql(&[table_diff], &[], &[], &[], &[], DatabaseType::Mysql, None, false, None, &[]);
         assert!(sql.contains("COMMENT ="), "MySQL table comment: {sql}");
         assert!(sql.contains("新表"), "Chinese table comment: {sql}");
     }
@@ -6484,7 +6535,7 @@ mod tests {
             sync_sql: None,
         };
         let sql =
-            generate_schema_sync_sql(&[table_diff], &[], &[], &[], &[], DatabaseType::Postgres, None, false, None);
+            generate_schema_sync_sql(&[table_diff], &[], &[], &[], &[], DatabaseType::Postgres, None, false, None, &[]);
         assert!(sql.contains("RENAME COLUMN"), "rename: {sql}");
         assert!(sql.contains("CREATE INDEX"), "add index: {sql}");
         assert!(sql.contains("DROP INDEX"), "drop index: {sql}");
@@ -6881,7 +6932,7 @@ mod tests {
                 let Some(db) = kind_to_db(*tgt) else { continue };
                 let src_dialect = if src == tgt { None } else { Some(*src) };
                 let td = s1_table_diff(*src, *tgt);
-                let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, src_dialect);
+                let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, src_dialect, &[]);
                 check_table_sql_structure(&sql, *tgt);
                 check_identifiers(&sql, *tgt);
                 check_no_mysql_residue(&sql, *tgt);
@@ -7004,7 +7055,7 @@ mod tests {
                     target_table_comment: None,
                     sync_sql: None,
                 };
-                let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, src_dialect);
+                let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, src_dialect, &[]);
                 check_table_sql_structure(&sql, *tgt);
                 check_identifiers(&sql, *tgt);
                 check_no_mysql_residue(&sql, *tgt);
@@ -7085,7 +7136,7 @@ mod tests {
                     target_table_comment: None,
                     sync_sql: None,
                 };
-                let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, src_dialect);
+                let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, src_dialect, &[]);
                 check_table_sql_structure(&sql, *tgt);
                 check_identifiers(&sql, *tgt);
                 check_no_mysql_residue(&sql, *tgt);
@@ -7142,7 +7193,7 @@ mod tests {
                 target_table_comment: None,
                 sync_sql: None,
             };
-            let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, None);
+            let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, None, &[]);
             check_table_sql_structure(&sql, *tgt);
             if is_mysql_tgt {
                 assert!(sql.contains("ENGINE=InnoDB"), "original DDL preserved for {tgt:?}");
@@ -7193,7 +7244,7 @@ mod tests {
             target_table_comment: None,
             sync_sql: None,
         };
-        let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, Some(src));
+        let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, Some(src), &[]);
         check_table_sql_structure(&sql, tgt);
         check_identifiers(&sql, tgt);
         check_type_conversion(&sql, src, tgt);
@@ -7241,7 +7292,7 @@ mod tests {
             target_table_comment: None,
             sync_sql: None,
         };
-        let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, Some(src));
+        let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, Some(src), &[]);
         check_table_sql_structure(&sql, tgt);
         check_identifiers(&sql, tgt);
         // No mapping rules for SQL Server→PG → types pass through
@@ -7288,7 +7339,7 @@ mod tests {
             target_table_comment: None,
             sync_sql: None,
         };
-        let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, Some(src));
+        let sql = generate_schema_sync_sql(&[td], &[], &[], &[], &[], db, None, false, Some(src), &[]);
         check_table_sql_structure(&sql, tgt);
         check_identifiers(&sql, tgt);
         // No mapping rules → types pass through
@@ -7343,6 +7394,7 @@ mod tests {
             None,
             false,
             Some(DialectKind::Mysql),
+            &[],
         );
         assert!(!sql.contains('`'), "PG SQL should not have backticks: {sql}");
         assert!(sql.contains("INTEGER"), "int→INTEGER: {sql}");

@@ -2470,6 +2470,17 @@ export default withEnglishFallback({
     configDeleted: "配置已删除",
     noDeployScriptAll: "暂无所选对象的部署脚本",
     saveConfigPrompt: "请输入配置名称:",
+    fieldMapping: {
+      title: "字段类型映射",
+      description: "当源库与目标库类型不同时，自定义数据类型映射规则",
+      sourceType: "源类型",
+      targetType: "目标类型",
+      addMapping: "添加映射",
+      removeMapping: "删除",
+      noMappings: "未定义自定义字段类型映射",
+      sameTypeHint: "源库和目标库类型相同，无需映射",
+    },
+    fieldMappingToggle: "字段类型映射",
   },
   schemaDiff: {
     optionsTitle: "比较选项",

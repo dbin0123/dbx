@@ -78,6 +78,7 @@ fn generate_schema_sync_sql_function_signature() {
         None,
         false,
         None,
+        &[],
     );
 }
 

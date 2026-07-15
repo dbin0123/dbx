@@ -2428,6 +2428,17 @@ export default withEnglishFallback({
     port: "ポート",
     copied: "クリップボードにコピーしました",
     saveConfigPrompt: "設定名を入力してください:",
+    fieldMapping: {
+      title: "フィールド型マッピング",
+      description: "データベースの種類が異なる場合に、データ型のマッピングをカスタマイズします",
+      sourceType: "ソース型",
+      targetType: "ターゲット型",
+      addMapping: "マッピングを追加",
+      removeMapping: "削除",
+      noMappings: "カスタムフィールド型マッピングが定義されていません",
+      sameTypeHint: "ソースとターゲットは同じデータベース型です — マッピングは不要です",
+    },
+    fieldMappingToggle: "フィールド型マッピング",
   },
   schemaDiff: {
     optionsTitle: "比較オプション",

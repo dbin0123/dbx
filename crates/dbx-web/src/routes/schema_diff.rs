@@ -31,5 +31,6 @@ pub async fn generate_schema_sync_sql(Json(req): Json<GenerateSchemaSyncSqlReque
         req.target_schema.as_deref(),
         req.cascade_delete.unwrap_or(false),
         None,
+        &[],
     ))
 }
