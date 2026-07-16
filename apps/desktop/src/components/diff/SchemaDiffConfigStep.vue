@@ -40,6 +40,7 @@ const emit = defineEmits<{
   (e: "update:targetSchema", value: string): void;
   (e: "update:ignoreComments", value: boolean): void;
   (e: "update:fieldMappings", value: FieldMappingEntry[]): void;
+  (e: "open-field-mapping"): void;
   (e: "compare"): void;
   (e: "saveConfig"): void;
   (e: "loadConfig"): void;
@@ -47,7 +48,6 @@ const emit = defineEmits<{
   (e: "swap"): void;
   (e: "loadHistoryConfig", config: SchemaDiffConfig): void;
   (e: "deleteHistoryConfig", configId: string): void;
-  (e: "update:fieldMappings", value: FieldMappingEntry[]): void;
 }>();
 
 const sourceDatabases = ref<string[]>([]);
@@ -70,12 +70,6 @@ const activeFieldMappings = computed(() => props.options?.fieldMappings ?? []);
 const canCompare = computed(() => {
   return props.sourceConnectionId && props.targetConnectionId && props.sourceDatabase && props.targetDatabase && (!isSchemaAware(sourceConfig.value?.db_type) || props.sourceSchema) && (!isSchemaAware(targetConfig.value?.db_type) || props.targetSchema);
 });
-
-const sourceDbType = computed(() => sourceConfig.value?.db_type || "");
-const targetDbType = computed(() => targetConfig.value?.db_type || "");
-const showFieldMapping = computed(() => sourceDbType.value && targetDbType.value && sourceDbType.value !== targetDbType.value);
-
-const activeFieldMappings = computed(() => props.options?.fieldMappings ?? []);
 
 async function loadDatabases(connectionId: string, side: "source" | "target") {
   if (!connectionId) return;
@@ -472,11 +466,6 @@ async function fetchDbVersion(connectionId: string, database: string, schema: st
       </Select>
     </div>
 
-    <!-- Field Mapping -->
-    <div v-if="showFieldMapping" class="mt-3">
-      <FieldMappingPanel :mappings="activeFieldMappings" :source-db-type="sourceDbType" :target-db-type="targetDbType" @update:mappings="(v: FieldMappingEntry[]) => $emit('update:fieldMappings', v)" />
-    </div>
-
     <!-- Bottom Actions -->
     <div class="flex items-center justify-between pt-2">
       <div class="flex items-center gap-2">
@@ -491,6 +480,10 @@ async function fetchDbVersion(connectionId: string, database: string, schema: st
         <Button variant="outline" size="sm" @click="$emit('showOptions')">
           <Settings class="w-3.5 h-3.5 mr-1" />
           {{ t("diff.options") }}
+        </Button>
+        <Button v-if="showFieldMapping" variant="outline" size="sm" @click="$emit('open-field-mapping')">
+          <ArrowLeftRight class="w-3.5 h-3.5 mr-1" />
+          {{ t("diff.openFieldMapping") }}
         </Button>
       </div>
       <Button size="sm" :disabled="!canCompare || loading" @click="$emit('compare')">
