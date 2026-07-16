@@ -41,7 +41,12 @@ function handleUpdateMappings(v: FieldMappingEntry[]) {
 }
 
 function handleExport() {
-  const content = JSON.stringify(editingMappings.value, null, 2);
+  const payload = {
+    sourceDbType: props.sourceDbType,
+    targetDbType: props.targetDbType,
+    mappings: editingMappings.value,
+  };
+  const content = JSON.stringify(payload, null, 2);
   // Use File System Access API (modern Chromium) for a native Save As dialog,
   // fallback to Blob download for other browsers.
   if ("showSaveFilePicker" in window) {
@@ -86,9 +91,25 @@ function onFileSelected(event: Event) {
   const reader = new FileReader();
   reader.onload = () => {
     try {
-      const parsed = JSON.parse(String(reader.result)) as unknown;
-      if (!Array.isArray(parsed)) throw new Error("not an array");
-      const normalized: FieldMappingEntry[] = parsed.map((item: any) => ({
+      const parsed = JSON.parse(String(reader.result)) as any;
+
+      // Support both new format { sourceDbType, targetDbType, mappings }
+      // and legacy flat format FieldMappingEntry[]
+      let mappings: any[];
+      let fileSourceDbType: string | undefined;
+      let fileTargetDbType: string | undefined;
+
+      if (Array.isArray(parsed)) {
+        mappings = parsed;
+      } else if (parsed?.mappings && Array.isArray(parsed.mappings)) {
+        mappings = parsed.mappings;
+        fileSourceDbType = parsed.sourceDbType;
+        fileTargetDbType = parsed.targetDbType;
+      } else {
+        throw new Error("invalid structure");
+      }
+
+      const normalized: FieldMappingEntry[] = mappings.map((item: any) => ({
         sourceType: String(item.sourceType ?? ""),
         targetType: String(item.targetType ?? ""),
         paramStrategy: item.paramStrategy === "strip" || item.paramStrategy === "custom" ? item.paramStrategy : "preserve",
@@ -97,6 +118,12 @@ function onFileSelected(event: Event) {
       if (normalized.some((m) => !m.sourceType || !m.targetType)) {
         throw new Error("missing sourceType/targetType");
       }
+
+      // Warn if exported source/target types differ from current
+      if (fileSourceDbType && fileTargetDbType && (fileSourceDbType !== props.sourceDbType || fileTargetDbType !== props.targetDbType)) {
+        toast(t("diff.fieldMapping.importTypeMismatch", { src: fileSourceDbType, tgt: fileTargetDbType }), 5000);
+      }
+
       editingMappings.value = normalized;
       toast(t("diff.fieldMapping.importSuccess"), 2000);
     } catch {

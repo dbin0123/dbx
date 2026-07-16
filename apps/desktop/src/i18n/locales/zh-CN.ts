@@ -2473,6 +2473,7 @@ export default withEnglishFallback({
       export: "导出",
       importSuccess: "导入成功",
       importError: "导入失败：文件不是合法的字段类型映射 JSON",
+      importTypeMismatch: "注意：该文件导出自 {src} → {tgt} 的映射，与当前数据库类型不一致",
       done: "完成",
     },
     fieldMappingToggle: "字段类型映射",

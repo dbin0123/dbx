@@ -2475,6 +2475,7 @@ export default {
       export: "Export",
       importSuccess: "Imported successfully",
       importError: "Import failed: file is not a valid field type mapping JSON",
+      importTypeMismatch: "Note: this file was exported for {src} → {tgt}, which differs from the current database types",
       done: "Done",
     },
     fieldMappingToggle: "Field Type Mapping",
