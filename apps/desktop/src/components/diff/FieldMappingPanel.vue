@@ -97,7 +97,7 @@ onMounted(() => {
       {{ t("diff.fieldMapping.sameTypeHint") }}
     </div>
 
-    <div v-else class="p-3">
+    <div v-else class="p-3 max-h-[42vh] overflow-auto">
       <div v-if="availablePresets.length > 0" class="mb-3">
         <label class="text-[10px] font-medium text-muted-foreground mb-1 block">
           {{ t("diff.fieldMapping.preset") }}
