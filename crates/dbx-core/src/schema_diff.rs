@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::models::connection::DatabaseType;
+use crate::sql_dialect::descriptor::DialectKind;
 use crate::types::{
     ColumnInfo, ForeignKeyInfo, FunctionInfo, IndexInfo, OwnerInfo, RuleInfo, SequenceInfo, TableInfo, TriggerInfo,
 };
@@ -216,6 +217,80 @@ pub struct SchemaDiffPreparation {
     pub sync_sql: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ParamStrategy {
+    Preserve,
+    Strip,
+    Custom,
+}
+
+fn default_param_strategy() -> ParamStrategy {
+    ParamStrategy::Preserve
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldMapping {
+    pub source_type: String,
+    pub target_type: String,
+    #[serde(default = "default_param_strategy")]
+    pub param_strategy: ParamStrategy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_params: Option<String>,
+}
+
+impl FieldMapping {
+    pub fn apply<'a>(mappings: &'a [FieldMapping], source_type: &str) -> Option<&'a str> {
+        let base_type = source_type.split('(').next().unwrap_or(source_type).trim();
+        mappings.iter().find(|m| m.source_type.eq_ignore_ascii_case(base_type)).map(|m| m.target_type.as_str())
+    }
+
+    pub fn apply_with_params(mappings: &[FieldMapping], source_type: &str, target_kind: DialectKind) -> Option<String> {
+        let trimmed = source_type.trim();
+        let base_type = trimmed.split('(').next().unwrap_or(trimmed);
+        let source_params = &trimmed[base_type.len()..];
+        let matched = mappings.iter().find(|m| m.source_type.eq_ignore_ascii_case(base_type))?;
+
+        let result = match matched.param_strategy {
+            ParamStrategy::Strip => Some(matched.target_type.clone()),
+            ParamStrategy::Custom => match &matched.custom_params {
+                Some(params) if !params.is_empty() => {
+                    let p = params.trim();
+                    let formatted = if p.starts_with('(') { p.to_string() } else { format!("({})", p) };
+                    Some(format!("{}{}", matched.target_type, formatted))
+                }
+                _ => Some(matched.target_type.clone()),
+            },
+            ParamStrategy::Preserve => {
+                let supports = type_supports_params(target_kind, &matched.target_type);
+                let has_params = !source_params.is_empty();
+                if has_params && supports {
+                    Some(format!("{}{}", matched.target_type, source_params))
+                } else {
+                    Some(matched.target_type.clone())
+                }
+            }
+        };
+        result
+    }
+}
+
+fn type_supports_params(kind: DialectKind, type_name: &str) -> bool {
+    crate::sql_dialect::dialect_loader::register_core_dialects();
+    let registry = crate::sql_dialect::dialect_loader::DialectRegistry::global();
+    let all = registry.get_all_by_kind(kind);
+    if all.is_empty() {
+        return true;
+    }
+    all.iter().any(|loaded| {
+        loaded.yaml.types.iter().any(|t| {
+            (t.name.eq_ignore_ascii_case(type_name) || t.aliases.iter().any(|a| a.eq_ignore_ascii_case(type_name)))
+                && (t.has_length || t.has_precision || t.max_precision.is_some())
+        })
+    })
+}
+
 pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffPreparation {
     let mut diffs = diff_schema(&options);
     let function_diffs = diff_functions(&options.source_functions, &options.target_functions);
@@ -232,6 +307,8 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
             options.database_type,
             options.target_schema.as_deref(),
             options.cascade_delete,
+            None,
+            &[],
         );
         if !sync_sql.is_empty() {
             diff.sync_sql = Some(sync_sql);
@@ -246,6 +323,8 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
         options.database_type,
         options.target_schema.as_deref(),
         options.cascade_delete,
+        None,
+        &[],
     );
     SchemaDiffPreparation { diffs, function_diffs, sequence_diffs, rule_diffs, owner_diffs, sync_sql }
 }
@@ -1230,6 +1309,8 @@ pub fn generate_schema_sync_sql(
     db_type: DatabaseType,
     schema: Option<&str>,
     cascade_delete: bool,
+    source_dialect: Option<DialectKind>,
+    field_mappings: &[FieldMapping],
 ) -> String {
     let mut lines = Vec::new();
     let is_mysql = is_mysql_like(db_type);
