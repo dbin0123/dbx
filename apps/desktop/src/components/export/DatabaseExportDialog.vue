@@ -7,13 +7,14 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useConnectionStore } from "@/stores/connectionStore";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
-import * as api from "@/lib/api";
-import type { ExportProgress } from "@/lib/api";
-import { isSchemaAware } from "@/lib/databaseFeatureSupport";
+import ConnectionGroupBadge from "@/components/connection/ConnectionGroupBadge.vue";
+import * as api from "@/lib/backend/api";
+import type { ExportProgress } from "@/lib/backend/api";
+import { isSchemaAware } from "@/lib/database/databaseFeatureSupport";
 import { databaseOptionsForConnection } from "@/composables/useDatabaseOptions";
-import { buildAllDatabaseExportPlan, generateDatabaseExportId, type AllDatabaseExportPlanItem } from "@/lib/databaseExport";
-import { buildSelectedTablesPayload } from "@/lib/databaseExportSelection";
-import { isTauriRuntime } from "@/lib/tauriRuntime";
+import { buildAllDatabaseExportPlan, generateDatabaseExportId, runDatabaseExportUntilTerminal, type AllDatabaseExportPlanItem } from "@/lib/export/databaseExport";
+import { buildSelectedTablesPayload } from "@/lib/export/databaseExportSelection";
+import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { useToast } from "@/composables/useToast";
 import { Input } from "@/components/ui/input";
 import { Download, Square, CheckSquare, Search, X } from "@lucide/vue";
@@ -108,21 +109,6 @@ function joinExportPath(directory: string, fileName: string): string {
 function currentRowsExported(): number {
   const progress: ExportProgress | null = exportProgress.value;
   return progress?.rowsExported ?? 0;
-}
-
-async function runDatabaseExportUntilTerminal(request: api.DatabaseExportRequest, onProgress: (progress: ExportProgress) => void): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    api
-      .exportDatabaseSql(request, (progress) => {
-        onProgress(progress);
-        if (progress.status === "Done" || progress.status === "Cancelled") {
-          resolve();
-        } else if (progress.status === "Error") {
-          reject(new Error(progress.error || "Export failed"));
-        }
-      })
-      .catch(reject);
-  });
 }
 
 async function loadDatabases(connId: string) {
@@ -572,9 +558,10 @@ watch(
               </SelectTrigger>
               <SelectContent position="popper" align="start">
                 <SelectItem v-for="c in sqlConnections" :key="c.id" :value="c.id">
-                  <div class="flex items-center gap-2">
-                    <DatabaseIcon :db-type="c.driver_profile || c.db_type" class="w-3.5 h-3.5" />
-                    {{ c.name }}
+                  <div class="flex min-w-0 items-center gap-2">
+                    <DatabaseIcon :db-type="c.driver_profile || c.db_type" class="w-3.5 h-3.5 shrink-0" />
+                    <ConnectionGroupBadge :connection-id="c.id" />
+                    <span class="min-w-0 flex-1 truncate">{{ c.name }}</span>
                   </div>
                 </SelectItem>
               </SelectContent>

@@ -1,4 +1,4 @@
-use super::column_format::{clickhouse_column_type, column_data_type, column_definition};
+use super::column_format::{clickhouse_column_type, column_data_type, column_definition, is_mysql_character_data_type};
 use super::columns::build_drop_column_sql;
 use super::comments::build_sqlserver_column_comment_sql;
 use super::dialect::{capabilities_for, database_label, StructureDialect};
@@ -54,7 +54,10 @@ pub fn build_single_column_alter_sql(options: SingleColumnAlterSqlOptions) -> Ta
     let has_attribute_change = options.column.data_type.trim() != original.data_type.trim()
         || options.column.is_nullable != original.is_nullable
         || normalize_default(Some(&options.column.default_value)) != original_default(&options.column)
-        || clean(&options.column.comment) != original_comment(&options.column);
+        || clean(&options.column.comment) != original_comment(&options.column)
+        || (is_mysql_character_data_type(&options.column.data_type)
+            && (options.column.character_set.trim() != original.character_set.as_deref().unwrap_or("")
+                || options.column.collation.trim() != original.collation.as_deref().unwrap_or("")));
 
     if has_rename && !capabilities.rename_column {
         warnings.push(format!("Renaming columns is not supported for {database_label} from this editor."));
@@ -71,9 +74,14 @@ pub fn build_single_column_alter_sql(options: SingleColumnAlterSqlOptions) -> Ta
 
     match dialect {
         StructureDialect::Mysql => statements.extend(build_mysql_existing_column_sql(&table, &options.column, "")),
+        StructureDialect::Doris => statements.extend(build_doris_existing_column_sql(&table, &options.column, "")),
         StructureDialect::Postgres => statements.extend(build_postgres_existing_column_sql(&table, &options.column)),
-        StructureDialect::Oracle => {
-            statements.extend(build_oracle_like_existing_column_sql(dialect, &table, &options.column))
+        StructureDialect::Oracle | StructureDialect::Dameng => {
+            if options.database_type == Some(crate::models::connection::DatabaseType::Xugu) {
+                statements.extend(build_xugu_existing_column_sql(&table, &options.column));
+            } else {
+                statements.extend(build_oracle_like_existing_column_sql(dialect, &table, &options.column))
+            }
         }
         StructureDialect::H2 => statements.extend(build_h2_existing_column_sql(&table, &options.column)),
         StructureDialect::ClickHouse => {
@@ -247,7 +255,55 @@ pub(super) fn build_mysql_existing_column_sql(
     vec![format!("ALTER TABLE {table} {operation}{position_clause};")]
 }
 
+pub(super) fn build_doris_existing_column_sql(
+    table: &str,
+    column: &EditableStructureColumn,
+    position_clause: &str,
+) -> Vec<String> {
+    let Some(original) = &column.original else {
+        return Vec::new();
+    };
+    let mut statements = Vec::new();
+    let mut current_column = column.clone();
+
+    if column.name != original.name {
+        // Doris follows its own lightweight schema-change grammar: no MySQL CHANGE and no TO keyword.
+        statements.push(format!(
+            "ALTER TABLE {table} RENAME COLUMN {} {};",
+            quote_ident(StructureDialect::Doris, &original.name),
+            quote_ident(StructureDialect::Doris, &column.name)
+        ));
+        current_column.name = column.name.clone();
+    }
+
+    let type_changed = column.data_type.trim() != original.data_type.trim();
+    let nullable_changed = column.is_nullable != original.is_nullable;
+    let default_changed = normalize_default(Some(&column.default_value)) != original_default(column);
+    let comment_changed = clean(&column.comment) != original_comment(column);
+    if type_changed || nullable_changed || default_changed || comment_changed || !position_clause.is_empty() {
+        statements.push(format!(
+            "ALTER TABLE {table} MODIFY COLUMN {}{position_clause};",
+            column_definition(StructureDialect::Doris, &current_column)
+        ));
+    }
+
+    statements
+}
+
 pub(super) fn build_postgres_existing_column_sql(table: &str, column: &EditableStructureColumn) -> Vec<String> {
+    build_postgres_like_existing_column_sql(table, column, false)
+}
+
+pub(super) fn build_xugu_existing_column_sql(table: &str, column: &EditableStructureColumn) -> Vec<String> {
+    // Xugu shares PostgreSQL's per-attribute ALTER flow, but its type clause omits TYPE entirely.
+    build_postgres_like_existing_column_sql(table, column, true)
+}
+
+fn build_postgres_like_existing_column_sql(
+    table: &str,
+    column: &EditableStructureColumn,
+    use_xugu_type_syntax: bool,
+) -> Vec<String> {
     let Some(original) = &column.original else {
         return Vec::new();
     };
@@ -261,11 +317,10 @@ pub(super) fn build_postgres_existing_column_sql(table: &str, column: &EditableS
         ));
     }
     if column.data_type.trim() != original.data_type.trim() {
-        statements.push(format!(
-            "ALTER TABLE {table} ALTER COLUMN {} TYPE {};",
-            quote_ident(StructureDialect::Postgres, current_name),
-            column_data_type(StructureDialect::Postgres, column)
-        ));
+        let column_name = quote_ident(StructureDialect::Postgres, current_name);
+        let data_type = column_data_type(StructureDialect::Postgres, column);
+        let type_clause = if use_xugu_type_syntax { data_type } else { format!("TYPE {data_type}") };
+        statements.push(format!("ALTER TABLE {table} ALTER COLUMN {column_name} {type_clause};"));
     }
     if column.is_nullable != original.is_nullable {
         let action = if column.is_nullable { "DROP NOT NULL" } else { "SET NOT NULL" };
@@ -691,4 +746,7 @@ pub(super) fn has_existing_column_attribute_change(column: &EditableStructureCol
         || column.is_nullable != original.is_nullable
         || normalize_default(Some(&column.default_value)) != original_default(column)
         || clean(&column.comment) != original_comment(column)
+        || (is_mysql_character_data_type(&column.data_type)
+            && (column.character_set.trim() != original.character_set.as_deref().unwrap_or("")
+                || column.collation.trim() != original.collation.as_deref().unwrap_or("")))
 }

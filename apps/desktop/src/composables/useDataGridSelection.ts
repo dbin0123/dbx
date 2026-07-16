@@ -1,5 +1,6 @@
-import { ref, computed, type ComputedRef, type Ref } from "vue";
-import { allCellsSelectionRange, extractColumnsSelection, extractSelection, isCellInSelection, normalizeSelectionRange, normalizeSelectedColumnIndexes, rowSelectionRange, type CellPosition, type CellSelectionRange, type SelectionData } from "@/lib/gridSelection";
+import { ref, computed, getCurrentScope, onScopeDispose, type ComputedRef, type Ref } from "vue";
+import { allCellsSelectionRange, extractColumnsSelection, extractSelection, isCellInSelection, normalizeSelectionRange, normalizeSelectedColumnIndexes, rowSelectionRange, type CellPosition, type CellSelectionRange, type SelectionData } from "@/lib/dataGrid/gridSelection";
+import type { DataGridRuntimeScope } from "@/lib/dataGrid/dataGridRuntime";
 
 type CellValue = string | number | boolean | null;
 
@@ -22,14 +23,23 @@ export interface UseDataGridSelectionOptions {
   showTranspose: Ref<boolean>;
   transposeRowIndex: Ref<number | null>;
   gridRef: Ref<HTMLDivElement | undefined>;
+  getScrollElement?: () => HTMLElement | null;
+  cellFromClientPoint?: (clientX: number, clientY: number) => CellPosition | null;
+  runtimeScope?: DataGridRuntimeScope;
 }
 
+const AUTO_SCROLL_EDGE_SIZE = 40;
+const AUTO_SCROLL_MAX_SPEED = 28;
+
 export function useDataGridSelection(options: UseDataGridSelectionOptions) {
-  const { columns, displayItems, editingCell, showTranspose, transposeRowIndex, gridRef } = options;
+  const { columns, displayItems, editingCell, showTranspose, transposeRowIndex, gridRef, getScrollElement, cellFromClientPoint } = options;
 
   const selectionAnchor = ref<CellPosition | null>(null);
   const selectionFocus = ref<CellPosition | null>(null);
   const isSelectingCells = ref(false);
+  let selectionPointerClientX = 0;
+  let selectionPointerClientY = 0;
+  let selectionAutoScrollFrame = 0;
 
   const isSelectingAll = ref(false);
   const selectedCellKeys = ref<Set<string>>(new Set());
@@ -213,6 +223,7 @@ export function useDataGridSelection(options: UseDataGridSelectionOptions) {
         next.add(rowId);
       }
       selectedRowIds.value = next;
+      selectContiguousRowIds(next);
       lastClickedRowIndex.value = rowIndex;
     } else if (isShift && lastClickedRowIndex.value !== null) {
       const start = Math.min(lastClickedRowIndex.value, rowIndex);
@@ -231,9 +242,85 @@ export function useDataGridSelection(options: UseDataGridSelectionOptions) {
     }
   }
 
+  function selectContiguousRowIds(rowIds: Set<number>) {
+    if (rowIds.size === 0) {
+      clearCellSelection();
+      return;
+    }
+
+    const indexes = displayItems.value.reduce<number[]>((selectedIndexes, item, index) => {
+      if (rowIds.has(item.id)) selectedIndexes.push(index);
+      return selectedIndexes;
+    }, []);
+    if (indexes.length !== rowIds.size) {
+      clearCellSelection();
+      return;
+    }
+
+    const start = Math.min(...indexes);
+    const end = Math.max(...indexes);
+    if (end - start + 1 !== indexes.length) {
+      clearCellSelection();
+      return;
+    }
+    selectRows(start, end);
+  }
+
   function finishCellSelection() {
     isSelectingCells.value = false;
     document.removeEventListener("mouseup", finishCellSelection);
+    document.removeEventListener("mousemove", handleSelectionPointerMove);
+    stopSelectionAutoScroll();
+  }
+
+  function stopSelectionAutoScroll() {
+    if (!selectionAutoScrollFrame) return;
+    cancelAnimationFrame(selectionAutoScrollFrame);
+    selectionAutoScrollFrame = 0;
+  }
+
+  function selectionScrollVelocity(pointer: number, start: number, end: number): number {
+    if (pointer < start + AUTO_SCROLL_EDGE_SIZE) {
+      return -AUTO_SCROLL_MAX_SPEED * Math.min(1, (start + AUTO_SCROLL_EDGE_SIZE - pointer) / AUTO_SCROLL_EDGE_SIZE);
+    }
+    if (pointer > end - AUTO_SCROLL_EDGE_SIZE) {
+      return AUTO_SCROLL_MAX_SPEED * Math.min(1, (pointer - (end - AUTO_SCROLL_EDGE_SIZE)) / AUTO_SCROLL_EDGE_SIZE);
+    }
+    return 0;
+  }
+
+  function updateSelectionFromPointer() {
+    const cell = cellFromClientPoint?.(selectionPointerClientX, selectionPointerClientY);
+    if (cell) extendCellSelection(cell.rowIndex, cell.colIndex);
+  }
+
+  function runSelectionAutoScroll() {
+    selectionAutoScrollFrame = 0;
+    if (!isSelectingCells.value) return;
+
+    const scroller = getScrollElement?.();
+    if (!scroller) return;
+    const rect = scroller.getBoundingClientRect();
+    const deltaX = selectionScrollVelocity(selectionPointerClientX, rect.left, rect.right);
+    const deltaY = selectionScrollVelocity(selectionPointerClientY, rect.top, rect.bottom);
+    const previousLeft = scroller.scrollLeft;
+    const previousTop = scroller.scrollTop;
+
+    scroller.scrollLeft += deltaX;
+    scroller.scrollTop += deltaY;
+    updateSelectionFromPointer();
+
+    if (scroller.scrollLeft !== previousLeft || scroller.scrollTop !== previousTop) {
+      selectionAutoScrollFrame = requestAnimationFrame(runSelectionAutoScroll);
+    }
+  }
+
+  function handleSelectionPointerMove(event: MouseEvent) {
+    if (!isSelectingCells.value) return;
+    selectionPointerClientX = event.clientX;
+    selectionPointerClientY = event.clientY;
+    updateSelectionFromPointer();
+    if (!selectionAutoScrollFrame) selectionAutoScrollFrame = requestAnimationFrame(runSelectionAutoScroll);
   }
 
   function focusGridWithoutScrolling() {
@@ -248,10 +335,16 @@ export function useDataGridSelection(options: UseDataGridSelectionOptions) {
     clearCellSelection();
     selectSingleCell(rowIndex, colIndex);
     isSelectingCells.value = true;
+    selectionPointerClientX = event.clientX;
+    selectionPointerClientY = event.clientY;
     lastClickedColumnIndex.value = colIndex;
     if (showTranspose.value) transposeRowIndex.value = rowIndex;
     document.addEventListener("mouseup", finishCellSelection);
+    document.addEventListener("mousemove", handleSelectionPointerMove);
   }
+
+  if (options.runtimeScope) options.runtimeScope.addCleanup(finishCellSelection);
+  else if (getCurrentScope()) onScopeDispose(finishCellSelection);
 
   function extendCellSelection(rowIndex: number, colIndex: number) {
     if (!isSelectingCells.value || !selectionAnchor.value) return;

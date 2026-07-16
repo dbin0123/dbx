@@ -23,6 +23,7 @@ pub async fn execute_query(
     result_session_id: Option<String>,
     client_session_id: Option<String>,
     timeout_secs: Option<u64>,
+    execution_mode: Option<dbx_core::query::QueryExecutionMode>,
 ) -> Result<db::QueryResult, String> {
     let execution_id = execution_id.filter(|id| !id.trim().is_empty());
     let registered_query = execution_id.as_ref().map(|id| {
@@ -48,6 +49,7 @@ pub async fn execute_query(
             client_session_id,
             timeout_secs,
             execution_id,
+            execution_mode: execution_mode.unwrap_or_default(),
             ..Default::default()
         },
     )
@@ -70,7 +72,9 @@ pub async fn execute_multi(
     client_session_id: Option<String>,
     timeout_secs: Option<u64>,
     use_transaction: Option<bool>,
-) -> Result<Vec<db::QueryResult>, String> {
+    continue_on_error: Option<bool>,
+    execution_mode: Option<dbx_core::query::QueryExecutionMode>,
+) -> Result<Vec<dbx_core::query::ExecuteMultiResult>, String> {
     let execution_id = execution_id.filter(|id| !id.trim().is_empty());
     let registered_query = execution_id.as_ref().map(|id| {
         state.running_queries.register_task(
@@ -81,16 +85,16 @@ pub async fn execute_multi(
     let cancel_token = registered_query.as_ref().map(|query| query.token());
     let trace_id = execution_id.as_deref().unwrap_or("no-execution-id").to_string();
     let started_at = Instant::now();
+    dbx_core::sql_diagnostics::debug_sql("query:execute_multi:start", &sql);
     log::info!(
-        "[query][execute_multi:start] trace_id={} connection_id={} database={} schema={:?} sql={}",
+        "[query][execute_multi:start] trace_id={} connection_id={} database={} schema={:?}",
         trace_id,
         connection_id,
         database,
-        schema,
-        sql
+        schema
     );
 
-    let result = dbx_core::query::execute_multi_core_with_options(
+    let result = dbx_core::query::execute_multi_core_with_options_for_client(
         &state,
         &connection_id,
         &database,
@@ -106,6 +110,8 @@ pub async fn execute_multi(
             timeout_secs,
             execution_id,
             use_transaction,
+            continue_on_error: continue_on_error.unwrap_or(false),
+            execution_mode: execution_mode.unwrap_or_default(),
         },
     )
     .await;
@@ -115,8 +121,8 @@ pub async fn execute_multi(
             trace_id,
             started_at.elapsed().as_millis(),
             results.len(),
-            results.iter().map(|result| result.rows.len()).collect::<Vec<_>>(),
-            results.iter().map(|result| result.execution_time_ms).collect::<Vec<_>>()
+            results.iter().map(|result| result.result.rows.len()).collect::<Vec<_>>(),
+            results.iter().map(|result| result.result.execution_time_ms).collect::<Vec<_>>()
         ),
         Err(error) => log::error!(
             "[query][execute_multi:error] trace_id={} elapsed_ms={} error={}",
@@ -333,7 +339,7 @@ pub fn build_rename_object_sql(options: dbx_core::db_admin_sql::RenameObjectSqlO
 
 #[tauri::command]
 pub fn build_create_database_sql(options: dbx_core::db_admin_sql::CreateDatabaseSqlOptions) -> Result<String, String> {
-    Ok(dbx_core::db_admin_sql::build_create_database_sql(options))
+    dbx_core::db_admin_sql::build_create_database_sql(options)
 }
 
 #[cfg(feature = "duckdb-bundled")]
@@ -378,7 +384,14 @@ pub fn build_drop_database_sql(options: dbx_core::db_admin_sql::DatabaseNameSqlO
 
 #[tauri::command]
 pub fn build_create_schema_sql(options: dbx_core::db_admin_sql::SchemaNameSqlOptions) -> Result<String, String> {
-    Ok(dbx_core::db_admin_sql::build_create_schema_sql(options))
+    dbx_core::db_admin_sql::build_create_schema_sql(options)
+}
+
+#[tauri::command]
+pub fn build_update_database_properties_sql(
+    options: dbx_core::db_admin_sql::DatabasePropertyEditSqlOptions,
+) -> Result<String, String> {
+    dbx_core::db_admin_sql::build_update_database_properties_sql(options)
 }
 
 #[tauri::command]
@@ -436,6 +449,35 @@ pub fn build_table_structure_change_sql(
     options: dbx_core::table_structure_sql::TableStructureSqlOptions,
 ) -> Result<dbx_core::table_structure_sql::TableStructureSqlResult, String> {
     Ok(dbx_core::table_structure_sql::build_table_structure_change_sql(options))
+}
+
+#[tauri::command]
+pub async fn preview_sqlite_table_structure_change(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    database: String,
+    options: dbx_core::table_structure_sql::TableStructureSqlOptions,
+) -> Result<dbx_core::table_structure_sql::SqliteTableStructurePreview, String> {
+    dbx_core::table_structure_sql::preview_sqlite_table_structure_change(&state, &connection_id, &database, options)
+        .await
+}
+
+#[tauri::command]
+pub async fn apply_sqlite_table_structure_change(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    database: String,
+    options: dbx_core::table_structure_sql::TableStructureSqlOptions,
+    schema_revision: String,
+) -> Result<db::QueryResult, String> {
+    dbx_core::table_structure_sql::apply_sqlite_table_structure_change(
+        &state,
+        &connection_id,
+        &database,
+        options,
+        &schema_revision,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -576,59 +618,15 @@ pub async fn get_explain_info(
     sql: String,
     mode: Option<String>,
 ) -> Result<String, String> {
-    let database_for_pool = database.as_deref().filter(|database| !database.trim().is_empty());
-    state.get_or_create_pool(&connection_id, database_for_pool).await?;
-
-    let client = {
-        let connections = state.connections.read().await;
-        let pool = connections.get(&connection_id).ok_or_else(|| "Connection not found".to_string())?;
-        match pool {
-            dbx_core::connection::PoolKind::Agent(client) => client.clone(),
-            _ => return Err("Connection is not an agent-based connection".to_string()),
-        }
-    };
-
-    let config = {
-        let configs = state.configs.read().await;
-        configs.get(&connection_id).cloned()
-    };
-    let config = config.ok_or_else(|| "Connection config not found".to_string())?;
-    let timeout_secs = config.query_timeout_secs;
-
-    let mut client = client.lock().await;
-    let mode = mode.unwrap_or_else(|| "explain".to_string());
-    if mode.eq_ignore_ascii_case("autotrace") && !dbx_core::query_execution_sql::is_safe_dameng_autotrace_sql(&sql) {
-        return Err("unsafe".to_string());
-    }
-    let params = serde_json::json!({
-        "sql": sql,
-        "database": database.unwrap_or_default(),
-        "schema": schema.unwrap_or_default(),
-        "timeoutSecs": timeout_secs as i64,
-        "mode": mode,
-    });
-
-    let result: Result<serde_json::Value, String> = client.get_explain_info::<serde_json::Value>(params).await;
-    match result {
-        Ok(serde_json::Value::String(s)) => {
-            eprintln!("[get_explain_info] OK string, len={}", s.len());
-            Ok(s)
-        }
-        Ok(serde_json::Value::Object(obj)) => {
-            let plan = obj.get("plan").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let has_stats = obj.get("has_actual_stats").and_then(|v| v.as_bool()).unwrap_or(false);
-            eprintln!("[get_explain_info] OK object, plan_len={}, has_actual_stats={}", plan.len(), has_stats);
-            Ok(plan)
-        }
-        Ok(val) => {
-            eprintln!("[get_explain_info] OK unexpected type: {:?}", val);
-            Err(format!("Unexpected result type from getExplainInfo: {:?}", val))
-        }
-        Err(e) => {
-            eprintln!("[get_explain_info] error: {e}");
-            Err(e)
-        }
-    }
+    dbx_core::agent_explain::get_agent_explain_info_core(
+        &state,
+        &connection_id,
+        database.as_deref(),
+        schema.as_deref(),
+        &sql,
+        mode.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]

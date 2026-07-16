@@ -4,10 +4,13 @@ import com.dbx.agent.BaseDatabaseAgent;
 import com.dbx.agent.ConnectParams;
 import com.dbx.agent.DatabaseAgent;
 import com.dbx.agent.ExecuteQueryOptions;
+import com.dbx.agent.MetadataListConstraints;
 import com.dbx.agent.QueryResult;
+import com.dbx.agent.TableInfo;
 import com.dbx.agent.test.JdbcExecutionBehaviorTest;
 import com.dbx.agent.test.JdbcMetadataBehaviorTest;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -38,6 +41,35 @@ class H2AgentMigrationTest {
         ConnectParams params = new ConnectParams("127.0.0.1", 9092, "test", "sa", "", "", "", false);
 
         Assertions.assertEquals("jdbc:h2:tcp://127.0.0.1:9092/test", H2Agent.buildUrl(params));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void exposesDatabaseMetadataForTestAndConnectedConnection() {
+        ConnectParams params = new ConnectParams("", 0, "mem:dbx-agent-info;DB_CLOSE_DELAY=-1", "sa", "", "", "", false);
+        H2Agent agent = new H2Agent();
+
+        Map<String, Object> result = agent.testConnectionWithInfo(params);
+        Assertions.assertEquals(true, result.get("ok"));
+        Map<String, String> testedInfo = (Map<String, String>) result.get("databaseInfo");
+        assertH2DatabaseInfo(testedInfo);
+
+        agent.connect(params);
+        try {
+            assertH2DatabaseInfo(agent.getDatabaseInfo());
+        } finally {
+            agent.disconnect();
+        }
+    }
+
+    private static void assertH2DatabaseInfo(Map<String, String> info) {
+        Assertions.assertEquals("H2", info.get("productName"));
+        Assertions.assertFalse(info.get("productVersion").isEmpty());
+        Assertions.assertFalse(info.get("driverName").isEmpty());
+        Assertions.assertFalse(info.get("driverVersion").isEmpty());
+        Assertions.assertFalse(info.get("jdbcVersion").isEmpty());
+        Assertions.assertEquals("upper", info.get("unquotedIdentifierCase"));
+        Assertions.assertFalse(info.containsKey("quotedIdentifierCase"));
     }
 }
 
@@ -131,6 +163,23 @@ class H2MetadataBehaviorTest extends JdbcMetadataBehaviorTest {
     @Override
     protected List<String> expectedColumnsInOrder() {
         return List.of("ID", "NAME", "CREATED_AT");
+    }
+
+    @Test
+    void constrainedTableMetadataFiltersTypesAndPages() {
+        withAgent("dbx-agent-h2-constrained-metadata", agent -> {
+            for (String sql : metadataFixtureSql()) {
+                agent.executeQuery(sql, null, new ExecuteQueryOptions());
+            }
+
+            List<TableInfo> tables = agent.listTables(
+                metadataSchema(),
+                new MetadataListConstraints("table", 1, 1, List.of("TABLE"))
+            );
+
+            Assertions.assertEquals(1, tables.size());
+            Assertions.assertEquals("BETA_TABLE", tables.get(0).getName());
+        });
     }
 }
 

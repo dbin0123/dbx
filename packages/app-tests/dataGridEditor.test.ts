@@ -3,9 +3,9 @@ import { test } from "vitest";
 import { computed, nextTick, ref } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { DATA_GRID_QUICK_ENTRY_DRAFT_ROW_ID, useDataGridEditor } from "../../apps/desktop/src/composables/useDataGridEditor.ts";
-import type { CellValue } from "../../apps/desktop/src/lib/cellValue.ts";
-import type { DataGridSaveStatementOptions } from "../../apps/desktop/src/lib/dataGridSql.ts";
-import { matchesRowStatusFilter, type RowStatusFilter } from "../../apps/desktop/src/lib/gridRowStatus.ts";
+import type { CellValue } from "../../apps/desktop/src/lib/dataGrid/cellValue.ts";
+import type { DataGridSaveStatementOptions } from "../../apps/desktop/src/lib/dataGrid/dataGridSql.ts";
+import { matchesRowStatusFilter, type RowStatusFilter } from "../../apps/desktop/src/lib/dataGrid/gridRowStatus.ts";
 import type { ColumnInfo } from "../../apps/desktop/src/types/database.ts";
 
 function installBrowserTestGlobals() {
@@ -103,7 +103,14 @@ function column(name: string, isPrimaryKey = false, extra: string | null = null)
   };
 }
 
-function createQuickEntryEditor(options: { quickEntryEnabled: boolean; cacheKey?: string; rowStatusFilter?: ReturnType<typeof ref<RowStatusFilter>>; filterRowsInGetRowItem?: boolean; supportsInsert?: boolean; save?: (changes: { dirtyRows: Map<number, Map<number, CellValue>>; newRows: CellValue[][] }) => Promise<void> }) {
+function createQuickEntryEditor(options: {
+  quickEntryEnabled: boolean;
+  cacheKey?: string;
+  rowStatusFilter?: ReturnType<typeof ref<RowStatusFilter>>;
+  filterRowsInGetRowItem?: boolean;
+  supportsInsert?: boolean;
+  save?: (changes: { dirtyRows: Map<number, Map<number, CellValue>>; newRows: CellValue[][] }) => Promise<void>;
+}) {
   const result = computed(() => ({
     columns: ["id", "name"],
     rows: [[1, "Ada"] as CellValue[]],
@@ -611,6 +618,128 @@ test("undo and redo restore pending cell edits before save", () => {
   assert.deepEqual(editor.rowDataWithChanges(result.value.rows[0], 0), [1, "Ada Lovelace"]);
 });
 
+test("setting a cell to NULL records pending SQL and supports undo and redo", async () => {
+  setActivePinia(createPinia());
+  installBrowserTestGlobals();
+
+  const result = computed(() => ({
+    columns: ["id", "name"],
+    rows: [[1, "Ada"] as CellValue[]],
+  }));
+  const editor = createPeopleGridEditor(result);
+
+  editor.applyCellValue(0, 1, null);
+
+  assert.equal(editor.dirtyRows.value.get(0)?.get(1), null);
+  assert.equal(editor.hasPendingChanges.value, true);
+  assert.deepEqual(editor.rowDataWithChanges(result.value.rows[0], 0), [1, null]);
+
+  const statements = await editor.previewChanges();
+  assert.deepEqual(statements, ['UPDATE "people" SET "name" = NULL WHERE "id" = 1;']);
+  assert.doesNotMatch(statements.join("\n"), /["']NULL["']/);
+
+  editor.undoPendingChange();
+  assert.equal(editor.dirtyRows.value.size, 0);
+  assert.deepEqual(editor.rowDataWithChanges(result.value.rows[0], 0), [1, "Ada"]);
+
+  editor.redoPendingChange();
+  assert.equal(editor.dirtyRows.value.get(0)?.get(1), null);
+  assert.deepEqual(editor.rowDataWithChanges(result.value.rows[0], 0), [1, null]);
+});
+
+test("setting an existing NULL cell to NULL is a no-op", async () => {
+  setActivePinia(createPinia());
+  installBrowserTestGlobals();
+
+  const result = computed(() => ({
+    columns: ["id", "name"],
+    rows: [[1, null] as CellValue[]],
+  }));
+  const editor = createPeopleGridEditor(result);
+
+  editor.applyCellValue(0, 1, null);
+
+  assert.equal(editor.dirtyRows.value.size, 0);
+  assert.equal(editor.hasPendingChanges.value, false);
+  assert.equal(editor.canUndoPendingChange.value, false);
+  assert.deepEqual(await editor.previewChanges(), []);
+});
+
+test("generated empty strings remain distinct from NULL cells", async () => {
+  setActivePinia(createPinia());
+  installBrowserTestGlobals();
+
+  const result = computed(() => ({
+    columns: ["id", "name"],
+    rows: [[1, null] as CellValue[]],
+  }));
+  const editor = createPeopleGridEditor(result);
+
+  editor.applyCellValue(0, 1, "");
+  assert.equal(editor.dirtyRows.value.size, 0);
+
+  editor.applyCellValue(0, 1, "", { preserveEmptyString: true });
+  assert.equal(editor.dirtyRows.value.get(0)?.get(1), "");
+  assert.deepEqual(editor.rowDataWithChanges(result.value.rows[0], 0), [1, ""]);
+  assert.deepEqual(await editor.previewChanges(), [`UPDATE "people" SET "name" = '' WHERE "id" = 1;`]);
+});
+
+test("a failed NULL save keeps the pending cell edit", async () => {
+  setActivePinia(createPinia());
+  installBrowserTestGlobals();
+  const editor = createQuickEntryEditor({
+    quickEntryEnabled: false,
+    save: async () => {
+      throw new Error("NULL write rejected");
+    },
+  });
+
+  editor.applyCellValue(0, 1, null);
+  await editor.saveChanges();
+
+  assert.equal(editor.saveError.value, "NULL write rejected");
+  assert.equal(editor.dirtyRows.value.get(0)?.get(1), null);
+  assert.equal(editor.hasPendingChanges.value, true);
+});
+
+test("a NOT NULL validation failure keeps the pending NULL cell edit recoverable", async () => {
+  setActivePinia(createPinia());
+  installBrowserTestGlobals();
+  globalThis.fetch = (async (input) => {
+    if (String(input) !== "/api/query/prepare-data-grid-save") return new Response("unexpected request", { status: 500 });
+    return new Response(
+      JSON.stringify({
+        validationError: 'Column "name" does not allow NULL.',
+        statements: [],
+        rollbackStatements: [],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+  const editor = createPeopleGridEditor();
+
+  editor.applyCellValue(0, 1, null);
+  await editor.saveChanges();
+
+  assert.equal(editor.saveError.value, 'Column "name" does not allow NULL.');
+  assert.equal(editor.dirtyRows.value.get(0)?.get(1), null);
+  assert.equal(editor.hasPendingChanges.value, true);
+  assert.equal(editor.canUndoPendingChange.value, true);
+
+  editor.undoPendingChange();
+  assert.equal(editor.dirtyRows.value.size, 0);
+  assert.equal(editor.saveError.value, "");
+
+  editor.redoPendingChange();
+  await editor.saveChanges();
+  assert.equal(editor.saveError.value, 'Column "name" does not allow NULL.');
+
+  editor.discardChanges();
+  assert.equal(editor.dirtyRows.value.size, 0);
+  assert.equal(editor.hasPendingChanges.value, false);
+  assert.equal(editor.saveError.value, "");
+});
+
 test("restoring a pending cell edit records undo and redo history", () => {
   setActivePinia(createPinia());
   installBrowserTestGlobals();
@@ -660,6 +789,88 @@ test("undo and redo cover row add and delete operations", () => {
   assert.equal(editor.newRows.value.length, 1);
   editor.redoPendingChange();
   assert.deepEqual([...editor.deletedRows.value], [0]);
+});
+
+test("batch row delete records a single undo snapshot", () => {
+  setActivePinia(createPinia());
+  installBrowserTestGlobals();
+
+  const result = computed(() => ({
+    columns: ["id", "name"],
+    rows: [[1, "Ada"] as CellValue[], [2, "Linus"] as CellValue[], [3, "Grace"] as CellValue[]],
+  }));
+  const rowStatusFilter = ref<"all" | "changed" | "edited" | "new" | "deleted">("all");
+  let editor: ReturnType<typeof useDataGridEditor>;
+
+  editor = useDataGridEditor({
+    result,
+    editable: computed(() => true),
+    databaseType: computed(() => "postgres"),
+    connectionId: computed(() => undefined),
+    database: computed(() => undefined),
+    tableMeta: computed(() => ({
+      tableName: "people",
+      columns: [column("id", true), column("name")],
+      primaryKeys: ["id"],
+    })),
+    onExecuteSql: computed(() => undefined),
+    customSaveHandler: computed(() => undefined),
+    sql: computed(() => "SELECT id, name FROM people"),
+    searchText: ref(""),
+    whereFilterInput: ref(""),
+    orderByInput: ref(""),
+    currentWhereInput: computed(() => undefined),
+    rowStatusFilter,
+    pageSize: ref(50),
+    currentPage: ref(1),
+    getRowItem: (rowId) => {
+      if (rowId >= 0 && result.value.rows[rowId]) {
+        return {
+          id: rowId,
+          sourceIndex: rowId,
+          data: result.value.rows[rowId],
+          isNew: false,
+          isDeleted: editor.deletedRows.value.has(rowId),
+          isDirtyCol: [false, editor.dirtyRows.value.get(rowId)?.has(1) ?? false],
+          status: editor.deletedRows.value.has(rowId) ? "deleted" : editor.dirtyRows.value.has(rowId) ? "edited" : "clean",
+        };
+      }
+      if (rowId < 0) {
+        const newIndex = -rowId - 1;
+        const row = editor.newRows.value[newIndex];
+        if (!row) return undefined;
+        return {
+          id: rowId,
+          newIndex,
+          data: row,
+          isNew: true,
+          isDeleted: false,
+          isDirtyCol: [false, false],
+          status: "new",
+        };
+      }
+      return undefined;
+    },
+    emit: () => {},
+  });
+
+  editor.applyDeleteRows([0, 1]);
+  assert.deepEqual([...editor.deletedRows.value], [0, 1]);
+
+  editor.undoPendingChange();
+  assert.deepEqual([...editor.deletedRows.value], []);
+  assert.equal(editor.canUndoPendingChange.value, false);
+
+  editor.redoPendingChange();
+  assert.deepEqual([...editor.deletedRows.value], [0, 1]);
+
+  editor.newRows.value = [
+    [4, "Katherine"],
+    [5, "Margaret"],
+    [6, "Donald"],
+  ];
+  editor.applyDeleteRows([-1, -2]);
+  assert.deepEqual(editor.newRows.value, [[6, "Donald"]]);
 });
 
 test("undo and redo restore pending cell edits before save", () => {
@@ -870,7 +1081,7 @@ test("saving manually typed JSON arrays from a Postgres array column uses array 
   assert.deepEqual(executedSql, [`UPDATE "articles" SET "tags" = '{"draft","发布"}' WHERE "id" = 1;`]);
 });
 
-test("failed table data save records a failed history entry", async () => {
+test("single-statement table data save uses auto-commit and records a failed history entry", async () => {
   setActivePinia(createPinia());
   installBrowserTestGlobals();
 
@@ -890,7 +1101,7 @@ test("failed table data save records a failed history entry", async () => {
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
-    if (url === "/api/query/execute-in-transaction") {
+    if (url === "/api/query/execute-batch") {
       return new Response(permissionError, { status: 500 });
     }
     if (url === "/api/history/save") {
@@ -958,6 +1169,89 @@ test("failed table data save records a failed history entry", async () => {
   assert.equal(historyEntry.sql, `UPDATE "pp_questions" SET "title" = 'New title' WHERE "id" = 1;`);
 });
 
+test("multi-statement table data save remains transactional", async () => {
+  setActivePinia(createPinia());
+  installBrowserTestGlobals();
+
+  const executionEndpoints: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    if (url === "/api/query/prepare-data-grid-save") {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      const options = body.options as DataGridSaveStatementOptions;
+      return new Response(
+        JSON.stringify({
+          statements: mockPreparedSaveStatements(options),
+          rollbackStatements: [],
+          executionSchema: options.tableMeta.schema,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url === "/api/query/execute-in-transaction" || url === "/api/query/execute-batch") {
+      executionEndpoints.push(url);
+      return new Response(JSON.stringify({ affected_rows: 2 }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url === "/api/history/save") {
+      return new Response("null", { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(`unexpected request: ${url}`, { status: 500 });
+  }) as typeof fetch;
+
+  const result = computed(() => ({
+    columns: ["id", "title"],
+    rows: [
+      [1, "Old title 1"],
+      [2, "Old title 2"],
+    ] as CellValue[][],
+  }));
+  const rowStatusFilter = ref<"all" | "changed" | "edited" | "new" | "deleted">("all");
+  const editor = useDataGridEditor({
+    result,
+    editable: computed(() => true),
+    databaseType: computed(() => "mysql"),
+    connectionId: computed(() => "conn-1"),
+    database: computed(() => "app_db"),
+    tableMeta: computed(() => ({
+      tableName: "pp_questions",
+      columns: [column("id", true), column("title")],
+      primaryKeys: ["id"],
+    })),
+    onExecuteSql: computed(() => undefined),
+    customSaveHandler: computed(() => undefined),
+    sql: computed(() => "SELECT id, title FROM pp_questions"),
+    searchText: ref(""),
+    whereFilterInput: ref(""),
+    currentWhereInput: computed(() => undefined),
+    orderByInput: ref(""),
+    rowStatusFilter,
+    pageSize: ref(50),
+    currentPage: ref(1),
+    getRowItem: (rowId) => {
+      const row = result.value.rows[rowId];
+      if (!row) return undefined;
+      return {
+        id: rowId,
+        sourceIndex: rowId,
+        data: row,
+        isNew: false,
+        isDeleted: false,
+        isDirtyCol: [false, false],
+        status: "clean",
+      };
+    },
+    emit: () => {},
+  });
+
+  editor.applyCellValue(0, 1, "New title 1");
+  editor.applyCellValue(1, 1, "New title 2");
+  await editor.saveChanges();
+
+  assert.deepEqual(executionEndpoints, ["/api/query/execute-in-transaction"]);
+  assert.equal(editor.saveError.value, "");
+  assert.equal(editor.dirtyRows.value.size, 0);
+});
+
 test("quick entry off keeps blur edits pending without saving", async () => {
   setActivePinia(createPinia());
   installBrowserTestGlobals();
@@ -976,6 +1270,26 @@ test("quick entry off keeps blur edits pending without saving", async () => {
   assert.equal(saveCalls, 0);
   assert.equal(editor.dirtyRows.value.size, 1);
   assert.equal(editor.dirtyRows.value.get(0)?.get(1), "Ada Lovelace");
+});
+
+test("explicit enum commits distinguish NULL, empty string, and the literal NULL", async () => {
+  setActivePinia(createPinia());
+  installBrowserTestGlobals();
+
+  const nullEditor = createPeopleGridEditor();
+  nullEditor.startEdit(0, 1);
+  await nullEditor.commitEditAndMaybeAutoSave({ explicitValue: null });
+  assert.equal(nullEditor.dirtyRows.value.get(0)?.get(1), null);
+
+  const emptyEditor = createPeopleGridEditor();
+  emptyEditor.startEdit(0, 1);
+  await emptyEditor.commitEditAndMaybeAutoSave({ explicitValue: "" });
+  assert.equal(emptyEditor.dirtyRows.value.get(0)?.get(1), "");
+
+  const literalEditor = createPeopleGridEditor();
+  literalEditor.startEdit(0, 1);
+  await literalEditor.commitEditAndMaybeAutoSave({ explicitValue: "NULL" });
+  assert.equal(literalEditor.dirtyRows.value.get(0)?.get(1), "NULL");
 });
 
 test("quick entry on saves existing row edits on blur", async () => {
@@ -1072,10 +1386,7 @@ test("quick entry queues blur saves made while a save is running", async () => {
   await firstCommit;
 
   assert.equal(saveCalls, 2);
-  assert.deepEqual(savedDirtyRows, [
-    [[0, [[1, "Ada 1"]]]],
-    [[0, [[1, "Ada 2"]]]],
-  ]);
+  assert.deepEqual(savedDirtyRows, [[[0, [[1, "Ada 1"]]]], [[0, [[1, "Ada 2"]]]]]);
   assert.equal(editor.dirtyRows.value.size, 0);
   assert.equal(editor.saveError.value, "");
 });
@@ -1126,10 +1437,7 @@ test("quick entry replays queued saves when row-status filters hide the saved ro
   await firstCommit;
 
   assert.equal(saveCalls, 2);
-  assert.deepEqual(savedDirtyRows, [
-    [[0, [[1, "Ada 1"]]]],
-    [[0, [[1, "Ada 2"]]]],
-  ]);
+  assert.deepEqual(savedDirtyRows, [[[0, [[1, "Ada 1"]]]], [[0, [[1, "Ada 2"]]]]]);
   assert.equal(editor.dirtyRows.value.size, 0);
   assert.equal(editor.saveError.value, "");
 });
@@ -1181,10 +1489,7 @@ test("quick entry preserves an active edit when auto-save clears the row from a 
   await editor.commitEditFromBlur();
 
   assert.equal(saveCalls, 2);
-  assert.deepEqual(savedDirtyRows, [
-    [[0, [[1, "Ada 1"]]]],
-    [[0, [[0, 2]]]],
-  ]);
+  assert.deepEqual(savedDirtyRows, [[[0, [[1, "Ada 1"]]]], [[0, [[0, 2]]]]]);
   assert.equal(editor.dirtyRows.value.size, 0);
 });
 
@@ -1230,10 +1535,7 @@ test("quick entry keeps queued blur save after an earlier auto-save fails", asyn
   await firstCommit;
 
   assert.equal(saveCalls, 2);
-  assert.deepEqual(savedDirtyRows, [
-    [[0, [[1, "Ada 1"]]]],
-    [[0, [[1, "Ada 2"]]]],
-  ]);
+  assert.deepEqual(savedDirtyRows, [[[0, [[1, "Ada 1"]]]], [[0, [[1, "Ada 2"]]]]]);
   assert.equal(editor.dirtyRows.value.size, 0);
   assert.equal(editor.saveError.value, "");
 });
@@ -1279,10 +1581,7 @@ test("quick entry saves a queued revert made while an earlier auto-save is runni
   await firstCommit;
 
   assert.equal(saveCalls, 2);
-  assert.deepEqual(savedDirtyRows, [
-    [[0, [[1, "Ada 1"]]]],
-    [[0, [[1, "Ada"]]]],
-  ]);
+  assert.deepEqual(savedDirtyRows, [[[0, [[1, "Ada 1"]]]], [[0, [[1, "Ada"]]]]]);
   assert.equal(editor.dirtyRows.value.size, 0);
   assert.equal(editor.saveError.value, "");
 });

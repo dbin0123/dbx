@@ -2,10 +2,12 @@
 
 import { basename, join } from "node:path";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 const DEFAULT_API_BASE = "https://api.atomgit.com/api/v5";
 const DEFAULT_REPOSITORY = "t8y2/dbx";
+const DEFAULT_CONCURRENCY = 3;
 
 function parseArgs(argv) {
   const args = {
@@ -15,6 +17,7 @@ function parseArgs(argv) {
     githubReleasePath: "",
     assetsDir: "",
     skipExistingAssets: true,
+    concurrency: Number.parseInt(process.env.ATOMGIT_UPLOAD_CONCURRENCY || `${DEFAULT_CONCURRENCY}`, 10),
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -43,6 +46,9 @@ function parseArgs(argv) {
   if (!args.repository.includes("/")) {
     throw new Error(`Invalid AtomGit repository: ${args.repository}`);
   }
+  if (!Number.isInteger(args.concurrency) || args.concurrency < 1) {
+    throw new Error("ATOMGIT_UPLOAD_CONCURRENCY must be a positive integer.");
+  }
   return args;
 }
 
@@ -57,21 +63,44 @@ async function main() {
 
   const client = new AtomGitClient({ apiBase: args.apiBase, token: args.token, owner, repo });
   const atomRelease = await ensureRelease(client, release);
-  const existingAssets = atomGitAssetNames(atomRelease);
+  // PATCH responses may omit attachments, so re-read before deciding what must be replaced.
+  const existingAssets = atomGitAssets((await client.getRelease(tag)) || atomRelease);
   const assets = localAssets(args.assetsDir);
   if (assets.length === 0) {
     console.log("No release assets found to sync.");
     return;
   }
 
-  console.log(`Syncing ${assets.length} asset(s) to AtomGit release ${tag}.`);
-  for (const assetPath of assets) {
+  const pendingAssets = assets.filter((assetPath) => {
     const name = basename(assetPath);
     if (args.skipExistingAssets && existingAssets.has(name)) {
       console.log(`Skipping existing AtomGit asset: ${name}`);
-      continue;
+      return false;
     }
-    await uploadAsset(client, tag, assetPath);
+    return true;
+  });
+
+  if (!args.skipExistingAssets) {
+    for (const assetPath of pendingAssets) {
+      const name = basename(assetPath);
+      const existingAsset = existingAssets.get(name);
+      if (!existingAsset) continue;
+      if (existingAsset.id === null) {
+        throw new Error(`Cannot replace AtomGit asset without an attachment id: ${name}`);
+      }
+      console.log(`Deleting existing AtomGit asset: ${name}`);
+      await client.deleteAsset(tag, existingAsset.id);
+    }
+  }
+
+  console.log(`Uploading ${pendingAssets.length} asset(s) with concurrency ${args.concurrency}.`);
+  await mapWithConcurrency(pendingAssets, args.concurrency, (assetPath) => uploadAsset(client, tag, assetPath));
+
+  const refreshedRelease = await client.getRelease(tag);
+  const uploadedAssets = atomGitAssets(refreshedRelease);
+  const missingAssets = pendingAssets.map(basename).filter((name) => !uploadedAssets.has(name));
+  if (missingAssets.length > 0) {
+    throw new Error(`AtomGit did not register uploaded assets: ${missingAssets.join(", ")}`);
   }
 }
 
@@ -114,9 +143,10 @@ async function uploadAsset(client, tag, filePath) {
 
   // AtomGit returns a per-file upload URL plus required upload headers.
   // Try raw PUT first and fall back to multipart POST for API-compatible deployments.
-  const put = runCurl([
+  const putResult = await runCurl([
     "--fail-with-body",
     "--location",
+    "--silent",
     "--show-error",
     "--retry",
     "3",
@@ -131,14 +161,15 @@ async function uploadAsset(client, tag, filePath) {
     filePath,
     uploadTarget.url,
   ]);
-  if (put.status === 0) {
+  if (uploadResultSucceeded(putResult)) {
     return;
   }
 
-  console.warn(`PUT upload failed for ${name}; retrying as multipart POST.`);
-  const post = runCurl([
+  console.warn(`PUT upload failed for ${name}: ${uploadFailureMessage(putResult)}; retrying as multipart POST.`);
+  const postResult = await runCurl([
     "--fail-with-body",
     "--location",
+    "--silent",
     "--show-error",
     "--retry",
     "3",
@@ -151,13 +182,54 @@ async function uploadAsset(client, tag, filePath) {
     `file=@${filePath};filename=${name};type=${contentTypeHeader}`,
     uploadTarget.url,
   ]);
-  if (post.status !== 0) {
-    throw new Error(`Failed to upload ${name} to AtomGit.`);
+  if (!uploadResultSucceeded(postResult)) {
+    throw new Error(`Failed to upload ${name} to AtomGit: ${uploadFailureMessage(postResult)}`);
   }
 }
 
 function runCurl(args) {
-  return spawnSync("curl", args, { stdio: "inherit" });
+  return new Promise((resolve, reject) => {
+    const child = spawn("curl", args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("close", (code) => resolve({ status: code ?? 1, stdout, stderr }));
+  });
+}
+
+export function uploadResultSucceeded(result) {
+  if (result.status !== 0) return false;
+  const responseBody = result.stdout.trim();
+  if (!responseBody || responseBody.toLowerCase() === "success") return true;
+  try {
+    const response = JSON.parse(responseBody);
+    return response.success === true || response.status === "success";
+  } catch {
+    return true;
+  }
+}
+
+function uploadFailureMessage(result) {
+  return result.stderr.trim() || result.stdout.trim() || `curl exited with status ${result.status}`;
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  let nextIndex = 0;
+  async function runWorker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      await worker(items[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, runWorker));
 }
 
 function localAssets(dir) {
@@ -167,8 +239,8 @@ function localAssets(dir) {
     .sort((a, b) => statSync(a).size - statSync(b).size || basename(a).localeCompare(basename(b)));
 }
 
-function atomGitAssetNames(release) {
-  const names = new Set();
+export function atomGitAssets(release) {
+  const assets = new Map();
   const groups = [
     release?.assets,
     release?.attach_files,
@@ -183,11 +255,14 @@ function atomGitAssetNames(release) {
     for (const item of group) {
       const name = item?.name || item?.file_name || item?.filename || item?.title;
       if (name) {
-        names.add(name);
+        assets.set(name, {
+          id: Number.isInteger(item?.id) ? item.id : null,
+          name,
+        });
       }
     }
   }
-  return names;
+  return assets;
 }
 
 function contentTypeFor(name) {
@@ -208,7 +283,7 @@ function headerValue(headers, name) {
   return entry ? entry[1] : "";
 }
 
-class AtomGitClient {
+export class AtomGitClient {
   constructor({ apiBase, token, owner, repo }) {
     this.apiBase = apiBase.replace(/\/+$/, "");
     this.token = token;
@@ -260,6 +335,13 @@ class AtomGitClient {
       url: uploadUrl,
       headers: normalizeUploadHeaders(typeof body === "string" ? null : body.headers),
     };
+  }
+
+  async deleteAsset(tag, assetId) {
+    await this.request(
+      "DELETE",
+      `/repos/${this.owner}/${this.repo}/releases/${encodeURIComponent(tag)}/attach_files/${assetId}`,
+    );
   }
 
   async request(method, path, body = null, requestOptions = {}) {
@@ -315,7 +397,9 @@ function sanitizeUrlForLog(value) {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

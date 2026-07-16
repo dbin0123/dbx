@@ -15,6 +15,7 @@ const MCP_BRIDGE_PORT_FILE: &str = "mcp-bridge-port";
 #[derive(Deserialize)]
 struct OpenTableRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
     schema: Option<String>,
     table: String,
@@ -23,6 +24,7 @@ struct OpenTableRequest {
 #[derive(Deserialize)]
 struct ExecuteQueryRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
     sql: String,
     schema: Option<String>,
@@ -33,6 +35,7 @@ struct ExecuteQueryRequest {
 #[derive(Deserialize)]
 struct ListTablesRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
     schema: Option<String>,
 }
@@ -40,6 +43,7 @@ struct ListTablesRequest {
 #[derive(Deserialize)]
 struct DescribeTableRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
     schema: Option<String>,
     table: String,
@@ -48,6 +52,7 @@ struct DescribeTableRequest {
 #[derive(Deserialize)]
 struct MongoFindDocumentsRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
     collection: String,
     skip: Option<u64>,
@@ -58,14 +63,26 @@ struct MongoFindDocumentsRequest {
 }
 
 #[derive(Deserialize)]
+struct MongoCountDocumentsRequest {
+    connection_name: String,
+    connection_id: Option<String>,
+    database: Option<String>,
+    collection: String,
+    filter: Option<String>,
+    mode: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct MongoServerVersionRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct MongoCollectionStatsRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
     collection: String,
     scale: Option<serde_json::Number>,
@@ -74,6 +91,7 @@ struct MongoCollectionStatsRequest {
 #[derive(Deserialize)]
 struct MongoAggregateDocumentsRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
     collection: String,
     pipeline_json: String,
@@ -81,8 +99,19 @@ struct MongoAggregateDocumentsRequest {
 }
 
 #[derive(Deserialize)]
+struct MongoDistinctRequest {
+    connection_name: String,
+    connection_id: Option<String>,
+    database: Option<String>,
+    collection: String,
+    field: String,
+    filter: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct MongoCreateIndexRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
     collection: String,
     keys_json: String,
@@ -92,6 +121,7 @@ struct MongoCreateIndexRequest {
 #[derive(Deserialize)]
 struct MongoDropIndexesRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
     collection: String,
     indexes_json: Option<String>,
@@ -99,8 +129,17 @@ struct MongoDropIndexesRequest {
 }
 
 #[derive(Deserialize)]
+struct MongoDropCollectionRequest {
+    connection_name: String,
+    connection_id: Option<String>,
+    database: Option<String>,
+    collection: String,
+}
+
+#[derive(Deserialize)]
 struct MongoInsertDocumentsRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
     collection: String,
     docs_json: String,
@@ -109,16 +148,19 @@ struct MongoInsertDocumentsRequest {
 #[derive(Deserialize)]
 struct MongoUpdateDocumentsRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
     collection: String,
     filter_json: String,
     update_json: String,
     many: bool,
+    options_json: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct MongoDeleteDocumentsRequest {
     connection_name: String,
+    connection_id: Option<String>,
     database: Option<String>,
     collection: String,
     filter_json: String,
@@ -128,6 +170,7 @@ struct MongoDeleteDocumentsRequest {
 #[derive(Deserialize)]
 struct RedisCommandRequest {
     connection_name: String,
+    connection_id: Option<String>,
     db: u32,
     command: String,
     skip_safety_check: Option<bool>,
@@ -191,6 +234,8 @@ pub fn start(app_handle: AppHandle, state: Arc<AppState>, data_dir: PathBuf) {
                     handle_describe_table_data(&st, body, &mut stream).await;
                 } else if first_line.starts_with("POST /data/mongo/list-collections") {
                     handle_mongo_list_collections_data(&st, body, &mut stream).await;
+                } else if first_line.starts_with("POST /data/mongo/count-documents") {
+                    handle_mongo_count_documents_data(&st, body, &mut stream).await;
                 } else if first_line.starts_with("POST /data/mongo/find-documents") {
                     handle_mongo_find_documents_data(&st, body, &mut stream).await;
                 } else if first_line.starts_with("POST /data/mongo/server-version") {
@@ -199,10 +244,14 @@ pub fn start(app_handle: AppHandle, state: Arc<AppState>, data_dir: PathBuf) {
                     handle_mongo_collection_stats_data(&st, body, &mut stream).await;
                 } else if first_line.starts_with("POST /data/mongo/aggregate-documents") {
                     handle_mongo_aggregate_documents_data(&st, body, &mut stream).await;
+                } else if first_line.starts_with("POST /data/mongo/distinct") {
+                    handle_mongo_distinct_data(&st, body, &mut stream).await;
                 } else if first_line.starts_with("POST /data/mongo/create-index") {
                     handle_mongo_create_index_data(&st, body, &mut stream).await;
                 } else if first_line.starts_with("POST /data/mongo/drop-indexes") {
                     handle_mongo_drop_indexes_data(&st, body, &mut stream).await;
+                } else if first_line.starts_with("POST /data/mongo/drop-collection") {
+                    handle_mongo_drop_collection_data(&st, body, &mut stream).await;
                 } else if first_line.starts_with("POST /data/mongo/insert-documents") {
                     handle_mongo_insert_documents_data(&st, body, &mut stream).await;
                 } else if first_line.starts_with("POST /data/mongo/update-documents") {
@@ -242,7 +291,7 @@ fn find_config_by_name<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::write_port_file;
+    use super::{resolve_mongo_database, resolve_mongo_target_values, write_port_file};
 
     #[test]
     fn writes_bridge_port_file_to_resolved_data_dir() {
@@ -262,6 +311,32 @@ mod tests {
         assert!(!default_data_dir.join("mcp-bridge-port").exists());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mongo_database_uses_configured_default_for_missing_or_blank_request() {
+        let configured = Some("sample_db".to_string());
+
+        assert_eq!(resolve_mongo_database(None, configured.clone()), "sample_db");
+        assert_eq!(resolve_mongo_database(Some(String::new()), configured.clone()), "sample_db");
+        assert_eq!(resolve_mongo_database(Some("  ".to_string()), configured), "sample_db");
+    }
+
+    #[test]
+    fn mongo_database_preserves_explicit_target() {
+        assert_eq!(resolve_mongo_database(Some("admin".to_string()), Some("sample_db".to_string())), "admin");
+    }
+
+    #[test]
+    fn mongo_target_keeps_connection_id_separate_from_database() {
+        assert_eq!(
+            resolve_mongo_target_values(
+                "connection-id".to_string(),
+                Some("sample_db".to_string()),
+                Some("default_db".to_string()),
+            ),
+            ("connection-id".to_string(), "sample_db".to_string())
+        );
     }
 }
 
@@ -286,17 +361,21 @@ async fn respond_error(stream: &mut tokio::net::TcpStream, status: &str, message
 
 async fn resolve_connection(
     state: &Arc<AppState>,
+    connection_id: Option<&str>,
     connection_name: &str,
 ) -> Result<crate::models::connection::ConnectionConfig, String> {
     let configs = state.storage.load_connections().await.map_err(|e| e.to_string())?;
-    let config =
-        find_config_by_name(&configs, connection_name).ok_or_else(|| "Connection not found".to_string())?.clone();
+    let config = if let Some(id) = connection_id.filter(|s| !s.is_empty()) {
+        configs.iter().find(|c| c.id == id).ok_or_else(|| format!("Connection with id '{}' not found", id))?
+    } else {
+        find_config_by_name(&configs, connection_name).ok_or_else(|| "Connection not found".to_string())?
+    };
     let mut state_configs = state.configs.write().await;
     if !state_configs.contains_key(&config.id) {
         state_configs.insert(config.id.clone(), config.clone());
     }
     drop(state_configs);
-    Ok(config)
+    Ok(config.clone())
 }
 
 fn check_visible_database(config: &crate::models::connection::ConnectionConfig, database: &str) -> Result<(), String> {
@@ -308,29 +387,38 @@ fn check_visible_database(config: &crate::models::connection::ConnectionConfig, 
     Ok(())
 }
 
-async fn resolve_mongo_pool_key(
+fn resolve_mongo_database(requested: Option<String>, configured: Option<String>) -> String {
+    requested.filter(|database| !database.trim().is_empty()).or(configured).unwrap_or_default()
+}
+
+fn resolve_mongo_target_values(
+    connection_id: String,
+    requested_database: Option<String>,
+    configured_database: Option<String>,
+) -> (String, String) {
+    (connection_id, resolve_mongo_database(requested_database, configured_database))
+}
+
+async fn resolve_mongo_target(
     state: &Arc<AppState>,
+    connection_id: Option<&str>,
     connection_name: &str,
     database: Option<String>,
     stream: &mut tokio::net::TcpStream,
-) -> Option<(String, String, String)> {
-    let config = match resolve_connection(state, connection_name).await {
+) -> Option<(String, String)> {
+    let config = match resolve_connection(state, connection_id, connection_name).await {
         Ok(c) => c,
         Err(e) => {
             respond_error(stream, "404 Not Found", &e).await;
             return None;
         }
     };
-    let connection_id = config.id.clone();
-    let database = database.unwrap_or_else(|| config.database.clone().unwrap_or_default());
-    let pool_key = match state.get_or_create_pool(&config.id, Some(&database)).await {
-        Ok(key) => key,
-        Err(e) => {
-            respond_error(stream, "500 Internal Server Error", &e).await;
-            return None;
-        }
-    };
-    Some((pool_key, database, connection_id))
+    let (connection_id, database) = resolve_mongo_target_values(config.id.clone(), database, config.database.clone());
+    if let Err(e) = check_visible_database(&config, &database) {
+        respond_error(stream, "403 Forbidden", &e).await;
+        return None;
+    }
+    Some((connection_id, database))
 }
 
 async fn handle_open_table(app: &AppHandle, state: &Arc<AppState>, body: &str, stream: &mut tokio::net::TcpStream) {
@@ -341,16 +429,12 @@ async fn handle_open_table(app: &AppHandle, state: &Arc<AppState>, body: &str, s
             return;
         }
     };
-    let configs = match state.storage.load_connections().await {
+    let config = match resolve_connection(state, req.connection_id.as_deref(), &req.connection_name).await {
         Ok(c) => c,
-        Err(_) => {
-            respond(stream, "500 Internal Server Error", "").await;
+        Err(e) => {
+            respond(stream, "404 Not Found", &e).await;
             return;
         }
-    };
-    let Some(config) = find_config_by_name(&configs, &req.connection_name) else {
-        respond(stream, "404 Not Found", "Connection not found").await;
-        return;
     };
     let event = McpOpenTableEvent {
         connection_id: config.id.clone(),
@@ -370,16 +454,12 @@ async fn handle_execute_query(app: &AppHandle, state: &Arc<AppState>, body: &str
             return;
         }
     };
-    let configs = match state.storage.load_connections().await {
+    let config = match resolve_connection(state, req.connection_id.as_deref(), &req.connection_name).await {
         Ok(c) => c,
-        Err(_) => {
-            respond(stream, "500 Internal Server Error", "").await;
+        Err(e) => {
+            respond(stream, "404 Not Found", &e).await;
             return;
         }
-    };
-    let Some(config) = find_config_by_name(&configs, &req.connection_name) else {
-        respond(stream, "404 Not Found", "Connection not found").await;
-        return;
     };
     let event = McpExecuteQueryEvent {
         connection_id: config.id.clone(),
@@ -400,7 +480,7 @@ async fn handle_list_tables_data(state: &Arc<AppState>, body: &str, stream: &mut
             return;
         }
     };
-    let config = match resolve_connection(state, &req.connection_name).await {
+    let config = match resolve_connection(state, req.connection_id.as_deref(), &req.connection_name).await {
         Ok(c) => c,
         Err(e) => {
             respond_error(stream, "404 Not Found", &e).await;
@@ -427,7 +507,7 @@ async fn handle_describe_table_data(state: &Arc<AppState>, body: &str, stream: &
             return;
         }
     };
-    let config = match resolve_connection(state, &req.connection_name).await {
+    let config = match resolve_connection(state, req.connection_id.as_deref(), &req.connection_name).await {
         Ok(c) => c,
         Err(e) => {
             respond_error(stream, "404 Not Found", &e).await;
@@ -454,12 +534,12 @@ async fn handle_mongo_list_collections_data(state: &Arc<AppState>, body: &str, s
             return;
         }
     };
-    let Some((pool_key, database, _connection_id)) =
-        resolve_mongo_pool_key(state, &req.connection_name, req.database, stream).await
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
     else {
         return;
     };
-    match dbx_core::mongo_ops::mongo_list_collections_core(state, &pool_key, &database).await {
+    match dbx_core::mongo_ops::mongo_list_collections_core(state, &connection_id, &database).await {
         Ok(collections) => respond_json(stream, &collections).await,
         Err(e) => respond_error(stream, "500 Internal Server Error", &e).await,
     }
@@ -473,14 +553,14 @@ async fn handle_mongo_find_documents_data(state: &Arc<AppState>, body: &str, str
             return;
         }
     };
-    let Some((pool_key, database, _connection_id)) =
-        resolve_mongo_pool_key(state, &req.connection_name, req.database, stream).await
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
     else {
         return;
     };
     match dbx_core::mongo_ops::mongo_find_documents_core(
         state,
-        &pool_key,
+        &connection_id,
         &database,
         &req.collection,
         req.skip.unwrap_or(0),
@@ -496,6 +576,34 @@ async fn handle_mongo_find_documents_data(state: &Arc<AppState>, body: &str, str
     }
 }
 
+async fn handle_mongo_count_documents_data(state: &Arc<AppState>, body: &str, stream: &mut tokio::net::TcpStream) {
+    let req: MongoCountDocumentsRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(_) => {
+            respond_error(stream, "400 Bad Request", "Invalid JSON").await;
+            return;
+        }
+    };
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
+    else {
+        return;
+    };
+    match dbx_core::mongo_ops::mongo_count_documents_core(
+        state,
+        &connection_id,
+        &database,
+        &req.collection,
+        req.filter.as_deref(),
+        req.mode.as_deref(),
+    )
+    .await
+    {
+        Ok(total) => respond_json(stream, &total).await,
+        Err(e) => respond_error(stream, "500 Internal Server Error", &e).await,
+    }
+}
+
 async fn handle_mongo_server_version_data(state: &Arc<AppState>, body: &str, stream: &mut tokio::net::TcpStream) {
     let req: MongoServerVersionRequest = match serde_json::from_str(body) {
         Ok(r) => r,
@@ -504,12 +612,12 @@ async fn handle_mongo_server_version_data(state: &Arc<AppState>, body: &str, str
             return;
         }
     };
-    let Some((pool_key, database, _connection_id)) =
-        resolve_mongo_pool_key(state, &req.connection_name, req.database, stream).await
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
     else {
         return;
     };
-    match dbx_core::mongo_ops::mongo_server_version_core(state, &pool_key, &database).await {
+    match dbx_core::mongo_ops::mongo_server_version_core(state, &connection_id, &database).await {
         Ok(version) => respond_json(stream, &version).await,
         Err(e) => respond_error(stream, "500 Internal Server Error", &e).await,
     }
@@ -523,12 +631,12 @@ async fn handle_mongo_collection_stats_data(state: &Arc<AppState>, body: &str, s
             return;
         }
     };
-    let Some((pool_key, database, _connection_id)) =
-        resolve_mongo_pool_key(state, &req.connection_name, req.database, stream).await
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
     else {
         return;
     };
-    match dbx_core::mongo_ops::mongo_collection_stats_core(state, &pool_key, &database, &req.collection, req.scale)
+    match dbx_core::mongo_ops::mongo_collection_stats_core(state, &connection_id, &database, &req.collection, req.scale)
         .await
     {
         Ok(result) => respond_json(stream, &result).await,
@@ -544,18 +652,46 @@ async fn handle_mongo_aggregate_documents_data(state: &Arc<AppState>, body: &str
             return;
         }
     };
-    let Some((pool_key, database, _connection_id)) =
-        resolve_mongo_pool_key(state, &req.connection_name, req.database, stream).await
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
     else {
         return;
     };
     match dbx_core::mongo_ops::mongo_aggregate_documents_core(
         state,
-        &pool_key,
+        &connection_id,
         &database,
         &req.collection,
         &req.pipeline_json,
         req.max_rows,
+    )
+    .await
+    {
+        Ok(result) => respond_json(stream, &result).await,
+        Err(e) => respond_error(stream, "500 Internal Server Error", &e).await,
+    }
+}
+
+async fn handle_mongo_distinct_data(state: &Arc<AppState>, body: &str, stream: &mut tokio::net::TcpStream) {
+    let req: MongoDistinctRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(_) => {
+            respond_error(stream, "400 Bad Request", "Invalid JSON").await;
+            return;
+        }
+    };
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
+    else {
+        return;
+    };
+    match dbx_core::mongo_ops::mongo_distinct_core(
+        state,
+        &connection_id,
+        &database,
+        &req.collection,
+        &req.field,
+        req.filter.as_deref(),
     )
     .await
     {
@@ -572,8 +708,8 @@ async fn handle_mongo_create_index_data(state: &Arc<AppState>, body: &str, strea
             return;
         }
     };
-    let Some((pool_key, database, connection_id)) =
-        resolve_mongo_pool_key(state, &req.connection_name, req.database, stream).await
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
     else {
         return;
     };
@@ -583,7 +719,7 @@ async fn handle_mongo_create_index_data(state: &Arc<AppState>, body: &str, strea
     }
     match dbx_core::mongo_ops::mongo_create_index_core(
         state,
-        &pool_key,
+        &connection_id,
         &database,
         &req.collection,
         &req.keys_json,
@@ -604,8 +740,8 @@ async fn handle_mongo_drop_indexes_data(state: &Arc<AppState>, body: &str, strea
             return;
         }
     };
-    let Some((pool_key, database, connection_id)) =
-        resolve_mongo_pool_key(state, &req.connection_name, req.database, stream).await
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
     else {
         return;
     };
@@ -615,7 +751,7 @@ async fn handle_mongo_drop_indexes_data(state: &Arc<AppState>, body: &str, strea
     }
     match dbx_core::mongo_ops::mongo_drop_indexes_core(
         state,
-        &pool_key,
+        &connection_id,
         &database,
         &req.collection,
         req.indexes_json.as_deref(),
@@ -628,6 +764,29 @@ async fn handle_mongo_drop_indexes_data(state: &Arc<AppState>, body: &str, strea
     }
 }
 
+async fn handle_mongo_drop_collection_data(state: &Arc<AppState>, body: &str, stream: &mut tokio::net::TcpStream) {
+    let req: MongoDropCollectionRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(_) => {
+            respond_error(stream, "400 Bad Request", "Invalid JSON").await;
+            return;
+        }
+    };
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
+    else {
+        return;
+    };
+    if let Err(e) = ensure_connection_writable(state, &connection_id, "Drop collection").await {
+        respond_error(stream, "403 Forbidden", &e).await;
+        return;
+    }
+    match dbx_core::mongo_ops::mongo_drop_collection_core(state, &connection_id, &database, &req.collection).await {
+        Ok(()) => respond_json(stream, &serde_json::json!({ "ok": true })).await,
+        Err(e) => respond_error(stream, "500 Internal Server Error", &e).await,
+    }
+}
+
 async fn handle_mongo_insert_documents_data(state: &Arc<AppState>, body: &str, stream: &mut tokio::net::TcpStream) {
     let req: MongoInsertDocumentsRequest = match serde_json::from_str(body) {
         Ok(r) => r,
@@ -636,8 +795,8 @@ async fn handle_mongo_insert_documents_data(state: &Arc<AppState>, body: &str, s
             return;
         }
     };
-    let Some((pool_key, database, connection_id)) =
-        resolve_mongo_pool_key(state, &req.connection_name, req.database, stream).await
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
     else {
         return;
     };
@@ -645,8 +804,14 @@ async fn handle_mongo_insert_documents_data(state: &Arc<AppState>, body: &str, s
         respond_error(stream, "403 Forbidden", &e).await;
         return;
     }
-    match dbx_core::mongo_ops::mongo_insert_documents_core(state, &pool_key, &database, &req.collection, &req.docs_json)
-        .await
+    match dbx_core::mongo_ops::mongo_insert_documents_core(
+        state,
+        &connection_id,
+        &database,
+        &req.collection,
+        &req.docs_json,
+    )
+    .await
     {
         Ok(inserted) => respond_json(stream, &serde_json::json!({ "affected_rows": inserted })).await,
         Err(e) => respond_error(stream, "500 Internal Server Error", &e).await,
@@ -661,8 +826,8 @@ async fn handle_mongo_update_documents_data(state: &Arc<AppState>, body: &str, s
             return;
         }
     };
-    let Some((pool_key, database, connection_id)) =
-        resolve_mongo_pool_key(state, &req.connection_name, req.database, stream).await
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
     else {
         return;
     };
@@ -672,12 +837,13 @@ async fn handle_mongo_update_documents_data(state: &Arc<AppState>, body: &str, s
     }
     match dbx_core::mongo_ops::mongo_update_documents_core(
         state,
-        &pool_key,
+        &connection_id,
         &database,
         &req.collection,
         &req.filter_json,
         &req.update_json,
         req.many,
+        req.options_json.as_deref(),
     )
     .await
     {
@@ -694,8 +860,8 @@ async fn handle_mongo_delete_documents_data(state: &Arc<AppState>, body: &str, s
             return;
         }
     };
-    let Some((pool_key, database, connection_id)) =
-        resolve_mongo_pool_key(state, &req.connection_name, req.database, stream).await
+    let Some((connection_id, database)) =
+        resolve_mongo_target(state, req.connection_id.as_deref(), &req.connection_name, req.database, stream).await
     else {
         return;
     };
@@ -705,7 +871,7 @@ async fn handle_mongo_delete_documents_data(state: &Arc<AppState>, body: &str, s
     }
     match dbx_core::mongo_ops::mongo_delete_documents_core(
         state,
-        &pool_key,
+        &connection_id,
         &database,
         &req.collection,
         &req.filter_json,
@@ -726,7 +892,7 @@ async fn handle_redis_execute_command_data(state: &Arc<AppState>, body: &str, st
             return;
         }
     };
-    let config = match resolve_connection(state, &req.connection_name).await {
+    let config = match resolve_connection(state, req.connection_id.as_deref(), &req.connection_name).await {
         Ok(c) => c,
         Err(e) => {
             respond_error(stream, "404 Not Found", &e).await;
@@ -777,7 +943,7 @@ async fn handle_execute_query_data(state: &Arc<AppState>, body: &str, stream: &m
             return;
         }
     };
-    let config = match resolve_connection(state, &req.connection_name).await {
+    let config = match resolve_connection(state, req.connection_id.as_deref(), &req.connection_name).await {
         Ok(c) => c,
         Err(e) => {
             respond_error(stream, "404 Not Found", &e).await;

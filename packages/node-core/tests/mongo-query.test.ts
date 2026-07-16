@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { executeQuery, inferMongoColumns, mongoAggregateWriteStage, mongoCollectionStatsToQueryResult, mongoDocumentsToQueryResult, parseMongoAggregateCommand, parseMongoCollectionStatsCommand, parseMongoCountDocumentsCommand, parseMongoFindCommand, parseMongoGetIndexesCommand, parseMongoVersionCommand, parseMongoWriteCommand } from "../src/database.js";
+import {
+  executeQuery,
+  inferMongoColumns,
+  mongoAggregateWriteStage,
+  mongoCollectionStatsToQueryResult,
+  mongoDocumentsToQueryResult,
+  parseMongoAggregateCommand,
+  parseMongoCollectionStatsCommand,
+  parseMongoCountDocumentsCommand,
+  parseMongoFindCommand,
+  parseMongoGetIndexesCommand,
+  parseMongoVersionCommand,
+  parseMongoWriteCommand,
+} from "../src/database.js";
 
 test("parseMongoFindCommand accepts shell-style find commands", () => {
   assert.deepEqual(parseMongoFindCommand('db.getCollection("operation_logs").find({"level":"info"}).sort({"ts":-1}).skip(5).limit(10)'), {
@@ -60,10 +73,27 @@ test("parseMongoWriteCommand accepts unquoted update operator keys", () => {
   });
 });
 
+test("parseMongoWriteCommand accepts updateMany arrayFilters options", () => {
+  assert.deepEqual(
+    parseMongoWriteCommand(
+      'db.orders.updateMany({status: "open"}, {$set: {"items.$[item].status": "done"}}, {arrayFilters: [{"item.id": 7}]})',
+    ),
+    {
+      kind: "update",
+      collection: "orders",
+      filter: '{"status": "open"}',
+      update: '{"$set": {"items.$[item].status": "done"}}',
+      options: '{"arrayFilters": [{"item.id": 7}]}',
+      many: true,
+    },
+  );
+});
+
 test("parseMongoCountDocumentsCommand accepts shell-style count commands", () => {
   assert.deepEqual(parseMongoCountDocumentsCommand('db.projects.countDocuments({"active":true})'), {
     collection: "projects",
     filter: '{"active":true}',
+    mode: "accurate",
   });
 });
 
@@ -71,14 +101,17 @@ test("parseMongoCountDocumentsCommand accepts legacy count helpers", () => {
   assert.deepEqual(parseMongoCountDocumentsCommand("db.projects.count({ active: true })"), {
     collection: "projects",
     filter: '{ "active": true }',
+    mode: "legacy",
   });
   assert.deepEqual(parseMongoCountDocumentsCommand('db.getCollection("audit.logs").count()'), {
     collection: "audit.logs",
     filter: "{}",
+    mode: "legacy",
   });
   assert.deepEqual(parseMongoCountDocumentsCommand("db.projects.find({ active: true }).count()"), {
     collection: "projects",
     filter: '{ "active": true }',
+    mode: "legacy",
   });
   assert.equal(parseMongoFindCommand("db.projects.find({ active: true }).count()"), null);
 });
@@ -233,6 +266,14 @@ test("parseMongoWriteCommand accepts supported write commands", () => {
     collection: "projects",
     indexes: '["a_1","b_1"]',
   });
+  assert.deepEqual(parseMongoWriteCommand("db.projects.drop()"), {
+    kind: "dropCollection",
+    collection: "projects",
+  });
+  assert.deepEqual(parseMongoWriteCommand('db.getCollection("audit.logs").drop();'), {
+    kind: "dropCollection",
+    collection: "audit.logs",
+  });
 });
 
 test("parseMongoWriteCommand rejects invalid dropIndex and dropIndexes commands", () => {
@@ -240,6 +281,7 @@ test("parseMongoWriteCommand rejects invalid dropIndex and dropIndexes commands"
   assert.equal(parseMongoWriteCommand('db.projects.dropIndex("*")'), null);
   assert.equal(parseMongoWriteCommand('db.projects.dropIndex(["a_1"])'), null);
   assert.equal(parseMongoWriteCommand('db.projects.dropIndexes([{"email":1}])'), null);
+  assert.equal(parseMongoWriteCommand("db.projects.drop({ writeConcern: 1 })"), null);
 });
 
 test("mongodb executeQuery blocks writes when writes are explicitly disabled", async () => {
@@ -339,6 +381,7 @@ test("mongodb executeQuery blocks dangerous dropIndexes shapes until dangerous S
   await assert.rejects(executeQuery(config, "db.projects.dropIndexes()"), /DBX_MCP_ALLOW_DANGEROUS_SQL=1/);
   await assert.rejects(executeQuery(config, 'db.projects.dropIndexes("*")'), /DBX_MCP_ALLOW_DANGEROUS_SQL=1/);
   await assert.rejects(executeQuery(config, 'db.projects.dropIndexes(["a_1","b_1"])'), /DBX_MCP_ALLOW_DANGEROUS_SQL=1/);
+  await assert.rejects(executeQuery(config, "db.projects.drop()"), /DBX_MCP_ALLOW_DANGEROUS_SQL=1/);
 
   if (oldAllowWrites === undefined) delete process.env.DBX_MCP_ALLOW_WRITES;
   else process.env.DBX_MCP_ALLOW_WRITES = oldAllowWrites;

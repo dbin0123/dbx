@@ -55,6 +55,7 @@ tmp/
 
 # Generated changelog data
 releases-*.json
+latest-en.json
 
 test.pdb
 portable/
@@ -62,6 +63,4 @@ DBX_*_x64-portable.zip
 .agents/skills
 .pnpm-store/*
 .dbx-web
-/.opencode/commands/handoff-export.md
-/.opencode/commands/handoff-load.md
-/需求问题/*
+_dev

@@ -6,7 +6,11 @@ use crate::commands::connection::{ensure_connection_writable, AppState};
 use dbx_core::db::mongo_driver::MongoDocumentResult;
 use dbx_core::document_ops::CollectionInfo;
 
-async fn run_cancellable<T, F>(state: &Arc<AppState>, execution_id: Option<String>, future: F) -> Result<T, String>
+pub(crate) async fn run_cancellable<T, F>(
+    state: &Arc<AppState>,
+    execution_id: Option<String>,
+    future: F,
+) -> Result<T, String>
 where
     F: Future<Output = Result<T, String>>,
 {
@@ -81,9 +85,18 @@ pub async fn document_insert_document(
     database: String,
     collection: String,
     doc_json: String,
+    routing: Option<String>,
 ) -> Result<String, String> {
     ensure_connection_writable(&state, &connection_id, "Insert").await?;
-    dbx_core::document_ops::insert_document_core(&state, &connection_id, &database, &collection, &doc_json).await
+    dbx_core::document_ops::insert_document_core(
+        &state,
+        &connection_id,
+        &database,
+        &collection,
+        &doc_json,
+        routing.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -135,8 +148,17 @@ pub async fn document_list_gridfs_buckets(
     state: State<'_, Arc<AppState>>,
     connection_id: String,
     database: String,
+    filter: Option<String>,
+    sort: Option<String>,
 ) -> Result<Vec<dbx_core::document_ops::MongoGridFsBucketInfo>, String> {
-    dbx_core::document_ops::list_gridfs_buckets_core(&state, &connection_id, &database).await
+    dbx_core::document_ops::list_gridfs_buckets_core(
+        &state,
+        &connection_id,
+        &database,
+        filter.as_deref(),
+        sort.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -167,8 +189,18 @@ pub async fn document_list_gridfs_files(
     connection_id: String,
     database: String,
     bucket: String,
+    filter: Option<String>,
+    sort: Option<String>,
 ) -> Result<Vec<dbx_core::document_ops::MongoGridFsFileInfo>, String> {
-    dbx_core::document_ops::list_gridfs_files_core(&state, &connection_id, &database, &bucket).await
+    dbx_core::document_ops::list_gridfs_files_core(
+        &state,
+        &connection_id,
+        &database,
+        &bucket,
+        filter.as_deref(),
+        sort.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]

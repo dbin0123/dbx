@@ -13,6 +13,7 @@ export function isDirectQueryType(dbType: string): dbType is DirectQueryType {
 }
 
 export const BRIDGE_REQUIRED_TYPES = [
+  "cloudflare-d1",
   "redis",
   "mongodb",
   "duckdb",
@@ -49,6 +50,7 @@ export const BRIDGE_REQUIRED_TYPES = [
   "trino",
   "prestosql",
   "hive",
+  "spark",
   "db2",
   "informix",
   "iris",

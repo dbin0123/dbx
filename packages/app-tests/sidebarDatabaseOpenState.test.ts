@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "vitest";
-import { canCloseSidebarDatabaseConnection, isSidebarDatabaseOpened } from "../../apps/desktop/src/lib/sidebarDatabaseOpenState.ts";
+import { canCloseSidebarDatabaseConnection, isSidebarDatabaseOpened } from "../../apps/desktop/src/lib/sidebar/sidebarDatabaseOpenState.ts";
 import type { TreeNode } from "../../apps/desktop/src/types/database.ts";
 
 function databaseNode(id: string): TreeNode {
@@ -40,4 +40,13 @@ test("non-SQL database nodes can be marked open without showing close database c
 
   assert.equal(isSidebarDatabaseOpened(mongoDatabase, isLoaded), true);
   assert.equal(canCloseSidebarDatabaseConnection(mongoDatabase, isLoaded), false);
+});
+
+test("database connections can be closed while an open tab still uses the database", () => {
+  const node = databaseNode("conn-1:app");
+
+  assert.equal(
+    canCloseSidebarDatabaseConnection(node, () => false, (connectionId, database) => connectionId === "conn-1" && database === "app"),
+    true,
+  );
 });

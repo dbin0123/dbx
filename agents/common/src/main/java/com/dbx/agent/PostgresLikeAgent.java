@@ -29,12 +29,18 @@ public abstract class PostgresLikeAgent extends AbstractJdbcAgent {
     }
 
     @Override
+    public String getIdentifierQuote() {
+        return mysqlCompatMode ? "`" : super.getIdentifierQuote();
+    }
+
+    @Override
     public QueryResult executeQuery(String sql, String schema, ExecuteQueryOptions options) {
-        return JdbcExecutor.INSTANCE.execute(
+        return JdbcExecutor.current().execute(
             requireConnected(),
             sql,
             schema,
             this::setSchemaSQL,
+            this::resetSchemaSQL,
             options.getMaxRows(),
             options.getFetchSize(),
             options.getTimeoutSecs(),
@@ -44,11 +50,12 @@ public abstract class PostgresLikeAgent extends AbstractJdbcAgent {
 
     @Override
     public QueryPageResult executeQueryPage(String sql, String schema, QueryPageOptions options) {
-        return JdbcExecutor.INSTANCE.executePage(
+        return JdbcExecutor.current().executePage(
             requireConnected(),
             sql,
             schema,
             this::setSchemaSQL,
+            this::resetSchemaSQL,
             options,
             geometryAwareResolver()
         );
@@ -56,11 +63,12 @@ public abstract class PostgresLikeAgent extends AbstractJdbcAgent {
 
     @Override
     public QueryPageResult startTableRead(String sql, String schema, QueryPageOptions options) {
-        return JdbcExecutor.INSTANCE.startTableRead(
+        return JdbcExecutor.current().startTableRead(
             requireConnected(),
             sql,
             schema,
             this::setSchemaSQL,
+            this::resetSchemaSQL,
             options,
             geometryAwareResolver()
         );
@@ -128,7 +136,7 @@ public abstract class PostgresLikeAgent extends AbstractJdbcAgent {
     public List<DatabaseInfo> listDatabases() {
         return unchecked(() -> {
             List<DatabaseInfo> result = new ArrayList<>();
-            try (java.sql.PreparedStatement stmt = requireConnection().prepareStatement("SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname");
+            try (java.sql.PreparedStatement stmt = requireConnection().prepareStatement("SELECT datname FROM pg_catalog.pg_database WHERE datistemplate = false ORDER BY datname");
                  ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
                     result.add(new DatabaseInfo(rs.getString("datname")));
@@ -245,7 +253,81 @@ public abstract class PostgresLikeAgent extends AbstractJdbcAgent {
             foreignKeys = Collections.emptyList();
         }
 
-        return DdlBuilder.buildTableDdl(schema, table, getColumns(schema, table), indexes, foreignKeys, mysqlCompatMode, true);
+        List<CheckConstraintInfo> checkConstraints;
+        try {
+            checkConstraints = listCheckConstraints(schema, table);
+        } catch (RuntimeException e) {
+            // Some PostgreSQL-compatible databases expose incomplete catalog APIs.
+            // DDL generation should still succeed with columns, indexes, and foreign keys.
+            checkConstraints = Collections.emptyList();
+        }
+
+        String tableComment = null;
+        try {
+            tableComment = getTableComment(schema, table);
+        } catch (RuntimeException e) {
+            // Table comment is optional; DDL generation should still succeed without it.
+        }
+
+        return DdlBuilder.buildTableDdl(
+            schema,
+            table,
+            getColumns(schema, table),
+            indexes,
+            foreignKeys,
+            checkConstraints,
+            mysqlCompatMode,
+            true,
+            tableComment
+        );
+    }
+
+    @Override
+    public String getTableComment(String schema, String table) {
+        return unchecked(() -> {
+            try (java.sql.PreparedStatement stmt = requireConnection().prepareStatement(
+                "SELECT obj_description(c.oid) AS table_comment " +
+                "FROM pg_catalog.pg_class c " +
+                "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace " +
+                "WHERE n.nspname = ? AND c.relname = ? AND c.relkind IN ('r','m','f','p') " +
+                "LIMIT 1"
+            )) {
+                stmt.setString(1, schema);
+                stmt.setString(2, table);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    if (rs.next()) {
+                        String comment = rs.getString("table_comment");
+                        return (comment != null && !comment.trim().isEmpty()) ? comment : null;
+                    }
+                }
+            }
+            return null;
+        });
+    }
+
+    protected List<CheckConstraintInfo> listCheckConstraints(String schema, String table) {
+        return unchecked(() -> {
+            List<CheckConstraintInfo> result = new ArrayList<>();
+            String sql = "SELECT co.conname AS constraint_name, pg_catalog.pg_get_constraintdef(co.oid, true) AS constraint_definition " +
+                "FROM pg_catalog.pg_constraint co " +
+                "JOIN pg_catalog.pg_class c ON c.oid = co.conrelid " +
+                "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace " +
+                "WHERE co.contype = 'c' AND n.nspname = ? AND c.relname = ? " +
+                "ORDER BY co.conname";
+            try (java.sql.PreparedStatement stmt = requireConnection().prepareStatement(sql)) {
+                stmt.setString(1, schema);
+                stmt.setString(2, table);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        result.add(new CheckConstraintInfo(
+                            rs.getString("constraint_name"),
+                            rs.getString("constraint_definition")
+                        ));
+                    }
+                }
+            }
+            return result;
+        });
     }
 
     @Override
@@ -254,15 +336,15 @@ public abstract class PostgresLikeAgent extends AbstractJdbcAgent {
             String upperType = objectType.toUpperCase();
             String sql;
             if ("VIEW".equals(upperType) || "MATERIALIZED VIEW".equals(upperType)) {
-                sql = "SELECT pg_get_viewdef(to_regclass(?), true)";
+                sql = "SELECT pg_catalog.pg_get_viewdef(pg_catalog.to_regclass(?), true)";
             } else if ("FUNCTION".equals(upperType)) {
-                sql = "SELECT pg_get_functiondef(p.oid)\n" +
-                    "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace\n" +
+                sql = "SELECT pg_catalog.pg_get_functiondef(p.oid)\n" +
+                    "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace\n" +
                     "WHERE n.nspname = ? AND p.proname = ? AND p.prokind = 'f'\n" +
                     "ORDER BY p.oid LIMIT 1";
             } else if ("PROCEDURE".equals(upperType)) {
-                sql = "SELECT pg_get_functiondef(p.oid)\n" +
-                    "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace\n" +
+                sql = "SELECT pg_catalog.pg_get_functiondef(p.oid)\n" +
+                    "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace\n" +
                     "WHERE n.nspname = ? AND p.proname = ? AND p.prokind = 'p'\n" +
                     "ORDER BY p.oid LIMIT 1";
             } else {
@@ -372,13 +454,13 @@ public abstract class PostgresLikeAgent extends AbstractJdbcAgent {
             String sql = "SELECT i.relname AS index_name, am.amname AS index_type, " +
                 "ix.indisunique AS is_unique, ix.indisprimary AS is_primary, " +
                 "array_agg(a.attname ORDER BY k.n) AS columns " +
-                "FROM pg_index ix " +
-                "JOIN pg_class t ON t.oid = ix.indrelid " +
-                "JOIN pg_class i ON i.oid = ix.indexrelid " +
-                "JOIN pg_namespace n ON n.oid = t.relnamespace " +
-                "JOIN pg_am am ON am.oid = i.relam " +
+                "FROM pg_catalog.pg_index ix " +
+                "JOIN pg_catalog.pg_class t ON t.oid = ix.indrelid " +
+                "JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid " +
+                "JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace " +
+                "JOIN pg_catalog.pg_am am ON am.oid = i.relam " +
                 "JOIN LATERAL (SELECT unnest(ix.indkey) AS attnum, generate_series(1, array_length(ix.indkey, 1)) AS n) AS k ON true " +
-                "JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum " +
+                "JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum " +
                 "WHERE n.nspname = ? AND t.relname = ? " +
                 "GROUP BY i.relname, am.amname, ix.indisunique, ix.indisprimary " +
                 "ORDER BY i.relname";
@@ -484,6 +566,11 @@ public abstract class PostgresLikeAgent extends AbstractJdbcAgent {
     @Override
     public String setSchemaSQL(String schema) {
         return "SET search_path TO " + quoteIdentifier(schema);
+    }
+
+    @Override
+    public String resetSchemaSQL() {
+        return "RESET search_path";
     }
 
     private java.sql.Connection requireConnection() {

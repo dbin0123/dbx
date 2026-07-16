@@ -1,9 +1,9 @@
-import * as api from "@/lib/api";
-import { effectiveDatabaseTypeForConnection, metadataSchemaForConnection } from "@/lib/jdbcDialect";
-import { isNoSnapshotErrorResult } from "@/lib/queryResultError";
-import { buildTableSelectSql } from "@/lib/tableSelectSql";
-import { editableRowIdentifierColumns, usesSyntheticRowIdKey } from "@/lib/tableEditing";
-import { tableOpenPageLimit } from "@/lib/tableOpenPageLimit";
+import * as api from "@/lib/backend/api";
+import { effectiveDatabaseTypeForConnection, metadataSchemaForConnection } from "@/lib/database/jdbcDialect";
+import { isNoSnapshotErrorResult } from "@/lib/query/queryResultError";
+import { buildTableSelectSql } from "@/lib/table/tableSelectSql";
+import { editableRowIdentifierColumns, usesSyntheticRowIdKey } from "@/lib/table/tableEditing";
+import { tableOpenPageLimit } from "@/lib/table/tableOpenPageLimit";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useQueryStore } from "@/stores/queryStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -12,8 +12,10 @@ import type { TableInfoTab } from "@/types/database";
 export type NavigationTarget = {
   connectionId: string;
   database: string;
+  catalog?: string;
   schema?: string;
   tableName: string;
+  tableType?: string;
   columnName?: string;
   whereInput?: string;
 };
@@ -22,11 +24,11 @@ async function openTableTarget(target: NavigationTarget, options: { tableInfoTab
   const connectionStore = useConnectionStore();
   const queryStore = useQueryStore();
   const settingsStore = useSettingsStore();
-  const pageLimit = tableOpenPageLimit(settingsStore.editorSettings.pageSize);
+  const pageLimit = tableOpenPageLimit();
 
   connectionStore.activeConnectionId = target.connectionId;
   const config = connectionStore.getConfig(target.connectionId);
-  const tabTitle = target.schema ? `${target.schema}.${target.tableName}` : target.tableName;
+  const tabTitle = target.catalog ? `${target.catalog}.${target.schema || target.database}.${target.tableName}` : target.schema ? `${target.schema}.${target.tableName}` : target.tableName;
   if (config?.db_type === "qdrant" || config?.db_type === "milvus" || config?.db_type === "weaviate" || config?.db_type === "chromadb") {
     await connectionStore.ensureConnected(target.connectionId);
     const tabId = queryStore.createTab(target.connectionId, target.database || "default", tabTitle, "vector");
@@ -35,12 +37,12 @@ async function openTableTarget(target: NavigationTarget, options: { tableInfoTab
   }
   const tabId = (() => {
     if (settingsStore.editorSettings.reuseDataTab) {
-      const existing = queryStore.tabs.find((tab) => tab.mode === "data" && tab.connectionId === target.connectionId && tab.database === target.database);
+      const existing = queryStore.tabs.find((tab) => tab.mode === "data" && tab.connectionId === target.connectionId && tab.database === target.database && (tab.tableMeta?.catalog || "") === (target.catalog || ""));
       if (existing) {
         existing.title = tabTitle;
         existing.schema = target.schema;
         existing.tableInfoTab = options.tableInfoTab;
-        queryStore.activeTabId = existing.id;
+        queryStore.switchTab(existing.id);
         return existing.id;
       }
     }
@@ -48,20 +50,38 @@ async function openTableTarget(target: NavigationTarget, options: { tableInfoTab
   })();
   const targetTab = queryStore.tabs.find((tab) => tab.id === tabId);
   if (targetTab) targetTab.tableInfoTab = options.tableInfoTab;
+  // Stamp the new table identity synchronously so SQL rebuilds (refresh,
+  // filters, row count) never read a stale tableMeta from a reused tab or
+  // fall back to parsing the schema-qualified tab title (issue #3613).
+  queryStore.setTableMeta(tabId, {
+    schema: target.schema,
+    catalog: target.catalog,
+    database: target.database,
+    tableName: target.tableName,
+    tableType: target.tableType ?? "TABLE",
+    columns: [],
+    primaryKeys: [],
+  });
   queryStore.setExecuting(tabId, true);
 
   try {
     await connectionStore.ensureConnected(target.connectionId);
     if (!config) throw new Error("Connection config not found");
     const effectiveDbType = effectiveDatabaseTypeForConnection(config);
+    const identifierQuote = connectionStore.connectionIdentifierQuote?.(target.connectionId);
     const querySchema = metadataSchemaForConnection(config, target.database, target.schema);
+    const targetTableType = target.tableType ?? "TABLE";
     if (config.db_type === "neo4j") {
       const columns = await api.getColumns(target.connectionId, target.database, querySchema, target.tableName);
-      const primaryKeys = editableRowIdentifierColumns(effectiveDbType, columns);
+      const primaryKeys = editableRowIdentifierColumns(effectiveDbType, columns, undefined, targetTableType);
       const sql = await buildTableSelectSql({
         databaseType: effectiveDbType,
+        identifierQuote,
         schema: target.schema,
+        catalog: target.catalog,
+        database: target.database,
         tableName: target.tableName,
+        tableType: targetTableType,
         columns: columns.map((column) => column.name),
         primaryKeys,
         whereInput: target.whereInput,
@@ -69,9 +89,11 @@ async function openTableTarget(target: NavigationTarget, options: { tableInfoTab
       });
       queryStore.updateSql(tabId, sql);
       queryStore.setTableMeta(tabId, {
+        catalog: target.catalog,
+        database: target.database,
         schema: target.schema,
         tableName: target.tableName,
-        tableType: "TABLE",
+        tableType: targetTableType,
         columns,
         primaryKeys,
       });
@@ -80,16 +102,22 @@ async function openTableTarget(target: NavigationTarget, options: { tableInfoTab
     }
     const sql = await buildTableSelectSql({
       databaseType: effectiveDbType,
+      identifierQuote,
       schema: target.schema,
+      catalog: target.catalog,
+      database: target.database,
       tableName: target.tableName,
+      tableType: targetTableType,
       whereInput: target.whereInput,
       limit: pageLimit,
     });
     queryStore.updateSql(tabId, sql);
     queryStore.setTableMeta(tabId, {
       schema: target.schema,
+      catalog: target.catalog,
+      database: target.database,
       tableName: target.tableName,
-      tableType: "TABLE",
+      tableType: targetTableType,
       columns: [],
       primaryKeys: [],
     });
@@ -104,8 +132,12 @@ async function openTableTarget(target: NavigationTarget, options: { tableInfoTab
     if (fellBackToLimitZero) {
       const emptySql = await buildTableSelectSql({
         databaseType: effectiveDbType,
+        identifierQuote,
         schema: target.schema,
+        catalog: target.catalog,
+        database: target.database,
         tableName: target.tableName,
+        tableType: targetTableType,
         whereInput: target.whereInput,
         limit: 0,
       });
@@ -113,22 +145,28 @@ async function openTableTarget(target: NavigationTarget, options: { tableInfoTab
       await queryStore.executeTabSql(tabId, emptySql, { pagination: { limit: pageLimit, offset: 0 } });
     }
     try {
-      const columns = await api.getColumns(target.connectionId, target.database, querySchema, target.tableName);
-      const indexes = await api.listIndexes(target.connectionId, target.database, querySchema, target.tableName).catch(() => []);
-      const primaryKeys = editableRowIdentifierColumns(effectiveDbType, columns, indexes);
-      const useRowId = usesSyntheticRowIdKey(effectiveDbType, primaryKeys);
+      const columns = await api.getColumns(target.connectionId, target.database, querySchema, target.tableName, target.catalog);
+      const indexes = await api.listIndexes(target.connectionId, target.database, querySchema, target.tableName, target.catalog).catch(() => []);
+      const primaryKeys = editableRowIdentifierColumns(effectiveDbType, columns, indexes, targetTableType);
+      const useRowId = usesSyntheticRowIdKey(effectiveDbType, primaryKeys, targetTableType);
       queryStore.setTableMeta(tabId, {
         schema: target.schema,
+        catalog: target.catalog,
+        database: target.database,
         tableName: target.tableName,
-        tableType: "TABLE",
+        tableType: targetTableType,
         columns,
         primaryKeys,
       });
       if (!fellBackToLimitZero && (useRowId || config.db_type === "tdengine")) {
         const newSql = await buildTableSelectSql({
           databaseType: effectiveDbType,
+          identifierQuote,
           schema: target.schema,
+          catalog: target.catalog,
+          database: target.database,
           tableName: target.tableName,
+          tableType: targetTableType,
           whereInput: target.whereInput,
           primaryKeys,
           columns: columns.map((column) => column.name),
@@ -146,7 +184,7 @@ async function openTableTarget(target: NavigationTarget, options: { tableInfoTab
   }
 }
 
-export function useNavigationTargets(dialogs: { showFieldLineageDialog: { value: boolean }; showDatabaseSearchDialog: { value: boolean } }) {
+export function useNavigationTargets(dialogs: { showFieldLineageDialog: { value: boolean }; showDatabaseSearchDialog: { value: boolean }; showDiagramDialog: { value: boolean } }) {
   const connectionStore = useConnectionStore();
   const queryStore = useQueryStore();
 
@@ -157,6 +195,11 @@ export function useNavigationTargets(dialogs: { showFieldLineageDialog: { value:
 
   async function openDatabaseSearchTarget(target: NavigationTarget) {
     dialogs.showDatabaseSearchDialog.value = false;
+    await openTableTarget(target);
+  }
+
+  async function openDiagramTarget(target: NavigationTarget) {
+    dialogs.showDiagramDialog.value = false;
     await openTableTarget(target);
   }
 
@@ -192,5 +235,5 @@ export function useNavigationTargets(dialogs: { showFieldLineageDialog: { value:
     }
   }
 
-  return { openLineageTarget, openDatabaseSearchTarget, onStructureEditorSaved, openTableTarget };
+  return { openLineageTarget, openDatabaseSearchTarget, openDiagramTarget, onStructureEditorSaved, openTableTarget };
 }

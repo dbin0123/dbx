@@ -3,18 +3,33 @@ import { useI18n } from "vue-i18n";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useQueryStore } from "@/stores/queryStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { buildTableSelectSql, quoteTableIdentifier } from "@/lib/tableSelectSql";
-import { editableRowIdentifierColumns, usesSyntheticRowIdKey } from "@/lib/tableEditing";
-import { tableMetaForDataTab } from "@/lib/tableDataTabMeta";
-import * as api from "@/lib/api";
+import { buildTableSelectSql, quoteTableDataIdentifier } from "@/lib/table/tableSelectSql";
+import { editableRowIdentifierColumns, usesSyntheticRowIdKey } from "@/lib/table/tableEditing";
+import { tableMetaForDataTab } from "@/lib/table/tableDataTabMeta";
+import * as api from "@/lib/backend/api";
 import type { QueryTab } from "@/types/database";
 import { useToast } from "@/composables/useToast";
-import { effectiveDatabaseTypeForConnection, metadataSchemaForConnection } from "@/lib/jdbcDialect";
-import { applyMongoFindSort } from "@/lib/mongoShellCommand";
-import { uuid } from "@/lib/utils";
-import type { DataGridSortMode } from "@/lib/dataGridSort";
+import { effectiveDatabaseTypeForConnection, metadataSchemaForConnection } from "@/lib/database/jdbcDialect";
+import { applyMongoFindSort } from "@/lib/mongo/mongoShellCommand";
+import { uuid } from "@/lib/common/utils";
+import type { DataGridSortMode } from "@/lib/dataGrid/dataGridSort";
+import type { DataGridReloadIntent } from "@/lib/dataGrid/dataGridToolbar";
+import { queryResultBaseSql, queryResultExecutionSql } from "@/lib/tabs/tabPresentation";
 
 const DATA_TAB_METADATA_TTL_MS = 30_000;
+
+function visibleQuerySortColumns(columns: string[], hiddenColumnIndexes: number[] | undefined, columnIndex: number): { resultColumns: string[]; columnIndex: number } | undefined {
+  const hiddenIndexes = new Set(hiddenColumnIndexes ?? []);
+  const resultColumns: string[] = [];
+  let visibleColumnIndex: number | undefined;
+  for (const [index, resultColumn] of columns.entries()) {
+    if (hiddenIndexes.has(index)) continue;
+    if (index === columnIndex) visibleColumnIndex = resultColumns.length;
+    resultColumns.push(resultColumn);
+  }
+  if (visibleColumnIndex === undefined) return undefined;
+  return { resultColumns, columnIndex: visibleColumnIndex };
+}
 
 export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>) {
   const { t } = useI18n();
@@ -25,7 +40,7 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
 
   function quoteIdent(tab: QueryTab, name: string): string {
     const config = connectionStore.getConfig(tab.connectionId);
-    return quoteTableIdentifier(effectiveDatabaseTypeForConnection(config), name);
+    return quoteTableDataIdentifier(effectiveDatabaseTypeForConnection(config), name, connectionStore.connectionIdentifierQuote?.(tab.connectionId));
   }
 
   function buildTableSql(tab: QueryTab, options: { orderBy?: string; limit?: number; offset?: number; whereInput?: string } = {}): Promise<string> {
@@ -33,12 +48,15 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
     const effectiveDbType = effectiveDatabaseTypeForConnection(config);
     const tableMeta = tableMetaForDataTab(tab);
     const primaryKeys = tab.tableMeta ? tab.tableMeta.primaryKeys : (tableMeta?.primaryKeys ?? []);
-    const useRowId = usesSyntheticRowIdKey(effectiveDbType, primaryKeys);
+    const useRowId = usesSyntheticRowIdKey(effectiveDbType, primaryKeys, tableMeta?.tableType);
     return buildTableSelectSql({
       databaseType: effectiveDbType,
+      identifierQuote: connectionStore.connectionIdentifierQuote?.(tab.connectionId),
+      database: tableMeta?.database,
       schema: tableMeta?.schema,
       tableName: tableMeta?.tableName ?? "",
       tableType: tableMeta?.tableType,
+      catalog: tableMeta?.catalog,
       columns: tableMeta?.columns.map((column) => column.name),
       primaryKeys,
       includeRowId: useRowId,
@@ -55,6 +73,7 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
       tabId: tab.id,
       connectionId: tab.connectionId,
       database: tab.database,
+      catalog: tableMeta.catalog,
       schema: tableMeta.schema,
       tableName: tableMeta.tableName,
       tableType: tableMeta.tableType,
@@ -66,17 +85,18 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
     const config = connectionStore.getConfig(target.connectionId);
     const querySchema = metadataSchemaForConnection(config, target.database, target.schema);
     console.info("[DBX][reloadData:metadata:get-columns:start]", { traceId: trace?.traceId, elapsed: trace?.elapsed(), schema: querySchema, table: target.tableName });
-    const columns = await api.getColumns(target.connectionId, target.database, querySchema, target.tableName);
-    const indexes = await api.listIndexes(target.connectionId, target.database, querySchema, target.tableName).catch(() => []);
+    const columns = await api.getColumns(target.connectionId, target.database, querySchema, target.tableName, target.catalog);
+    const indexes = await api.listIndexes(target.connectionId, target.database, querySchema, target.tableName, target.catalog).catch(() => []);
     console.info("[DBX][reloadData:metadata:get-columns:done]", { traceId: trace?.traceId, elapsed: trace?.elapsed(), columnCount: columns.length });
     const current = queryStore.tabs.find((item) => item.id === target.tabId);
     const currentMeta = current ? tableMetaForDataTab(current) : undefined;
-    if (!current || current.mode !== "data" || current.connectionId !== target.connectionId || current.database !== target.database || currentMeta?.tableName !== target.tableName || (currentMeta.schema ?? "") !== (target.schema ?? "")) {
+    if (!current || current.mode !== "data" || current.connectionId !== target.connectionId || current.database !== target.database || currentMeta?.tableName !== target.tableName || (currentMeta.schema ?? "") !== (target.schema ?? "") || (currentMeta.catalog ?? "") !== (target.catalog ?? "")) {
       console.info("[DBX][reloadData:metadata:stale-tab]", { traceId: trace?.traceId, elapsed: trace?.elapsed(), table: target.tableName });
       return;
     }
     const primaryKeys = editableRowIdentifierColumns(effectiveDatabaseTypeForConnection(config), columns, indexes, target.tableType);
     queryStore.setTableMeta(target.tabId, {
+      catalog: target.catalog,
       schema: target.schema,
       tableName: target.tableName,
       tableType: target.tableType,
@@ -92,7 +112,7 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
     await queryStore.executeTabSql(tab.id, sql, { preserveResultDuringExecution: true });
   }
 
-  async function onReloadData(sql?: string, _searchText?: string, whereInput?: string, orderBy?: string, limit?: number, offset?: number) {
+  async function onReloadData(sql?: string, _searchText?: string, whereInput?: string, orderBy?: string, limit?: number, offset?: number, intent?: DataGridReloadIntent) {
     const tab = activeTab.value;
     if (!tab) return;
     const traceId = uuid().slice(0, 8);
@@ -145,10 +165,37 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
       }
       return;
     }
+    if (intent === "refresh" && tab.mode === "query" && (tab.results?.length ?? 0) > 1) {
+      const resultGroupSql = tab.resultBaseSql || tab.lastExecutedSql || tab.sql;
+      if (!resultGroupSql.trim()) return;
+      tab.resultSortColumn = undefined;
+      tab.resultSortColumnIndex = undefined;
+      tab.resultSortDirection = undefined;
+      tab.resultSortMode = undefined;
+      tab.resultSortedSql = undefined;
+      await queryStore.executeTabSql(tab.id, resultGroupSql, {
+        resultBaseSql: resultGroupSql,
+        resultSortedSql: undefined,
+        preserveResultDuringExecution: true,
+        preserveActiveResultIndex: true,
+      });
+      return;
+    }
     if (tab.resultSortedSql) {
-      await queryStore.executeTabSql(tab.id, tab.resultSortedSql, {
+      const sortColumns = visibleQuerySortColumns(tab.result?.columns ?? [], tab.result?.hidden_column_indexes, tab.resultSortColumnIndex ?? -1);
+      const rebuildHiddenKeySort = !!tab.result?.hidden_column_indexes?.length && tab.resultSortMode === "database" && !!tab.resultSortDirection && !!tab.resultSortColumn && !!sortColumns;
+      await queryStore.executeTabSql(tab.id, rebuildHiddenKeySort ? (tab.resultBaseSql ?? tab.sql) : tab.resultSortedSql, {
         resultBaseSql: tab.resultBaseSql ?? tab.sql,
-        resultSortedSql: tab.resultSortedSql,
+        ...(rebuildHiddenKeySort
+          ? {
+              querySort: {
+                resultColumns: sortColumns.resultColumns,
+                columnIndex: sortColumns.columnIndex,
+                column: tab.resultSortColumn!,
+                direction: tab.resultSortDirection!,
+              },
+            }
+          : { resultSortedSql: tab.resultSortedSql }),
         preserveResultDuringExecution: true,
         preserveTotalRowCountDuringExecution: true,
       });
@@ -169,16 +216,30 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
     const tab = activeTab.value;
     if (!tab) return;
     if (tab.mode !== "data") {
-      const baseSql = tab.resultSortedSql ?? tab.resultBaseSql ?? tab.lastExecutedSql ?? tab.sql;
+      const sortColumns = visibleQuerySortColumns(tab.result?.columns ?? [], tab.result?.hidden_column_indexes, tab.resultSortColumnIndex ?? -1);
+      const hasDatabaseSort = !!tab.result?.hidden_column_indexes?.length && tab.resultSortMode === "database" && !!tab.resultSortDirection && !!tab.resultSortColumn && !!sortColumns;
+      const baseSql = hasDatabaseSort ? queryResultBaseSql(tab) : queryResultExecutionSql(tab);
       if (!baseSql.trim()) return;
       const expectedNextOffset = (tab.resultPageOffset ?? 0) + (tab.resultPageLimit ?? limit);
       const sessionId = tab.result?.has_more && tab.result?.session_id && offset === expectedNextOffset && limit === tab.resultPageLimit ? tab.result.session_id : undefined;
+      const resultBaseSql = queryResultBaseSql(tab);
       await queryStore.executeTabSql(tab.id, baseSql, {
-        resultBaseSql: tab.resultBaseSql ?? tab.sql,
+        resultBaseSql,
         resultSortedSql: tab.resultSortedSql,
+        ...(hasDatabaseSort
+          ? {
+              querySort: {
+                resultColumns: sortColumns.resultColumns,
+                columnIndex: sortColumns.columnIndex,
+                column: tab.resultSortColumn!,
+                direction: tab.resultSortDirection!,
+              },
+            }
+          : {}),
         pagination: { offset, limit, sessionId },
         preserveResultDuringExecution: true,
         preserveTotalRowCountDuringExecution: true,
+        replaceActiveResultInGroup: true,
       });
       return;
     }
@@ -190,6 +251,7 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
     await queryStore.executeTabSql(tab.id, sql, {
       pagination: { offset, limit },
       preserveResultDuringExecution: true,
+      preserveTotalRowCountDuringExecution: true,
     });
   }
 
@@ -222,7 +284,7 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
       return;
     }
 
-    const baseSql = tab.resultBaseSql ?? tab.sql;
+    const baseSql = queryResultBaseSql(tab);
     if (!baseSql.trim()) return;
 
     if (!direction) {
@@ -231,6 +293,7 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
         resultSortedSql: undefined,
         preserveResultDuringExecution: true,
         preserveTotalRowCountDuringExecution: true,
+        replaceActiveResultInGroup: true,
       });
       return;
     }
@@ -248,28 +311,49 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
         resultSortedSql: sortedSql,
         preserveResultDuringExecution: true,
         preserveTotalRowCountDuringExecution: true,
+        replaceActiveResultInGroup: true,
       });
       return;
     }
 
-    const built = await api.buildSortedQuerySql({
-      originalSql: baseSql,
-      databaseType: effectiveDatabaseTypeForConnection(config),
-      resultColumns: tab.result?.columns ?? [],
-      columnIndex,
-      column,
-      direction,
-    });
-    if (!built.ok || !built.sql) {
+    const sortColumns = visibleQuerySortColumns(tab.result?.columns ?? [], tab.result?.hidden_column_indexes, columnIndex);
+    if (!sortColumns) {
       toast(t("grid.sortUnsupported"), 5000);
       return;
     }
-
-    await queryStore.executeTabSql(tab.id, built.sql, {
+    if (!tab.result?.hidden_column_indexes?.length) {
+      const built = await api.buildSortedQuerySql({
+        originalSql: baseSql,
+        databaseType: effectiveDatabaseTypeForConnection(config),
+        resultColumns: sortColumns.resultColumns,
+        columnIndex: sortColumns.columnIndex,
+        column,
+        direction,
+      });
+      if (!built.ok || !built.sql) {
+        toast(t("grid.sortUnsupported"), 5000);
+        return;
+      }
+      await queryStore.executeTabSql(tab.id, built.sql, {
+        resultBaseSql: baseSql,
+        resultSortedSql: built.sql,
+        preserveResultDuringExecution: true,
+        preserveTotalRowCountDuringExecution: true,
+        replaceActiveResultInGroup: true,
+      });
+      return;
+    }
+    await queryStore.executeTabSql(tab.id, baseSql, {
       resultBaseSql: baseSql,
-      resultSortedSql: built.sql,
+      querySort: {
+        resultColumns: sortColumns.resultColumns,
+        columnIndex: sortColumns.columnIndex,
+        column,
+        direction,
+      },
       preserveResultDuringExecution: true,
       preserveTotalRowCountDuringExecution: true,
+      replaceActiveResultInGroup: true,
     });
   }
 

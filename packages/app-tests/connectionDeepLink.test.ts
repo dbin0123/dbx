@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "vitest";
-import { parseConnectionDeepLink } from "../../apps/desktop/src/lib/connectionDeepLink.ts";
+import { parseConnectionDeepLink } from "../../apps/desktop/src/lib/connection/connectionDeepLink.ts";
 
 test("parses dbx connection deep link query fields", () => {
   const draft = parseConnectionDeepLink("dbx://connection/new?type=postgres&host=db.internal&port=15432&user=app&database=orders&name=Orders");
@@ -31,6 +31,23 @@ test("parses encoded database URL with password", () => {
   assert.equal(draft?.password, "secret");
   assert.equal(draft?.database, "orders");
   assert.equal(draft?.urlParams, "sslmode=require");
+});
+
+test("preserves explicit SQL Server default port from nested URLs", () => {
+  const nested = encodeURIComponent("sqlserver://sa:secret@db.internal:1433/erp");
+  const draft = parseConnectionDeepLink(`dbx://connection/new?url=${nested}`);
+
+  assert.equal(draft?.dbType, "sqlserver");
+  assert.equal(draft?.port, 1433);
+  assert.equal(draft?.portExplicit, true);
+});
+
+test("marks top-level SQL Server ports explicit for one-time links", () => {
+  const draft = parseConnectionDeepLink("dbx://connection/new?type=sqlserver&host=db\\instance&port=1433&one_time=1");
+
+  assert.equal(draft?.port, 1433);
+  assert.equal(draft?.portExplicit, true);
+  assert.equal(draft?.oneTime, true);
 });
 
 test("uses the nested database URL name as connection name", () => {

@@ -1,12 +1,12 @@
 import { useI18n } from "vue-i18n";
-import { uuid } from "@/lib/utils";
-import { isTauriRuntime } from "@/lib/tauriRuntime";
+import { uuid } from "@/lib/common/utils";
+import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useQueryStore } from "@/stores/queryStore";
 import { useToast } from "@/composables/useToast";
-import * as api from "@/lib/api";
+import * as api from "@/lib/backend/api";
 import type { ConnectionConfig } from "@/types/database";
-import { detectDatabaseFileType } from "@/lib/databaseFileDetection";
+import { detectDatabaseFileType } from "@/lib/database/databaseFileDetection";
 
 function isSqlFilePath(path: string): boolean {
   return /\.sql$/i.test(path);
@@ -26,9 +26,12 @@ export function useFileDrop() {
     const connectionId = connectionStore.activeConnectionId || connectionStore.connections[0]?.id || "";
     const connection = connectionId ? connectionStore.getConfig(connectionId) : undefined;
     const database = connection?.database || "";
-    const tabId = queryStore.createTab(connectionId, database, name, "query");
-    queryStore.updateSql(tabId, content);
-    if (path) queryStore.linkExternalSqlPath(tabId, path, name);
+    if (path) {
+      queryStore.openExternalSqlFile(connectionId, database, path, content);
+    } else {
+      const tabId = queryStore.createTab(connectionId, database, name, "query");
+      queryStore.updateSql(tabId, content);
+    }
     toast(t("welcome.fileOpened", { name }));
   }
 

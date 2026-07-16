@@ -1,24 +1,29 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use log::warn;
 use rusqlite::{params, params_from_iter, Connection, DatabaseName, OpenFlags, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::ai::{AiChatMessage, AiConfig, AiConversation, AiProvider};
+use crate::ai::{AiChatMessage, AiConfig, AiConfigItem, AiConversation, AiProvider};
 use crate::connection_secrets::{
     MQ_AUTH_API_KEY_VALUE_KEY, MQ_AUTH_CLIENT_SECRET_KEY, MQ_AUTH_PASSWORD_KEY, MQ_AUTH_SECRET_PREFIX,
-    MQ_AUTH_TOKEN_KEY, MQ_TOKEN_SIGNING_KEY, MQ_TOKEN_SIGNING_SECRET_PREFIX,
+    MQ_AUTH_TOKEN_KEY, MQ_TOKEN_SIGNING_KEY, MQ_TOKEN_SIGNING_SECRET_PREFIX, NACOS_AUTH_PASSWORD_KEY,
+    NACOS_AUTH_SECRET_PREFIX,
 };
 use crate::db::sqlite::{connect_path_create_if_missing, SqliteHandle};
 use crate::history::{HistoryEntry, MAX_HISTORY};
-use crate::models::connection::{ConnectionConfig, DatabaseType, TransportLayerConfig};
+use crate::models::connection::{ConnectionConfig, DatabaseConnectionInfo, DatabaseType, TransportLayerConfig};
 use crate::saved_sql::{SavedSqlFile, SavedSqlFolder, SavedSqlLibrary};
 
 const SSH_TUNNEL_SECRET_PREFIX: &str = "ssh_tunnels.";
 const TRANSPORT_LAYER_SECRET_PREFIX: &str = "transport_layers.";
 const STORAGE_DB_FILE_NAME: &str = "dbx.db";
+const APP_STATE_EDITOR_SETTINGS_KEY: &str = "editor_settings";
+const APP_STATE_OPEN_TABS_KEY: &str = "open_tabs";
+const APP_STATE_SAVED_SQL_EDITOR_POSITIONS_KEY: &str = "saved_sql_editor_positions";
 const USER_DATA_TABLES: &[&str] = &[
     "connections",
     "connection_secrets",
@@ -98,6 +103,7 @@ pub struct Storage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TabRuntimeCacheEntry {
     pub key: String,
     pub payload: Vec<u8>,
@@ -105,6 +111,32 @@ pub struct TabRuntimeCacheEntry {
     pub column_count: i64,
     pub byte_size: i64,
     pub updated_at: String,
+    pub created_at: i64,
+    pub last_accessed_at: i64,
+    pub owner_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabRuntimeCacheMetadata {
+    pub key: String,
+    pub row_count: i64,
+    pub column_count: i64,
+    pub byte_size: i64,
+    pub updated_at: String,
+    pub created_at: i64,
+    pub last_accessed_at: i64,
+    pub owner_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabRuntimeCachePruneResult {
+    pub deleted_entries: usize,
+    pub deleted_bytes: i64,
+    pub orphan_deletions: usize,
+    pub remaining_entries: usize,
+    pub remaining_bytes: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +149,10 @@ pub struct DesktopSettings {
     pub close_action_prompted: bool,
     #[serde(default)]
     pub debug_logging_enabled: bool,
+    #[serde(default)]
+    pub duckdb_worker_process_isolation: bool,
+    #[serde(default = "default_duckdb_worker_max_processes")]
+    pub duckdb_worker_max_processes: usize,
     #[serde(default)]
     pub saved_sql_sync_dir: Option<String>,
     #[serde(default)]
@@ -133,6 +169,18 @@ fn default_sidebar_table_page_size() -> usize {
     1000
 }
 
+pub const DUCKDB_WORKER_MAX_PROCESSES_MIN: usize = 1;
+pub const DUCKDB_WORKER_MAX_PROCESSES_MAX: usize = 16;
+pub const DUCKDB_WORKER_MAX_PROCESSES_DEFAULT: usize = 4;
+
+pub fn default_duckdb_worker_max_processes() -> usize {
+    DUCKDB_WORKER_MAX_PROCESSES_DEFAULT
+}
+
+pub fn normalize_duckdb_worker_max_processes(value: usize) -> usize {
+    value.clamp(DUCKDB_WORKER_MAX_PROCESSES_MIN, DUCKDB_WORKER_MAX_PROCESSES_MAX)
+}
+
 impl Default for DesktopSettings {
     fn default() -> Self {
         Self {
@@ -141,6 +189,8 @@ impl Default for DesktopSettings {
             quit_on_close: false,
             close_action_prompted: false,
             debug_logging_enabled: false,
+            duckdb_worker_process_isolation: false,
+            duckdb_worker_max_processes: default_duckdb_worker_max_processes(),
             saved_sql_sync_dir: None,
             driver_store_dir: None,
             plugin_store_dir: None,
@@ -202,6 +252,10 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         provider TEXT PRIMARY KEY,
         config_json TEXT NOT NULL
     )",
+    "CREATE TABLE IF NOT EXISTS tunnel_profiles (
+        id TEXT PRIMARY KEY,
+        config_json TEXT NOT NULL
+    )",
     "CREATE TABLE IF NOT EXISTS ai_conversations (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL DEFAULT '',
@@ -219,6 +273,10 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         id INTEGER PRIMARY KEY CHECK (id = 1),
         settings_json TEXT NOT NULL
     )",
+    "CREATE TABLE IF NOT EXISTS app_state (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL
+    )",
     "CREATE TABLE IF NOT EXISTS schema_cache (
         cache_key TEXT PRIMARY KEY,
         payload_json TEXT NOT NULL,
@@ -230,7 +288,10 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         row_count INTEGER NOT NULL DEFAULT 0,
         column_count INTEGER NOT NULL DEFAULT 0,
         byte_size INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT 0,
+        last_accessed_at INTEGER NOT NULL DEFAULT 0,
+        owner_id TEXT
     )",
     "CREATE TABLE IF NOT EXISTS mq_token_records (
         id TEXT PRIMARY KEY,
@@ -248,14 +309,6 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         ON mq_token_records (connection_id, subject, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_mq_token_records_fingerprint
         ON mq_token_records (token_fingerprint)",
-    "CREATE TABLE IF NOT EXISTS state_store (
-        key TEXT PRIMARY KEY,
-        version INTEGER NOT NULL DEFAULT 1,
-        payload BLOB NOT NULL,
-        content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )",
     "CREATE TABLE IF NOT EXISTS saved_sql_folders (
         id TEXT PRIMARY KEY,
         connection_id TEXT NOT NULL,
@@ -279,70 +332,14 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         created_at TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL DEFAULT ''
     )",
-    "CREATE TABLE IF NOT EXISTS rebase_history (
+    "CREATE TABLE IF NOT EXISTS ai_configs (
         id TEXT PRIMARY KEY,
-        timestamp TEXT NOT NULL,
-        previous_baseline_id TEXT NOT NULL,
-        new_baseline_id TEXT NOT NULL,
-        object_count INTEGER NOT NULL DEFAULT 0,
-        conflict_count INTEGER NOT NULL DEFAULT 0,
-        auto_resolved INTEGER NOT NULL DEFAULT 1,
-        notes TEXT NOT NULL DEFAULT ''
+        name TEXT NOT NULL UNIQUE,
+        model TEXT NOT NULL DEFAULT '',
+        models TEXT NOT NULL DEFAULT '[]',
+        config_json TEXT NOT NULL,
+        is_default INTEGER NOT NULL DEFAULT 0
     )",
-    "CREATE TABLE IF NOT EXISTS config_audit_log (
-        id TEXT PRIMARY KEY,
-        timestamp TEXT NOT NULL,
-        operator TEXT NOT NULL,
-        reason TEXT NOT NULL DEFAULT '',
-        key_path TEXT NOT NULL,
-        change_diff TEXT NOT NULL DEFAULT '{}',
-        config_snapshot TEXT NOT NULL DEFAULT '{}'
-    )",
-    "CREATE INDEX IF NOT EXISTS idx_config_audit_key_path
-        ON config_audit_log (key_path, timestamp DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_config_audit_operator
-        ON config_audit_log (operator, timestamp DESC)",
-    "CREATE TABLE IF NOT EXISTS config_version_snapshots (
-        id TEXT PRIMARY KEY,
-        key_path TEXT NOT NULL,
-        version INTEGER NOT NULL,
-        snapshot_json TEXT NOT NULL,
-        checksum TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        UNIQUE(key_path, version)
-    )",
-    "CREATE INDEX IF NOT EXISTS idx_config_snapshots_key_path
-        ON config_version_snapshots (key_path, version DESC)",
-    "CREATE TABLE IF NOT EXISTS config_approval_records (
-        id TEXT PRIMARY KEY,
-        config_domain TEXT NOT NULL,
-        change_description TEXT NOT NULL DEFAULT '',
-        status TEXT NOT NULL DEFAULT 'draft',
-        requester TEXT NOT NULL,
-        reviewer TEXT,
-        reviewed_at TEXT,
-        webhook_url TEXT,
-        draft_config_json TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    )",
-    "CREATE INDEX IF NOT EXISTS idx_config_approval_domain
-        ON config_approval_records (config_domain, status, created_at DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_config_approval_status
-        ON config_approval_records (status, created_at DESC)",
-    "CREATE TABLE IF NOT EXISTS config_drift_alerts (
-        id TEXT PRIMARY KEY,
-        source_env TEXT NOT NULL DEFAULT '',
-        target_env TEXT NOT NULL DEFAULT '',
-        config_key TEXT NOT NULL,
-        expected_checksum TEXT NOT NULL DEFAULT '',
-        actual_checksum TEXT NOT NULL DEFAULT '',
-        details_json TEXT NOT NULL DEFAULT '{}',
-        detected_at TEXT NOT NULL,
-        acknowledged INTEGER NOT NULL DEFAULT 0
-    )",
-    "CREATE INDEX IF NOT EXISTS idx_config_drift_alerts_ack
-        ON config_drift_alerts (acknowledged, detected_at DESC)",
 ];
 
 impl Storage {
@@ -361,6 +358,8 @@ impl Storage {
             }
             ensure_history_columns_sync(conn)?;
             ensure_saved_sql_columns_sync(conn)?;
+            ensure_tab_runtime_cache_columns_sync(conn)?;
+            ensure_ai_configs_columns_sync(conn)?;
             Ok(())
         })
     }
@@ -474,6 +473,44 @@ fn ensure_saved_sql_columns_sync(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn ensure_tab_runtime_cache_columns_sync(conn: &Connection) -> Result<(), String> {
+    const COLUMNS: &[(&str, &str)] = &[
+        ("created_at", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_accessed_at", "INTEGER NOT NULL DEFAULT 0"),
+        ("owner_id", "TEXT"),
+    ];
+    ensure_table_columns(conn, "tab_runtime_cache", COLUMNS)?;
+    let now = unix_timestamp_millis();
+    // Legacy rows must receive a grace period instead of being treated as ancient crash leftovers.
+    conn.execute("UPDATE tab_runtime_cache SET created_at = ?1 WHERE created_at = 0", [now])
+        .map_err(|e| e.to_string())?;
+    conn.execute("UPDATE tab_runtime_cache SET last_accessed_at = created_at WHERE last_accessed_at = 0", [])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn unix_timestamp_millis() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis().min(i64::MAX as u128) as i64
+}
+
+fn ensure_ai_configs_columns_sync(conn: &Connection) -> Result<(), String> {
+    const COLUMNS: &[(&str, &str)] = &[
+        ("model", "TEXT NOT NULL DEFAULT ''"),
+        ("models", "TEXT NOT NULL DEFAULT '[]'"),
+        ("is_default", "INTEGER NOT NULL DEFAULT 0"),
+    ];
+
+    ensure_table_columns(conn, "ai_configs", COLUMNS)?;
+
+    // Create partial unique index (if not exists)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_configs_default ON ai_configs(is_default) WHERE is_default = 1",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
 fn ensure_table_columns(conn: &Connection, table_name: &str, columns: &[(&str, &str)]) -> Result<(), String> {
     let mut stmt =
         conn.prepare(&format!("SELECT name FROM pragma_table_info('{table_name}')")).map_err(|e| e.to_string())?;
@@ -575,6 +612,18 @@ fn scrub_mq_token_signing_secret(config: &mut ConnectionConfig) {
         return;
     };
     scrub_json_secret(signing, "key");
+}
+
+fn scrub_nacos_auth_secrets(config: &mut ConnectionConfig) {
+    if config.db_type != DatabaseType::Nacos {
+        return;
+    }
+    let Some(auth) = nacos_auth_object_mut(config.external_config.as_mut()) else {
+        return;
+    };
+    if auth.get("kind").and_then(serde_json::Value::as_str) == Some("usernamePassword") {
+        scrub_json_secret(auth, "password");
+    }
 }
 
 fn delete_secret_prefix_in_tx(
@@ -793,6 +842,234 @@ impl Storage {
         })
         .await
     }
+
+    pub async fn save_ai_configs(&self, configs: &[AiConfigItem]) -> Result<(), String> {
+        let configs = configs.to_vec();
+        self.with_conn(move |conn| {
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            tx.execute("DELETE FROM ai_configs", []).map_err(|e| e.to_string())?;
+            for config in &configs {
+                let json = serde_json::to_string(&config.config).map_err(|e| e.to_string())?;
+                let models_json = serde_json::to_string(&config.config.models).map_err(|e| e.to_string())?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO ai_configs (id, name, model, models, config_json, is_default) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![config.id, config.name, config.config.model, models_json, json, config.is_default as i32],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            // Clear old single-config tables — migration is complete, avoids re-migration on empty ai_configs
+            tx.execute("DELETE FROM ai_config", []).map_err(|e| e.to_string())?;
+            tx.execute("DELETE FROM ai_provider_configs", []).map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn load_ai_configs(&self) -> Result<Vec<AiConfigItem>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, name, model, models, config_json, is_default FROM ai_configs")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, bool>(5)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            let mut configs = Vec::new();
+            for row in rows {
+                let (id, name, model_col, models_json_col, json, is_default_col) = row.map_err(|e| e.to_string())?;
+                match serde_json::from_str::<AiConfig>(&json) {
+                    Ok(mut config) => {
+                        // 优先使用列值，如果列值为空则从 config_json 回退读取
+                        if model_col.is_empty() {
+                            // config.model 已经从 json 解析出来了
+                        } else {
+                            config.model = model_col;
+                        }
+                        if models_json_col.is_empty() || models_json_col == "[]" {
+                            // config.models 已经从 json 解析出来了
+                        } else {
+                            config.models = serde_json::from_str(&models_json_col).unwrap_or_default();
+                        }
+                        let is_default = is_default_col;
+                        configs.push(AiConfigItem { id, name, is_default, config });
+                    }
+                    Err(e) => {
+                        warn!("Failed to deserialize AI config item '{}': {}", id, e);
+                    }
+                }
+            }
+            Ok(configs)
+        })
+        .await
+    }
+
+    pub async fn set_default_ai_config(&self, config_id: &str) -> Result<(), String> {
+        let config_id = config_id.to_string();
+        self.with_conn(move |conn| {
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            tx.execute("UPDATE ai_configs SET is_default = 0 WHERE is_default = 1", []).map_err(|e| e.to_string())?;
+            tx.execute("UPDATE ai_configs SET is_default = 1 WHERE id = ?1", params![config_id])
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn save_ai_config_item(&self, config: &AiConfigItem) -> Result<(), String> {
+        let config = config.clone();
+        self.with_conn(move |conn| {
+            let json = serde_json::to_string(&config.config).map_err(|e| e.to_string())?;
+            let models_json = serde_json::to_string(&config.config.models).map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+            // 如果设该配置为默认，先清除其他默认，避免与 idx_ai_configs_default 冲突
+            if config.is_default {
+                tx.execute(
+                    "UPDATE ai_configs SET is_default = 0 WHERE is_default = 1 AND id != ?1",
+                    params![config.id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+
+            tx.execute(
+                "INSERT INTO ai_configs (id, name, model, models, config_json, is_default)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(id) DO UPDATE SET name = excluded.name, model = excluded.model,
+                 models = excluded.models, config_json = excluded.config_json, is_default = excluded.is_default",
+                params![config.id, config.name, config.config.model, models_json, json, config.is_default as i32],
+            )
+            .map_err(|e| {
+                let msg = e.to_string();
+                // SQLite UNIQUE constraint error contains the table and column name
+                if msg.contains("UNIQUE constraint failed") && msg.contains("ai_configs.name") {
+                    format!("ai.configNameExists:{}", config.name)
+                } else {
+                    msg
+                }
+            })?;
+
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn delete_ai_config(&self, config_id: &str) -> Result<(), String> {
+        let config_id = config_id.to_string();
+        self.with_conn(move |conn| {
+            conn.execute("DELETE FROM ai_configs WHERE id = ?1", params![config_id]).map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .await
+    }
+}
+
+// Tunnel profiles — shared transport-layer configurations managed in
+// Settings and referenced from connections via `profile_id`. Secrets stay
+// inline in `config_json`; that matches the plaintext-at-rest posture of
+// `connection_secrets` in the same database file.
+
+impl Storage {
+    pub async fn load_tunnel_profiles(&self) -> Result<Vec<TransportLayerConfig>, String> {
+        let rows: Vec<String> = self
+            .with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare("SELECT config_json FROM tunnel_profiles ORDER BY rowid")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+            })
+            .await?;
+
+        let mut profiles = Vec::new();
+        for json in rows {
+            match serde_json::from_str::<TransportLayerConfig>(&json) {
+                Ok(profile) => profiles.push(profile),
+                Err(e) => warn!("Failed to deserialize tunnel profile: {}", e),
+            }
+        }
+        Ok(profiles)
+    }
+
+    pub async fn save_tunnel_profiles(&self, profiles: &[TransportLayerConfig]) -> Result<(), String> {
+        for profile in profiles {
+            if profile.id().trim().is_empty() {
+                return Err("Tunnel profile id must not be empty".to_string());
+            }
+        }
+        let profiles = profiles.to_vec();
+        self.with_conn(move |conn| {
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            tx.execute("DELETE FROM tunnel_profiles", []).map_err(|e| e.to_string())?;
+            for profile in &profiles {
+                let json = serde_json::to_string(profile).map_err(|e| e.to_string())?;
+                tx.execute(
+                    "INSERT INTO tunnel_profiles (id, config_json) VALUES (?1, ?2)",
+                    params![profile.id(), json],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            tx.commit().map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    /// Replaces the profile catalog while keeping the secrets already stored
+    /// for a profile when the incoming copy has them scrubbed. Used when
+    /// applying sync snapshots, whose plain (non-encrypted) part strips
+    /// tunnel secrets.
+    pub async fn save_tunnel_profiles_preserving_secrets(
+        &self,
+        profiles: &[TransportLayerConfig],
+    ) -> Result<(), String> {
+        let existing: HashMap<String, TransportLayerConfig> =
+            self.load_tunnel_profiles().await?.into_iter().map(|p| (p.id().to_string(), p)).collect();
+        let merged: Vec<TransportLayerConfig> = profiles
+            .iter()
+            .map(|profile| {
+                let mut profile = profile.clone();
+                if let Some(previous) = existing.get(profile.id()) {
+                    merge_missing_tunnel_profile_secrets(&mut profile, previous);
+                }
+                profile
+            })
+            .collect();
+        self.save_tunnel_profiles(&merged).await
+    }
+}
+
+fn merge_missing_tunnel_profile_secrets(profile: &mut TransportLayerConfig, previous: &TransportLayerConfig) {
+    match (profile, previous) {
+        (TransportLayerConfig::Ssh(current), TransportLayerConfig::Ssh(previous)) => {
+            if current.password.is_empty() {
+                current.password = previous.password.clone();
+            }
+            if current.key_passphrase.is_empty() {
+                current.key_passphrase = previous.key_passphrase.clone();
+            }
+        }
+        (TransportLayerConfig::Proxy(current), TransportLayerConfig::Proxy(previous)) => {
+            if current.password.is_empty() {
+                current.password = previous.password.clone();
+            }
+        }
+        (TransportLayerConfig::HttpTunnel(current), TransportLayerConfig::HttpTunnel(previous)) => {
+            if current.token.is_empty() {
+                current.token = previous.token.clone();
+            }
+        }
+        _ => {}
+    }
 }
 
 // App Settings
@@ -856,6 +1133,16 @@ impl Storage {
             "debug_logging_enabled".to_string(),
             serde_json::Value::Bool(desktop_settings.debug_logging_enabled),
         );
+        settings.insert(
+            "duckdb_worker_process_isolation".to_string(),
+            serde_json::Value::Bool(desktop_settings.duckdb_worker_process_isolation),
+        );
+        settings.insert(
+            "duckdb_worker_max_processes".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(normalize_duckdb_worker_max_processes(
+                desktop_settings.duckdb_worker_max_processes,
+            ))),
+        );
         match desktop_settings.saved_sql_sync_dir.as_ref().filter(|path| !path.trim().is_empty()) {
             Some(path) => {
                 settings.insert("saved_sql_sync_dir".to_string(), serde_json::Value::String(path.clone()));
@@ -916,6 +1203,16 @@ impl Storage {
                 .get("debug_logging_enabled")
                 .and_then(|value| value.as_bool())
                 .unwrap_or_else(|| DesktopSettings::default().debug_logging_enabled),
+            duckdb_worker_process_isolation: settings
+                .get("duckdb_worker_process_isolation")
+                .and_then(|value| value.as_bool())
+                .unwrap_or_else(|| DesktopSettings::default().duckdb_worker_process_isolation),
+            duckdb_worker_max_processes: settings
+                .get("duckdb_worker_max_processes")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| usize::try_from(value).ok())
+                .map(normalize_duckdb_worker_max_processes)
+                .unwrap_or_else(|| DesktopSettings::default().duckdb_worker_max_processes),
             saved_sql_sync_dir: settings
                 .get("saved_sql_sync_dir")
                 .and_then(|value| value.as_str())
@@ -966,6 +1263,53 @@ impl Storage {
         Ok(array.iter().filter_map(|item| item.as_str().map(|value| value.to_string())).collect())
     }
 
+    async fn save_app_state_value(&self, key: &str, value: &serde_json::Value) -> Result<(), String> {
+        let key = key.to_string();
+        let value_json = serde_json::to_string(value).map_err(|e| e.to_string())?;
+        self.with_conn(move |conn| {
+            conn.execute("INSERT OR REPLACE INTO app_state (key, value_json) VALUES (?1, ?2)", params![key, value_json])
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    async fn load_app_state_value(&self, key: &str) -> Result<Option<serde_json::Value>, String> {
+        let key = key.to_string();
+        let json: Option<String> = self
+            .with_conn(move |conn| {
+                conn.query_row("SELECT value_json FROM app_state WHERE key = ?1", [key], |row| row.get(0))
+                    .optional()
+                    .map_err(|e| e.to_string())
+            })
+            .await?;
+        json.map(|value| serde_json::from_str(&value).map_err(|e| e.to_string())).transpose()
+    }
+
+    pub async fn save_editor_settings(&self, settings: &serde_json::Value) -> Result<(), String> {
+        self.save_app_state_value(APP_STATE_EDITOR_SETTINGS_KEY, settings).await
+    }
+
+    pub async fn load_editor_settings(&self) -> Result<Option<serde_json::Value>, String> {
+        self.load_app_state_value(APP_STATE_EDITOR_SETTINGS_KEY).await
+    }
+
+    pub async fn save_open_tabs_state(&self, state: &serde_json::Value) -> Result<(), String> {
+        self.save_app_state_value(APP_STATE_OPEN_TABS_KEY, state).await
+    }
+
+    pub async fn load_open_tabs_state(&self) -> Result<Option<serde_json::Value>, String> {
+        self.load_app_state_value(APP_STATE_OPEN_TABS_KEY).await
+    }
+
+    pub async fn save_saved_sql_editor_positions(&self, positions: &serde_json::Value) -> Result<(), String> {
+        self.save_app_state_value(APP_STATE_SAVED_SQL_EDITOR_POSITIONS_KEY, positions).await
+    }
+
+    pub async fn load_saved_sql_editor_positions(&self) -> Result<Option<serde_json::Value>, String> {
+        self.load_app_state_value(APP_STATE_SAVED_SQL_EDITOR_POSITIONS_KEY).await
+    }
+
     pub async fn load_or_create_local_device_secret(&self) -> Result<String, String> {
         let mut settings = self.load_app_settings_json().await?;
         if let Some(secret) = settings.get("local_device_secret").and_then(|value| value.as_str()) {
@@ -1005,6 +1349,35 @@ impl Storage {
         };
         credentials.remove(account);
         settings.insert("webdav_passwords".to_string(), serde_json::Value::Object(credentials));
+        self.save_app_settings_json(&settings).await
+    }
+
+    pub async fn save_webdav_sync_secrets_preference(
+        &self,
+        enabled: bool,
+        blob: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        let mut settings = self.load_app_settings_json().await?;
+        settings.insert("webdav_sync_secrets_enabled".to_string(), serde_json::Value::Bool(enabled));
+        if let Some(blob) = blob {
+            settings.insert("webdav_sync_secrets_passphrase".to_string(), blob.clone());
+        }
+        self.save_app_settings_json(&settings).await
+    }
+
+    pub async fn load_webdav_sync_secrets_enabled(&self) -> Result<bool, String> {
+        let settings = self.load_app_settings_json().await?;
+        Ok(settings.get("webdav_sync_secrets_enabled").and_then(serde_json::Value::as_bool).unwrap_or(false))
+    }
+
+    pub async fn load_webdav_sync_secrets_passphrase_blob(&self) -> Result<Option<serde_json::Value>, String> {
+        let settings = self.load_app_settings_json().await?;
+        Ok(settings.get("webdav_sync_secrets_passphrase").cloned())
+    }
+
+    pub async fn delete_webdav_sync_secrets_passphrase_blob(&self) -> Result<(), String> {
+        let mut settings = self.load_app_settings_json().await?;
+        settings.remove("webdav_sync_secrets_passphrase");
         self.save_app_settings_json(&settings).await
     }
 }
@@ -1101,8 +1474,10 @@ impl Storage {
                 scrub_transport_layer_secrets(&mut sanitized);
                 sanitized.redis_sentinel_password = String::new();
                 sanitized.connection_string = None;
+                sanitized.init_script = None;
                 scrub_mq_auth_secrets(&mut sanitized);
                 scrub_mq_token_signing_secret(&mut sanitized);
+                scrub_nacos_auth_secrets(&mut sanitized);
                 let json = serde_json::to_string(&sanitized).map_err(|e| e.to_string())?;
 
                 tx.execute("INSERT INTO connections (id, config_json) VALUES (?1, ?2)", params![config_id, json])
@@ -1137,8 +1512,10 @@ impl Storage {
                 scrub_transport_layer_secrets(&mut sanitized);
                 sanitized.redis_sentinel_password = String::new();
                 sanitized.connection_string = None;
+                sanitized.init_script = None;
                 scrub_mq_auth_secrets(&mut sanitized);
                 scrub_mq_token_signing_secret(&mut sanitized);
+                scrub_nacos_auth_secrets(&mut sanitized);
                 let json = serde_json::to_string(&sanitized).map_err(|e| e.to_string())?;
 
                 tx.execute("INSERT INTO connections (id, config_json) VALUES (?1, ?2)", params![config_id, json])
@@ -1194,8 +1571,18 @@ impl Storage {
                     )
                     .map_err(|e| e.to_string())?;
                 }
+                if let Some(script) = &config.init_script {
+                    persist_secret_in_tx(&tx, &config.id, "init_script", script)?;
+                } else {
+                    tx.execute(
+                        "DELETE FROM connection_secrets WHERE connection_id = ?1 AND key = ?2",
+                        params![config.id, "init_script"],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
                 persist_mq_auth_secrets_in_tx(&tx, &config)?;
                 persist_mq_token_signing_secret_in_tx(&tx, &config)?;
+                persist_nacos_auth_secrets_in_tx(&tx, &config)?;
             }
 
             if configs.is_empty() {
@@ -1208,6 +1595,30 @@ impl Storage {
             }
 
             tx.commit().map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn save_connection_database_info(
+        &self,
+        connection_id: &str,
+        database_info: Option<DatabaseConnectionInfo>,
+    ) -> Result<(), String> {
+        let connection_id = connection_id.to_string();
+        self.with_conn(move |conn| {
+            let json = conn
+                .query_row("SELECT config_json FROM connections WHERE id = ?1", [&connection_id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .optional()
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("Connection config not found: {connection_id}"))?;
+            let mut config: ConnectionConfig = serde_json::from_str(&json).map_err(|error| error.to_string())?;
+            config.database_info = database_info;
+            let json = serde_json::to_string(&config).map_err(|error| error.to_string())?;
+            conn.execute("UPDATE connections SET config_json = ?1 WHERE id = ?2", params![json, connection_id])
+                .map(|_| ())
+                .map_err(|error| error.to_string())
         })
         .await
     }
@@ -1280,13 +1691,17 @@ impl Storage {
             }
             config.redis_sentinel_password = self.get_secret(&id, "redis_sentinel_password").await?.unwrap_or_default();
             config.connection_string = self.get_secret(&id, "connection_string").await?;
+            config.init_script = self.get_secret(&id, "init_script").await?;
             let needs_mq_auth_rewrite = self.hydrate_mq_auth_secrets(&id, &mut config).await?;
             let needs_mq_token_signing_rewrite = self.hydrate_mq_token_signing_secret(&id, &mut config).await?;
-            let needs_mq_secret_rewrite = needs_mq_auth_rewrite || needs_mq_token_signing_rewrite;
-            if needs_mq_secret_rewrite {
+            let needs_nacos_auth_rewrite = self.hydrate_nacos_auth_secret(&id, &mut config).await?;
+            let needs_external_secret_rewrite =
+                needs_mq_auth_rewrite || needs_mq_token_signing_rewrite || needs_nacos_auth_rewrite;
+            if needs_external_secret_rewrite {
                 let mut sanitized = config.clone().canonicalized();
                 scrub_mq_auth_secrets(&mut sanitized);
                 scrub_mq_token_signing_secret(&mut sanitized);
+                scrub_nacos_auth_secrets(&mut sanitized);
                 let sanitized_json = serde_json::to_string(&sanitized).map_err(|e| e.to_string())?;
                 let update_id = id.clone();
                 self.with_conn(move |conn| {
@@ -1346,6 +1761,24 @@ impl Storage {
         };
 
         hydrate_mq_json_secret(self, connection_id, MQ_TOKEN_SIGNING_KEY, signing, "key").await
+    }
+
+    async fn hydrate_nacos_auth_secret(
+        &self,
+        connection_id: &str,
+        config: &mut ConnectionConfig,
+    ) -> Result<bool, String> {
+        if config.db_type != DatabaseType::Nacos {
+            return Ok(false);
+        }
+        let Some(auth) = nacos_auth_object_mut(config.external_config.as_mut()) else {
+            return Ok(false);
+        };
+        if auth.get("kind").and_then(serde_json::Value::as_str) != Some("usernamePassword") {
+            return Ok(false);
+        }
+
+        hydrate_mq_json_secret(self, connection_id, NACOS_AUTH_PASSWORD_KEY, auth, "password").await
     }
 }
 
@@ -1858,18 +2291,21 @@ impl Storage {
         payload: Vec<u8>,
         row_count: i64,
         column_count: i64,
+        owner_id: Option<String>,
     ) -> Result<(), String> {
         let key = key.to_string();
         let byte_size = payload.len() as i64;
+        let now = unix_timestamp_millis();
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO tab_runtime_cache \
-                 (cache_key, payload, row_count, column_count, byte_size, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now')) \
+                 (cache_key, payload, row_count, column_count, byte_size, updated_at, created_at, last_accessed_at, owner_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), ?6, ?6, ?7) \
                  ON CONFLICT(cache_key) DO UPDATE SET \
                  payload = excluded.payload, row_count = excluded.row_count, column_count = excluded.column_count, \
-                 byte_size = excluded.byte_size, updated_at = excluded.updated_at",
-                params![key, payload, row_count, column_count, byte_size],
+                 byte_size = excluded.byte_size, updated_at = excluded.updated_at, \
+                 last_accessed_at = excluded.last_accessed_at, owner_id = excluded.owner_id",
+                params![key, payload, row_count, column_count, byte_size, now, owner_id],
             )
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -1879,11 +2315,13 @@ impl Storage {
 
     pub async fn load_tab_runtime_cache(&self, key: &str) -> Result<Option<TabRuntimeCacheEntry>, String> {
         let key = key.to_string();
+        let now = unix_timestamp_millis();
         self.with_conn(move |conn| {
-            conn.query_row(
-                "SELECT cache_key, payload, row_count, column_count, byte_size, updated_at \
+            let entry = conn
+                .query_row(
+                "SELECT cache_key, payload, row_count, column_count, byte_size, updated_at, created_at, last_accessed_at, owner_id \
                  FROM tab_runtime_cache WHERE cache_key = ?1",
-                [key],
+                [&key],
                 |row| {
                     Ok(TabRuntimeCacheEntry {
                         key: row.get(0)?,
@@ -1892,11 +2330,134 @@ impl Storage {
                         column_count: row.get(3)?,
                         byte_size: row.get(4)?,
                         updated_at: row.get(5)?,
+                        created_at: row.get(6)?,
+                        last_accessed_at: now,
+                        owner_id: row.get(8)?,
                     })
                 },
             )
             .optional()
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+            if entry.is_some() {
+                conn.execute(
+                    "UPDATE tab_runtime_cache SET last_accessed_at = ?2 WHERE cache_key = ?1",
+                    params![key, now],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            Ok(entry)
+        })
+        .await
+    }
+
+    pub async fn list_tab_runtime_cache_metadata(&self) -> Result<Vec<TabRuntimeCacheMetadata>, String> {
+        self.with_conn(move |conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT cache_key, row_count, column_count, byte_size, updated_at, created_at, last_accessed_at, owner_id \
+                     FROM tab_runtime_cache ORDER BY last_accessed_at ASC, cache_key ASC",
+                )
+                .map_err(|e| e.to_string())?;
+            let metadata = statement
+                .query_map([], |row| {
+                    Ok(TabRuntimeCacheMetadata {
+                        key: row.get(0)?,
+                        row_count: row.get(1)?,
+                        column_count: row.get(2)?,
+                        byte_size: row.get(3)?,
+                        updated_at: row.get(4)?,
+                        created_at: row.get(5)?,
+                        last_accessed_at: row.get(6)?,
+                        owner_id: row.get(7)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            Ok(metadata)
+        })
+        .await
+    }
+
+    pub async fn prune_tab_runtime_cache(
+        &self,
+        live_keys: Vec<String>,
+        max_bytes: i64,
+        orphan_grace_ms: i64,
+        max_age_ms: Option<i64>,
+    ) -> Result<TabRuntimeCachePruneResult, String> {
+        let now = unix_timestamp_millis();
+        self.with_conn(move |conn| {
+            let live_keys: HashSet<String> = live_keys.into_iter().collect();
+            let mut statement = conn
+                .prepare(
+                    "SELECT cache_key, byte_size, created_at, last_accessed_at \
+                     FROM tab_runtime_cache ORDER BY last_accessed_at ASC, cache_key ASC",
+                )
+                .map_err(|e| e.to_string())?;
+            let entries = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            drop(statement);
+
+            let mut total_bytes = entries.iter().map(|(_, bytes, _, _)| *bytes).sum::<i64>();
+            let mut deleted = HashSet::new();
+            let mut orphan_deletions = 0usize;
+            for (key, bytes, created_at, last_accessed_at) in &entries {
+                if live_keys.contains(key) {
+                    continue;
+                }
+                let orphan_expired = now.saturating_sub(*created_at) >= orphan_grace_ms.max(0);
+                let age_expired =
+                    max_age_ms.is_some_and(|max_age| now.saturating_sub(*last_accessed_at) >= max_age.max(0));
+                if orphan_expired || age_expired {
+                    deleted.insert(key.clone());
+                    total_bytes = total_bytes.saturating_sub(*bytes);
+                    if orphan_expired {
+                        orphan_deletions += 1;
+                    }
+                }
+            }
+
+            for (key, bytes, _, _) in &entries {
+                if total_bytes <= max_bytes.max(0) {
+                    break;
+                }
+                if live_keys.contains(key) || deleted.contains(key) {
+                    continue;
+                }
+                deleted.insert(key.clone());
+                total_bytes = total_bytes.saturating_sub(*bytes);
+            }
+
+            let deleted_bytes =
+                entries.iter().filter(|(key, _, _, _)| deleted.contains(key)).map(|(_, bytes, _, _)| *bytes).sum();
+            let transaction = conn.transaction().map_err(|e| e.to_string())?;
+            for key in &deleted {
+                transaction
+                    .execute("DELETE FROM tab_runtime_cache WHERE cache_key = ?1", [key])
+                    .map_err(|e| e.to_string())?;
+            }
+            transaction.commit().map_err(|e| e.to_string())?;
+            Ok(TabRuntimeCachePruneResult {
+                deleted_entries: deleted.len(),
+                deleted_bytes,
+                orphan_deletions,
+                remaining_entries: entries.len().saturating_sub(deleted.len()),
+                remaining_bytes: total_bytes,
+            })
+        })
+        .await
+    }
+
+    pub async fn delete_tab_runtime_cache_owner(&self, owner_id: &str) -> Result<usize, String> {
+        let owner_id = owner_id.to_string();
+        self.with_conn(move |conn| {
+            conn.execute("DELETE FROM tab_runtime_cache WHERE owner_id = ?1", [owner_id]).map_err(|e| e.to_string())
         })
         .await
     }
@@ -1907,640 +2468,6 @@ impl Storage {
             conn.execute("DELETE FROM tab_runtime_cache WHERE cache_key = ?1", [key])
                 .map(|_| ())
                 .map_err(|e| e.to_string())
-        })
-        .await
-    }
-}
-
-// State store (generic KV for state persistence backends)
-
-impl Storage {
-    pub async fn save_state(&self, key: &str, payload: &[u8], content_type: &str) -> Result<(), String> {
-        let key = key.to_string();
-        let payload = payload.to_vec();
-        let content_type = content_type.to_string();
-        self.with_conn(move |conn| {
-            conn.execute(
-                "INSERT INTO state_store (key, payload, content_type) VALUES (?1, ?2, ?3) \
-                 ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, \
-                 content_type = excluded.content_type, version = version + 1, \
-                 updated_at = datetime('now')",
-                params![key, payload, content_type],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        })
-        .await
-    }
-
-    pub async fn load_state(&self, key: &str) -> Result<Option<(Vec<u8>, String)>, String> {
-        let key = key.to_string();
-        self.with_conn(move |conn| {
-            conn.query_row("SELECT payload, content_type FROM state_store WHERE key = ?1", [key], |row| {
-                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
-            })
-            .optional()
-            .map_err(|e| e.to_string())
-        })
-        .await
-    }
-
-    pub async fn delete_state(&self, key: &str) -> Result<(), String> {
-        let key = key.to_string();
-        self.with_conn(move |conn| {
-            conn.execute("DELETE FROM state_store WHERE key = ?1", [key]).map(|_| ()).map_err(|e| e.to_string())
-        })
-        .await
-    }
-
-    pub async fn state_exists(&self, key: &str) -> Result<bool, String> {
-        let key = key.to_string();
-        self.with_conn(move |conn| {
-            let count: i64 = conn
-                .query_row("SELECT COUNT(*) FROM state_store WHERE key = ?1", [key], |row| row.get(0))
-                .map_err(|e| e.to_string())?;
-            Ok(count > 0)
-        })
-        .await
-    }
-
-    pub async fn compare_and_swap_state(
-        &self,
-        key: &str,
-        expected_version: Option<u64>,
-        payload: &[u8],
-        content_type: &str,
-    ) -> Result<bool, String> {
-        let key = key.to_string();
-        let payload = payload.to_vec();
-        let content_type = content_type.to_string();
-        self.with_conn(move |conn| {
-            let current_version: Option<u64> = conn
-                .query_row("SELECT version FROM state_store WHERE key = ?1", [&key], |row| row.get(0))
-                .optional()
-                .map_err(|e| e.to_string())?;
-
-            match (expected_version, current_version) {
-                (None, None) => {
-                    let affected = conn
-                        .execute(
-                            "INSERT OR IGNORE INTO state_store (key, payload, content_type) VALUES (?1, ?2, ?3)",
-                            params![key, payload, content_type],
-                        )
-                        .map_err(|e| e.to_string())?;
-                    Ok(affected > 0)
-                }
-                (Some(exp), Some(cur)) if exp == cur => {
-                    let affected = conn
-                        .execute(
-                            "UPDATE state_store SET payload = ?1, content_type = ?2, version = version + 1, \
-                             updated_at = datetime('now') WHERE key = ?3 AND version = ?4",
-                            params![payload, content_type, key, cur],
-                        )
-                        .map_err(|e| e.to_string())?;
-                    Ok(affected > 0)
-                }
-                _ => Ok(false),
-            }
-        })
-        .await
-    }
-
-    pub async fn get_state_version(&self, key: &str) -> Result<Option<u64>, String> {
-        let key = key.to_string();
-        self.with_conn(move |conn| {
-            conn.query_row("SELECT version FROM state_store WHERE key = ?1", [key], |row| row.get(0))
-                .optional()
-                .map_err(|e| e.to_string())
-        })
-        .await
-    }
-}
-
-// Rebase history
-
-impl Storage {
-    pub async fn save_rebase_entry(&self, entry: &crate::state_calibrator::RebaseHistoryEntry) -> Result<(), String> {
-        let entry = entry.clone();
-        self.with_conn(move |conn| {
-            conn.execute(
-                "INSERT INTO rebase_history \
-                 (id, timestamp, previous_baseline_id, new_baseline_id, object_count, conflict_count, auto_resolved, notes) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    entry.id,
-                    entry.timestamp,
-                    entry.previous_baseline_id,
-                    entry.new_baseline_id,
-                    entry.object_count,
-                    entry.conflict_count,
-                    entry.auto_resolved,
-                    entry.notes,
-                ],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        })
-        .await
-    }
-
-    pub async fn load_rebase_history(&self) -> Result<Vec<crate::state_calibrator::RebaseHistoryEntry>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT id, timestamp, previous_baseline_id, new_baseline_id, object_count, conflict_count, auto_resolved, notes FROM rebase_history ORDER BY timestamp DESC")
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok(crate::state_calibrator::RebaseHistoryEntry {
-                        id: row.get(0)?,
-                        timestamp: row.get(1)?,
-                        previous_baseline_id: row.get(2)?,
-                        new_baseline_id: row.get(3)?,
-                        object_count: row.get(4)?,
-                        conflict_count: row.get(5)?,
-                        // SQLite stores bool as 0/1 integer
-                        auto_resolved: row.get::<_, i32>(6)? != 0,
-                        notes: row.get(7)?,
-                    })
-                })
-                .map_err(|e| e.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            Ok(rows)
-        })
-        .await
-    }
-
-    pub async fn delete_rebase_entry(&self, id: &str) -> Result<(), String> {
-        let id = id.to_string();
-        self.with_conn(move |conn| {
-            conn.execute("DELETE FROM rebase_history WHERE id = ?1", [id]).map(|_| ()).map_err(|e| e.to_string())
-        })
-        .await
-    }
-
-    // ---- Governance: Config Audit ----
-
-    pub async fn save_audit_entry(&self, entry: &crate::config::governance::ConfigAuditEntry) -> Result<(), String> {
-        let entry = entry.clone();
-        self.with_conn(move |conn| {
-            conn.execute(
-                "INSERT INTO config_audit_log (id, timestamp, operator, reason, key_path, change_diff, config_snapshot) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    entry.id,
-                    entry.timestamp,
-                    entry.operator,
-                    entry.reason,
-                    entry.key_path,
-                    serde_json::to_string(&entry.change_diff).map_err(|e| e.to_string())?,
-                    serde_json::to_string(&entry.config_snapshot).map_err(|e| e.to_string())?,
-                ],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        })
-        .await
-    }
-
-    pub async fn query_audit_entries(
-        &self,
-        query: &crate::config::governance::AuditQuery,
-    ) -> Result<crate::config::governance::AuditSummary, String> {
-        let key_path = query.key_path.clone();
-        let operator = query.operator.clone();
-        let limit = query.limit.unwrap_or(50) as i64;
-        let offset = query.offset.unwrap_or(0) as i64;
-
-        self.with_conn(move |conn| {
-            let (where_clause, total): (String, i64) = match (&key_path, &operator) {
-                (Some(kp), Some(op)) => {
-                    let total: i64 = conn
-                        .query_row(
-                            "SELECT COUNT(*) FROM config_audit_log WHERE key_path = ?1 AND operator = ?2",
-                            params![kp, op],
-                            |row| row.get(0),
-                        )
-                        .map_err(|e| e.to_string())?;
-                    ("WHERE key_path = ?1 AND operator = ?2".to_string(), total)
-                }
-                (Some(kp), None) => {
-                    let total: i64 = conn
-                        .query_row("SELECT COUNT(*) FROM config_audit_log WHERE key_path = ?1", params![kp], |row| {
-                            row.get(0)
-                        })
-                        .map_err(|e| e.to_string())?;
-                    ("WHERE key_path = ?1".to_string(), total)
-                }
-                (None, Some(op)) => {
-                    let total: i64 = conn
-                        .query_row("SELECT COUNT(*) FROM config_audit_log WHERE operator = ?1", params![op], |row| {
-                            row.get(0)
-                        })
-                        .map_err(|e| e.to_string())?;
-                    ("WHERE operator = ?1".to_string(), total)
-                }
-                (None, None) => {
-                    let total: i64 = conn
-                        .query_row("SELECT COUNT(*) FROM config_audit_log", [], |row| row.get(0))
-                        .map_err(|e| e.to_string())?;
-                    (String::new(), total)
-                }
-            };
-
-            let sql = format!(
-                "SELECT id, timestamp, operator, reason, key_path, change_diff, config_snapshot \
-                 FROM config_audit_log {where_clause} ORDER BY timestamp DESC LIMIT ? OFFSET ?"
-            );
-
-            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-            let rows: Vec<crate::config::governance::ConfigAuditEntry> = match (&key_path, &operator) {
-                (Some(kp), Some(op)) => stmt
-                    .query_map(
-                        rusqlite::params_from_iter([kp.as_str(), op.as_str(), &limit.to_string(), &offset.to_string()]),
-                        Self::map_audit_row,
-                    )
-                    .map_err(|e| e.to_string())?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| e.to_string())?,
-                (Some(kp), None) => stmt
-                    .query_map(
-                        rusqlite::params_from_iter([kp.as_str(), &limit.to_string(), &offset.to_string()]),
-                        Self::map_audit_row,
-                    )
-                    .map_err(|e| e.to_string())?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| e.to_string())?,
-                (None, Some(op)) => stmt
-                    .query_map(
-                        rusqlite::params_from_iter([op.as_str(), &limit.to_string(), &offset.to_string()]),
-                        Self::map_audit_row,
-                    )
-                    .map_err(|e| e.to_string())?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| e.to_string())?,
-                (None, None) => stmt
-                    .query_map(
-                        rusqlite::params_from_iter([&limit.to_string(), &offset.to_string()]),
-                        Self::map_audit_row,
-                    )
-                    .map_err(|e| e.to_string())?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| e.to_string())?,
-            };
-
-            Ok(crate::config::governance::AuditSummary { total_entries: total as usize, entries: rows })
-        })
-        .await
-    }
-
-    fn map_audit_row(row: &rusqlite::Row) -> rusqlite::Result<crate::config::governance::ConfigAuditEntry> {
-        let change_diff_str: String = row.get(5)?;
-        let config_snapshot_str: String = row.get(6)?;
-        Ok(crate::config::governance::ConfigAuditEntry {
-            id: row.get(0)?,
-            timestamp: row.get(1)?,
-            operator: row.get(2)?,
-            reason: row.get(3)?,
-            key_path: row.get(4)?,
-            change_diff: serde_json::from_str(&change_diff_str).unwrap_or_default(),
-            config_snapshot: serde_json::from_str(&config_snapshot_str).unwrap_or_default(),
-        })
-    }
-
-    // ---- Governance: Config Version Snapshots ----
-
-    pub async fn next_config_version(&self, key_path: &str) -> Result<u64, String> {
-        let kp = key_path.to_string();
-        self.with_conn(move |conn| {
-            let max_version: u64 = conn
-                .query_row(
-                    "SELECT COALESCE(MAX(version), 0) FROM config_version_snapshots WHERE key_path = ?1",
-                    [&kp],
-                    |row| row.get(0),
-                )
-                .map_err(|e| format!("get max version: {e}"))?;
-            Ok(max_version + 1)
-        })
-        .await
-    }
-
-    pub async fn save_config_snapshot(
-        &self,
-        snap: &crate::config::governance::ConfigVersionSnapshot,
-    ) -> Result<(), String> {
-        let snap = snap.clone();
-        self.with_conn(move |conn| {
-            conn.execute(
-                "INSERT INTO config_version_snapshots (id, key_path, version, snapshot_json, checksum, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    snap.id,
-                    snap.key_path,
-                    snap.version,
-                    serde_json::to_string(&snap.snapshot_json).map_err(|e| e.to_string())?,
-                    snap.checksum,
-                    snap.created_at,
-                ],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        })
-        .await
-    }
-
-    pub async fn load_config_snapshot(
-        &self,
-        key_path: &str,
-        version: u64,
-    ) -> Result<Option<crate::config::governance::ConfigVersionSnapshot>, String> {
-        let kp = key_path.to_string();
-        self.with_conn(move |conn| {
-            let result = conn
-                .query_row(
-                    "SELECT id, key_path, version, snapshot_json, checksum, created_at \
-                     FROM config_version_snapshots WHERE key_path = ?1 AND version = ?2",
-                    params![kp, version],
-                    |row| {
-                        let json_str: String = row.get(3)?;
-                        Ok(crate::config::governance::ConfigVersionSnapshot {
-                            id: row.get(0)?,
-                            key_path: row.get(1)?,
-                            version: row.get(2)?,
-                            snapshot_json: serde_json::from_str(&json_str).unwrap_or_default(),
-                            checksum: row.get(4)?,
-                            created_at: row.get(5)?,
-                        })
-                    },
-                )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            Ok(result)
-        })
-        .await
-    }
-
-    pub async fn list_config_snapshots(
-        &self,
-        key_path: &str,
-    ) -> Result<Vec<crate::config::governance::ConfigVersionSnapshot>, String> {
-        let kp = key_path.to_string();
-        self.with_conn(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, key_path, version, snapshot_json, checksum, created_at \
-                     FROM config_version_snapshots WHERE key_path = ?1 ORDER BY version DESC",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([kp], |row| {
-                    let json_str: String = row.get(3)?;
-                    Ok(crate::config::governance::ConfigVersionSnapshot {
-                        id: row.get(0)?,
-                        key_path: row.get(1)?,
-                        version: row.get(2)?,
-                        snapshot_json: serde_json::from_str(&json_str).unwrap_or_default(),
-                        checksum: row.get(4)?,
-                        created_at: row.get(5)?,
-                    })
-                })
-                .map_err(|e| e.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            Ok(rows)
-        })
-        .await
-    }
-
-    // ---- Governance: Approval Records ----
-
-    pub async fn save_approval_record(&self, record: &crate::config::governance::ApprovalRecord) -> Result<(), String> {
-        let record = record.clone();
-        self.with_conn(move |conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO config_approval_records \
-                 (id, config_domain, change_description, status, requester, reviewer, reviewed_at, webhook_url, draft_config_json, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
-                    record.id,
-                    record.config_domain,
-                    record.change_description,
-                    serde_json::to_string(&record.status).map_err(|e| e.to_string())?,
-                    record.requester,
-                    record.reviewer,
-                    record.reviewed_at,
-                    record.webhook_url,
-                    serde_json::to_string(&record.draft_config_json).map_err(|e| e.to_string())?,
-                    record.created_at,
-                    record.updated_at,
-                ],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        })
-        .await
-    }
-
-    pub async fn load_approval_record(
-        &self,
-        id: &str,
-    ) -> Result<Option<crate::config::governance::ApprovalRecord>, String> {
-        let id = id.to_string();
-        self.with_conn(move |conn| {
-            let result = conn
-                .query_row(
-                    "SELECT id, config_domain, change_description, status, requester, reviewer, reviewed_at, webhook_url, draft_config_json, created_at, updated_at \
-                     FROM config_approval_records WHERE id = ?1",
-                    [id],
-                    |row| {
-                        let status_str: String = row.get(3)?;
-                        let draft_json_str: String = row.get(8)?;
-                        Ok(crate::config::governance::ApprovalRecord {
-                            id: row.get(0)?,
-                            config_domain: row.get(1)?,
-                            change_description: row.get(2)?,
-                            status: serde_json::from_str(&status_str).unwrap_or(crate::config::governance::ApprovalStatus::Draft),
-                            requester: row.get(4)?,
-                            reviewer: row.get(5)?,
-                            reviewed_at: row.get(6)?,
-                            webhook_url: row.get(7)?,
-                            draft_config_json: serde_json::from_str(&draft_json_str).unwrap_or_default(),
-                            created_at: row.get(9)?,
-                            updated_at: row.get(10)?,
-                        })
-                    },
-                )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            Ok(result)
-        })
-        .await
-    }
-
-    pub async fn query_approval_records(
-        &self,
-        status_filter: Option<crate::config::governance::ApprovalStatus>,
-    ) -> Result<Vec<crate::config::governance::ApprovalRecord>, String> {
-        self.with_conn(move |conn| {
-            let (sql, params): (String, Vec<Box<dyn ToSql + Send>>) = match &status_filter {
-                Some(s) => {
-                    let status_str = serde_json::to_string(s).unwrap_or_default();
-                    (
-                        "SELECT id, config_domain, change_description, status, requester, reviewer, reviewed_at, webhook_url, draft_config_json, created_at, updated_at \
-                         FROM config_approval_records WHERE status = ?1 ORDER BY created_at DESC".to_string(),
-                        vec![Box::new(status_str) as Box<dyn ToSql + Send>],
-                    )
-                }
-                None => (
-                    "SELECT id, config_domain, change_description, status, requester, reviewer, reviewed_at, webhook_url, draft_config_json, created_at, updated_at \
-                     FROM config_approval_records ORDER BY created_at DESC".to_string(),
-                    vec![],
-                ),
-            };
-            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())), |row| {
-                    let status_str: String = row.get(3)?;
-                    let draft_json_str: String = row.get(8)?;
-                    Ok(crate::config::governance::ApprovalRecord {
-                        id: row.get(0)?,
-                        config_domain: row.get(1)?,
-                        change_description: row.get(2)?,
-                        status: serde_json::from_str(&status_str).unwrap_or(crate::config::governance::ApprovalStatus::Draft),
-                        requester: row.get(4)?,
-                        reviewer: row.get(5)?,
-                        reviewed_at: row.get(6)?,
-                        webhook_url: row.get(7)?,
-                        draft_config_json: serde_json::from_str(&draft_json_str).unwrap_or_default(),
-                        created_at: row.get(9)?,
-                        updated_at: row.get(10)?,
-                    })
-                })
-                .map_err(|e| e.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            Ok(rows)
-        })
-        .await
-    }
-
-    pub async fn query_approval_records_by_domain(
-        &self,
-        domain: &str,
-    ) -> Result<Vec<crate::config::governance::ApprovalRecord>, String> {
-        let domain = domain.to_string();
-        self.with_conn(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, config_domain, change_description, status, requester, reviewer, reviewed_at, webhook_url, draft_config_json, created_at, updated_at \
-                     FROM config_approval_records WHERE config_domain = ?1 ORDER BY created_at DESC",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([domain], |row| {
-                    let status_str: String = row.get(3)?;
-                    let draft_json_str: String = row.get(8)?;
-                    Ok(crate::config::governance::ApprovalRecord {
-                        id: row.get(0)?,
-                        config_domain: row.get(1)?,
-                        change_description: row.get(2)?,
-                        status: serde_json::from_str(&status_str).unwrap_or(crate::config::governance::ApprovalStatus::Draft),
-                        requester: row.get(4)?,
-                        reviewer: row.get(5)?,
-                        reviewed_at: row.get(6)?,
-                        webhook_url: row.get(7)?,
-                        draft_config_json: serde_json::from_str(&draft_json_str).unwrap_or_default(),
-                        created_at: row.get(9)?,
-                        updated_at: row.get(10)?,
-                    })
-                })
-                .map_err(|e| e.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            Ok(rows)
-        })
-        .await
-    }
-
-    // ---- Governance: Drift Alerts ----
-
-    pub async fn save_drift_alert(&self, alert: &crate::config::governance::DriftAlert) -> Result<(), String> {
-        let alert = alert.clone();
-        self.with_conn(move |conn| {
-            conn.execute(
-                "INSERT INTO config_drift_alerts \
-                 (id, source_env, target_env, config_key, expected_checksum, actual_checksum, details_json, detected_at, acknowledged) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    alert.id,
-                    alert.source_env,
-                    alert.target_env,
-                    alert.config_key,
-                    alert.expected_checksum,
-                    alert.actual_checksum,
-                    serde_json::to_string(&alert.details_json).map_err(|e| e.to_string())?,
-                    alert.detected_at,
-                    alert.acknowledged,
-                ],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        })
-        .await
-    }
-
-    pub async fn acknowledge_drift_alert(&self, id: &str) -> Result<(), String> {
-        let id = id.to_string();
-        self.with_conn(move |conn| {
-            conn.execute("UPDATE config_drift_alerts SET acknowledged = 1 WHERE id = ?1", [id])
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        })
-        .await
-    }
-
-    pub async fn query_drift_alerts(
-        &self,
-        acknowledged: Option<bool>,
-    ) -> Result<Vec<crate::config::governance::DriftAlert>, String> {
-        self.with_conn(move |conn| {
-            let (sql, params): (String, Vec<Box<dyn ToSql + Send>>) = match acknowledged {
-                Some(true) => (
-                    "SELECT id, source_env, target_env, config_key, expected_checksum, actual_checksum, details_json, detected_at, acknowledged \
-                     FROM config_drift_alerts WHERE acknowledged = 1 ORDER BY detected_at DESC".to_string(),
-                    vec![],
-                ),
-                Some(false) => (
-                    "SELECT id, source_env, target_env, config_key, expected_checksum, actual_checksum, details_json, detected_at, acknowledged \
-                     FROM config_drift_alerts WHERE acknowledged = 0 ORDER BY detected_at DESC".to_string(),
-                    vec![],
-                ),
-                None => (
-                    "SELECT id, source_env, target_env, config_key, expected_checksum, actual_checksum, details_json, detected_at, acknowledged \
-                     FROM config_drift_alerts ORDER BY detected_at DESC".to_string(),
-                    vec![],
-                ),
-            };
-            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())), |row| {
-                    let details_str: String = row.get(6)?;
-                    Ok(crate::config::governance::DriftAlert {
-                        id: row.get(0)?,
-                        source_env: row.get(1)?,
-                        target_env: row.get(2)?,
-                        config_key: row.get(3)?,
-                        expected_checksum: row.get(4)?,
-                        actual_checksum: row.get(5)?,
-                        details_json: serde_json::from_str(&details_str).unwrap_or_default(),
-                        detected_at: row.get(7)?,
-                        acknowledged: row.get::<_, i32>(8)? != 0,
-                    })
-                })
-                .map_err(|e| e.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            Ok(rows)
         })
         .await
     }
@@ -2798,6 +2725,45 @@ fn persist_mq_token_signing_secret_in_tx(
     persist_json_secret_if_present_in_tx(tx, &config.id, MQ_TOKEN_SIGNING_KEY, signing, "key")
 }
 
+fn persist_nacos_auth_secrets_in_tx(tx: &rusqlite::Transaction<'_>, config: &ConnectionConfig) -> Result<(), String> {
+    if config.db_type != DatabaseType::Nacos {
+        delete_secret_prefix_in_tx(tx, &config.id, NACOS_AUTH_SECRET_PREFIX)?;
+        return Ok(());
+    }
+
+    let Some(auth) = nacos_auth_object(config.external_config.as_ref()) else {
+        delete_secret_prefix_in_tx(tx, &config.id, NACOS_AUTH_SECRET_PREFIX)?;
+        return Ok(());
+    };
+
+    if auth.get("kind").and_then(serde_json::Value::as_str) == Some("usernamePassword") {
+        replace_nacos_auth_secret_in_tx(tx, &config.id, NACOS_AUTH_PASSWORD_KEY, auth, "password")?;
+    } else {
+        delete_secret_prefix_in_tx(tx, &config.id, NACOS_AUTH_SECRET_PREFIX)?;
+    }
+
+    Ok(())
+}
+
+fn replace_nacos_auth_secret_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    connection_id: &str,
+    key: &str,
+    auth: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<(), String> {
+    let current = auth.get(field).and_then(serde_json::Value::as_str).filter(|secret| !secret.is_empty());
+    let existing = if current.is_none() { get_secret_in_tx(tx, connection_id, key)? } else { None };
+    delete_secret_prefix_in_tx(tx, connection_id, NACOS_AUTH_SECRET_PREFIX)?;
+    match current {
+        Some(secret) => persist_secret_in_tx(tx, connection_id, key, secret),
+        None => match existing {
+            Some(secret) => persist_secret_in_tx(tx, connection_id, key, &secret),
+            None => Ok(()),
+        },
+    }
+}
+
 fn persist_json_secret_if_present_in_tx(
     tx: &rusqlite::Transaction<'_>,
     connection_id: &str,
@@ -2859,6 +2825,16 @@ fn mq_token_signing_object_mut(
     value?.get_mut("tokenSigning")?.as_object_mut()
 }
 
+fn nacos_auth_object(value: Option<&serde_json::Value>) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    value?.get("auth")?.as_object()
+}
+
+fn nacos_auth_object_mut(
+    value: Option<&mut serde_json::Value>,
+) -> Option<&mut serde_json::Map<String, serde_json::Value>> {
+    value?.get_mut("auth")?.as_object_mut()
+}
+
 fn is_api_key_auth_kind(kind: &str) -> bool {
     matches!(kind, "apiKey" | "api_key" | "apikey")
 }
@@ -2889,9 +2865,14 @@ fn map_from_sql_err(err: serde_json::Error) -> rusqlite::Error {
 #[cfg(test)]
 mod tests {
     use super::{maybe_import_user_data_db, DataDbImportResult, DesktopIconTheme, DesktopSettings, Storage};
-    use crate::connection_secrets::{MQ_AUTH_PASSWORD_KEY, MQ_AUTH_TOKEN_KEY, MQ_TOKEN_SIGNING_KEY};
-    use crate::models::connection::{ConnectionConfig, DatabaseType};
+    use crate::connection_secrets::{
+        MQ_AUTH_PASSWORD_KEY, MQ_AUTH_TOKEN_KEY, MQ_TOKEN_SIGNING_KEY, NACOS_AUTH_PASSWORD_KEY,
+    };
+    use crate::models::connection::{
+        ConnectionConfig, DatabaseConnectionInfo, DatabaseType, SshTunnelConfig, TransportLayerConfig,
+    };
     use crate::saved_sql::SavedSqlFile;
+    use rusqlite::Connection;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_db_path(name: &str) -> std::path::PathBuf {
@@ -2904,6 +2885,65 @@ mod tests {
         std::env::temp_dir().join(format!("dbx-storage-{name}-{}-{stamp}", std::process::id()))
     }
 
+    fn ssh_profile(id: &str, password: &str) -> TransportLayerConfig {
+        TransportLayerConfig::Ssh(SshTunnelConfig {
+            id: id.to_string(),
+            name: "Bastion".to_string(),
+            enabled: true,
+            host: "bastion.example.com".to_string(),
+            port: 22,
+            user: "deploy".to_string(),
+            password: password.to_string(),
+            key_path: String::new(),
+            key_passphrase: String::new(),
+            connect_timeout_secs: 5,
+            expose_lan: false,
+            use_ssh_agent: false,
+            ssh_agent_sock_path: String::new(),
+            auth_method: "password".to_string(),
+            profile_id: String::new(),
+        })
+    }
+
+    #[tokio::test]
+    async fn tunnel_profiles_roundtrip_and_preserve_secrets() {
+        let path = temp_db_path("tunnel-profiles");
+        let storage = Storage::open(&path).await.unwrap();
+
+        let profile = ssh_profile("profile-1", "s3cret");
+        storage.save_tunnel_profiles(std::slice::from_ref(&profile)).await.unwrap();
+        assert_eq!(storage.load_tunnel_profiles().await.unwrap(), vec![profile.clone()]);
+
+        // Applying a scrubbed copy (e.g. from a sync snapshot) keeps stored secrets.
+        let mut scrubbed = profile.clone();
+        scrubbed.scrub_secrets();
+        storage.save_tunnel_profiles_preserving_secrets(&[scrubbed.clone()]).await.unwrap();
+        match &storage.load_tunnel_profiles().await.unwrap()[0] {
+            TransportLayerConfig::Ssh(ssh) => assert_eq!(ssh.password, "s3cret"),
+            other => panic!("expected ssh profile, got {other:?}"),
+        }
+
+        // A plain save is exact: clearing a secret really clears it.
+        storage.save_tunnel_profiles(&[scrubbed.clone()]).await.unwrap();
+        assert_eq!(storage.load_tunnel_profiles().await.unwrap(), vec![scrubbed]);
+
+        storage.save_tunnel_profiles(&[]).await.unwrap();
+        assert!(storage.load_tunnel_profiles().await.unwrap().is_empty());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn tunnel_profiles_reject_empty_ids() {
+        let path = temp_db_path("tunnel-profiles-empty-id");
+        let storage = Storage::open(&path).await.unwrap();
+
+        let profile = ssh_profile("", "secret");
+        assert!(storage.save_tunnel_profiles(&[profile]).await.is_err());
+
+        let _ = std::fs::remove_file(path);
+    }
+
     fn mq_connection(id: &str, token: &str) -> ConnectionConfig {
         ConnectionConfig {
             id: id.to_string(),
@@ -2912,6 +2952,7 @@ mod tests {
             driver_profile: Some("pulsar".to_string()),
             driver_label: Some("Apache Pulsar".to_string()),
             url_params: None,
+            agent_java_options: Vec::new(),
             host: "127.0.0.1".to_string(),
             port: 8080,
             username: String::new(),
@@ -2920,6 +2961,7 @@ mod tests {
             visible_databases: None,
             visible_schemas: None,
             attached_databases: Vec::new(),
+            init_script: None,
             color: None,
             transport_layers: Vec::new(),
             connect_timeout_secs: 30,
@@ -2957,6 +2999,71 @@ mod tests {
             jdbc_driver_paths: Vec::new(),
             one_time: false,
             read_only: false,
+            is_production: false,
+            production_databases: vec![],
+            database_info: None,
+        }
+    }
+
+    fn nacos_connection(id: &str, password: &str) -> ConnectionConfig {
+        ConnectionConfig {
+            id: id.to_string(),
+            name: "Nacos".to_string(),
+            db_type: DatabaseType::Nacos,
+            driver_profile: None,
+            driver_label: None,
+            url_params: None,
+            agent_java_options: Vec::new(),
+            host: "127.0.0.1".to_string(),
+            port: 8848,
+            username: "nacos".to_string(),
+            password: String::new(),
+            database: None,
+            visible_databases: None,
+            visible_schemas: None,
+            attached_databases: Vec::new(),
+            init_script: None,
+            color: None,
+            transport_layers: Vec::new(),
+            connect_timeout_secs: 30,
+            query_timeout_secs: 300,
+            idle_timeout_secs: 600,
+            keepalive_interval_secs: crate::models::connection::default_keepalive_interval_secs(),
+            ssl: false,
+            ca_cert_path: String::new(),
+            client_cert_path: String::new(),
+            client_key_path: String::new(),
+            sysdba: false,
+            oracle_connection_type: None,
+            connection_string: None,
+            redis_connection_mode: None,
+            redis_sentinel_master: String::new(),
+            redis_sentinel_nodes: String::new(),
+            redis_sentinel_username: String::new(),
+            redis_sentinel_password: String::new(),
+            redis_sentinel_tls: false,
+            redis_cluster_nodes: String::new(),
+            redis_key_separator: ":".to_string(),
+            redis_scan_page_size: None,
+            etcd_endpoints: String::new(),
+            gbase_server: String::new(),
+            informix_server: String::new(),
+            external_config: Some(serde_json::json!({
+                "namespace": "public",
+                "group": "DEFAULT_GROUP",
+                "auth": {
+                    "kind": "usernamePassword",
+                    "username": "nacos",
+                    "password": password
+                }
+            })),
+            jdbc_driver_class: None,
+            jdbc_driver_paths: Vec::new(),
+            one_time: false,
+            read_only: false,
+            is_production: false,
+            production_databases: vec![],
+            database_info: None,
         }
     }
 
@@ -2990,6 +3097,10 @@ mod tests {
 
     fn mq_token_signing_key(config: &ConnectionConfig) -> Option<&str> {
         config.external_config.as_ref()?.get("tokenSigning")?.get("key")?.as_str()
+    }
+
+    fn nacos_auth_password(config: &ConnectionConfig) -> Option<&str> {
+        config.external_config.as_ref()?.get("auth")?.get("password")?.as_str()
     }
 
     async fn create_data_dir_with_connection(name: &str, connection_id: &str, token: &str) -> std::path::PathBuf {
@@ -3077,6 +3188,38 @@ mod tests {
 
         assert_eq!(result, DataDbImportResult::SkippedInvalidSource);
         assert!(!target_dir.join("dbx.db").exists());
+    }
+
+    #[tokio::test]
+    async fn save_connections_preserves_database_info() {
+        let path = temp_db_path("database-info");
+        let storage = Storage::open(&path).await.unwrap();
+        let mut config = mq_connection("database-info", "mq-secret");
+        config.database_info = Some(DatabaseConnectionInfo {
+            product_name: Some("MySQL".to_string()),
+            product_version: Some("8.4.0".to_string()),
+            current_database: Some("app".to_string()),
+            ..DatabaseConnectionInfo::default()
+        });
+
+        storage.save_connections(std::slice::from_ref(&config)).await.unwrap();
+
+        let raw_json = raw_connection_json(&storage, "database-info").await;
+        assert!(raw_json.contains("8.4.0"));
+        let loaded = storage.load_connections().await.unwrap();
+        assert_eq!(loaded[0].database_info, config.database_info);
+
+        let updated_info = DatabaseConnectionInfo {
+            product_name: Some("MySQL".to_string()),
+            product_version: Some("8.4.1".to_string()),
+            ..DatabaseConnectionInfo::default()
+        };
+        storage.save_connection_database_info("database-info", Some(updated_info.clone())).await.unwrap();
+        let loaded = storage.load_connections().await.unwrap();
+        assert_eq!(loaded[0].database_info, Some(updated_info));
+        assert_eq!(mq_token(&loaded[0]), Some("mq-secret"));
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
@@ -3192,6 +3335,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn save_connections_moves_nacos_auth_password_to_secret_table_and_restores_it() {
+        let path = temp_db_path("nacos-auth-secret");
+        let storage = Storage::open(&path).await.unwrap();
+
+        storage.save_connections(&[nacos_connection("nacos", "nacos-secret")]).await.unwrap();
+
+        let raw_json = raw_connection_json(&storage, "nacos").await;
+        assert!(!raw_json.contains("nacos-secret"));
+        let persisted: ConnectionConfig = serde_json::from_str(&raw_json).unwrap();
+        assert_eq!(nacos_auth_password(&persisted), Some(""));
+        assert_eq!(
+            storage.get_secret("nacos", NACOS_AUTH_PASSWORD_KEY).await.unwrap().as_deref(),
+            Some("nacos-secret")
+        );
+
+        let loaded = storage.load_connections().await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(nacos_auth_password(&loaded[0]), Some("nacos-secret"));
+    }
+
+    #[tokio::test]
+    async fn load_connections_migrates_legacy_nacos_auth_password_out_of_config_json() {
+        let path = temp_db_path("nacos-auth-legacy-migration");
+        let storage = Storage::open(&path).await.unwrap();
+        insert_raw_connection(&storage, &nacos_connection("nacos", "legacy-nacos-secret")).await;
+
+        let loaded = storage.load_connections().await.unwrap();
+
+        assert_eq!(nacos_auth_password(&loaded[0]), Some("legacy-nacos-secret"));
+        assert_eq!(
+            storage.get_secret("nacos", NACOS_AUTH_PASSWORD_KEY).await.unwrap().as_deref(),
+            Some("legacy-nacos-secret")
+        );
+        let raw_json = raw_connection_json(&storage, "nacos").await;
+        assert!(!raw_json.contains("legacy-nacos-secret"));
+        let persisted: ConnectionConfig = serde_json::from_str(&raw_json).unwrap();
+        assert_eq!(nacos_auth_password(&persisted), Some(""));
+    }
+
+    #[tokio::test]
     async fn desktop_settings_default_to_background_enabled() {
         let path = temp_db_path("desktop-settings-default");
         let storage = Storage::open(&path).await.unwrap();
@@ -3226,6 +3409,8 @@ mod tests {
                 quit_on_close: true,
                 close_action_prompted: false,
                 debug_logging_enabled: true,
+                duckdb_worker_process_isolation: false,
+                duckdb_worker_max_processes: DesktopSettings::default().duckdb_worker_max_processes,
                 saved_sql_sync_dir: None,
                 driver_store_dir: Some("/tmp/dbx-drivers".to_string()),
                 plugin_store_dir: Some("/tmp/dbx-plugins".to_string()),
@@ -3244,6 +3429,8 @@ mod tests {
                 quit_on_close: true,
                 close_action_prompted: false,
                 debug_logging_enabled: true,
+                duckdb_worker_process_isolation: false,
+                duckdb_worker_max_processes: DesktopSettings::default().duckdb_worker_max_processes,
                 saved_sql_sync_dir: None,
                 driver_store_dir: Some("/tmp/dbx-drivers".to_string()),
                 plugin_store_dir: Some("/tmp/dbx-plugins".to_string()),
@@ -3291,6 +3478,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(storage.load_desktop_settings().await.unwrap().sidebar_table_page_size, 1234);
+    }
+
+    #[tokio::test]
+    async fn desktop_settings_persist_duckdb_worker_max_processes() {
+        let path = temp_db_path("desktop-settings-duckdb-worker-max-processes");
+        let storage = Storage::open(&path).await.unwrap();
+
+        storage
+            .save_desktop_settings(&DesktopSettings { duckdb_worker_max_processes: 8, ..DesktopSettings::default() })
+            .await
+            .unwrap();
+
+        assert_eq!(storage.load_desktop_settings().await.unwrap().duckdb_worker_max_processes, 8);
     }
 
     #[tokio::test]
@@ -3343,11 +3543,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn app_state_roundtrips_without_polluting_app_settings() {
+        let path = temp_db_path("app-state-roundtrip");
+        let storage = Storage::open(&path).await.unwrap();
+
+        storage.save_password_hash("hash-4").await.unwrap();
+        storage
+            .save_desktop_settings(&DesktopSettings {
+                icon_theme: DesktopIconTheme::Black,
+                ..DesktopSettings::default()
+            })
+            .await
+            .unwrap();
+
+        storage.save_editor_settings(&serde_json::json!({ "openTabsRestoreMode": "pinned" })).await.unwrap();
+        storage
+            .save_open_tabs_state(&serde_json::json!({
+                "tabs": [{ "id": "tab-1", "title": "Pinned", "connectionId": "pg", "database": "app", "sql": "select 1", "pinned": true }],
+                "activeTabId": "tab-1"
+            }))
+            .await
+            .unwrap();
+        storage
+            .save_saved_sql_editor_positions(&serde_json::json!([{ "savedSqlId": "file-1", "updatedAt": 1 }]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            storage.load_editor_settings().await.unwrap(),
+            Some(serde_json::json!({ "openTabsRestoreMode": "pinned" }))
+        );
+        assert_eq!(
+            storage.load_open_tabs_state().await.unwrap().and_then(|value| value.get("activeTabId").cloned()),
+            Some(serde_json::json!("tab-1"))
+        );
+        assert_eq!(
+            storage.load_saved_sql_editor_positions().await.unwrap(),
+            Some(serde_json::json!([{ "savedSqlId": "file-1", "updatedAt": 1 }]))
+        );
+        assert_eq!(storage.load_password_hash().await.unwrap(), Some("hash-4".to_string()));
+        assert_eq!(
+            storage.load_desktop_settings().await.unwrap(),
+            DesktopSettings { icon_theme: DesktopIconTheme::Black, ..DesktopSettings::default() }
+        );
+        assert_eq!(storage.load_app_settings_json().await.unwrap().get("open_tabs"), None);
+    }
+
+    #[tokio::test]
     async fn tab_runtime_cache_roundtrips_binary_payloads() {
         let path = temp_db_path("tab-runtime-cache");
         let storage = Storage::open(&path).await.unwrap();
 
-        storage.save_tab_runtime_cache("tab:1:result", vec![1, 2, 3, 4], 10, 3).await.unwrap();
+        storage
+            .save_tab_runtime_cache("tab:1:result", vec![1, 2, 3, 4], 10, 3, Some("connection-1".to_string()))
+            .await
+            .unwrap();
         let entry = storage.load_tab_runtime_cache("tab:1:result").await.unwrap().unwrap();
 
         assert_eq!(entry.key, "tab:1:result");
@@ -3355,9 +3605,84 @@ mod tests {
         assert_eq!(entry.row_count, 10);
         assert_eq!(entry.column_count, 3);
         assert_eq!(entry.byte_size, 4);
+        assert_eq!(entry.owner_id.as_deref(), Some("connection-1"));
+        assert!(entry.created_at > 0);
+        assert!(entry.last_accessed_at >= entry.created_at);
 
         storage.delete_tab_runtime_cache("tab:1:result").await.unwrap();
         assert_eq!(storage.load_tab_runtime_cache("tab:1:result").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn tab_runtime_cache_pruning_retains_live_entries_and_enforces_byte_budget() {
+        let path = temp_db_path("tab-runtime-cache-prune");
+        let storage = Storage::open(&path).await.unwrap();
+        for (key, size) in [("live", 6usize), ("old", 5), ("new", 4)] {
+            storage.save_tab_runtime_cache(key, vec![1; size], 1, 1, Some("connection-1".to_string())).await.unwrap();
+        }
+        storage
+            .with_conn(|conn| {
+                conn.execute("UPDATE tab_runtime_cache SET last_accessed_at = 1 WHERE cache_key = 'old'", [])
+                    .map_err(|e| e.to_string())?;
+                conn.execute("UPDATE tab_runtime_cache SET last_accessed_at = 2 WHERE cache_key = 'new'", [])
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let result = storage.prune_tab_runtime_cache(vec!["live".to_string()], 10, i64::MAX, None).await.unwrap();
+
+        assert_eq!(result.deleted_entries, 1);
+        assert!(storage.load_tab_runtime_cache("live").await.unwrap().is_some());
+        assert!(storage.load_tab_runtime_cache("old").await.unwrap().is_none());
+        assert!(storage.load_tab_runtime_cache("new").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn tab_runtime_cache_pruning_respects_orphan_grace_period() {
+        let path = temp_db_path("tab-runtime-cache-orphan-grace");
+        let storage = Storage::open(&path).await.unwrap();
+        storage.save_tab_runtime_cache("fresh", vec![1], 1, 1, None).await.unwrap();
+        storage.save_tab_runtime_cache("crash-leftover", vec![2], 1, 1, None).await.unwrap();
+        storage
+            .with_conn(|conn| {
+                conn.execute("UPDATE tab_runtime_cache SET created_at = 1 WHERE cache_key = 'crash-leftover'", [])
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap();
+
+        let result = storage.prune_tab_runtime_cache(Vec::new(), 1024, 60_000, None).await.unwrap();
+
+        assert_eq!(result.orphan_deletions, 1);
+        assert!(storage.load_tab_runtime_cache("fresh").await.unwrap().is_some());
+        assert!(storage.load_tab_runtime_cache("crash-leftover").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn tab_runtime_cache_migrates_legacy_schema_without_dropping_entries() {
+        let path = temp_db_path("tab-runtime-cache-legacy-schema");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute(
+                    "CREATE TABLE tab_runtime_cache (cache_key TEXT PRIMARY KEY, payload BLOB NOT NULL, row_count INTEGER NOT NULL DEFAULT 0, column_count INTEGER NOT NULL DEFAULT 0, byte_size INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute("INSERT INTO tab_runtime_cache VALUES ('legacy', X'0102', 1, 1, 2, '2026-01-01')", [])
+                .unwrap();
+        }
+
+        let storage = Storage::open(&path).await.unwrap();
+        let entry = storage.load_tab_runtime_cache("legacy").await.unwrap().unwrap();
+
+        assert_eq!(entry.payload, vec![1, 2]);
+        assert!(entry.created_at > 0);
+        assert!(entry.last_accessed_at >= entry.created_at);
     }
 
     #[tokio::test]
@@ -3423,5 +3748,195 @@ mod tests {
         assert_eq!(loaded.name, "renamed.sql");
         assert_eq!(loaded.open_count, 1);
         assert_eq!(loaded.sql, "SELECT 1;");
+    }
+
+    // ---- AI Config tests ----
+
+    use crate::ai::{AiApiStyle, AiAuthMethod, AiConfig, AiConfigItem, AiProvider, AiReasoningLevel};
+
+    fn make_ai_config(name: &str, is_default: bool) -> AiConfigItem {
+        AiConfigItem {
+            id: format!("cfg-{name}"),
+            name: name.to_string(),
+            is_default,
+            config: AiConfig {
+                provider: AiProvider::Openai,
+                api_key: "sk-test".to_string(),
+                auth_method: AiAuthMethod::ApiKey,
+                endpoint: "https://api.openai.com/v1".to_string(),
+                model: "gpt-4o".to_string(),
+                models: Vec::new(),
+                api_style: AiApiStyle::Completions,
+                proxy_enabled: false,
+                proxy_url: String::new(),
+                enable_thinking: true,
+                reasoning_level: AiReasoningLevel::Default,
+                context_window: None,
+                codex_cli_path: None,
+                codex_cli_env: std::collections::HashMap::new(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn ai_config_save_load_roundtrip() {
+        let db = temp_db_path("ai-roundtrip");
+        let storage = Storage::open(&db).await.unwrap();
+
+        let cfg = make_ai_config("test-config", true);
+        storage.save_ai_config_item(&cfg).await.unwrap();
+
+        let loaded = storage.load_ai_configs().await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "cfg-test-config");
+        assert_eq!(loaded[0].name, "test-config");
+        assert!(loaded[0].is_default);
+        assert_eq!(loaded[0].config.model, "gpt-4o");
+
+        std::fs::remove_file(&db).ok();
+    }
+
+    #[tokio::test]
+    async fn ai_config_only_one_default() {
+        let db = temp_db_path("ai-one-default");
+        let storage = Storage::open(&db).await.unwrap();
+
+        let cfg1 = make_ai_config("config-a", true);
+        let cfg2 = make_ai_config("config-b", true);
+        storage.save_ai_config_item(&cfg1).await.unwrap();
+
+        // Second default config should succeed and cascade-clear the first
+        storage.save_ai_config_item(&cfg2).await.unwrap();
+
+        let loaded = storage.load_ai_configs().await.unwrap();
+        let defaults: Vec<_> = loaded.iter().filter(|c| c.is_default).collect();
+        assert_eq!(defaults.len(), 1);
+        assert_eq!(defaults[0].id, "cfg-config-b");
+
+        std::fs::remove_file(&db).ok();
+    }
+
+    #[tokio::test]
+    async fn ai_config_update_existing_to_default() {
+        let db = temp_db_path("ai-update-default");
+        let storage = Storage::open(&db).await.unwrap();
+
+        let cfg1 = make_ai_config("config-a", true);
+        let cfg2 = make_ai_config("config-b", false);
+        storage.save_ai_config_item(&cfg1).await.unwrap();
+        storage.save_ai_config_item(&cfg2).await.unwrap();
+        assert_eq!(storage.load_ai_configs().await.unwrap().iter().filter(|c| c.is_default).count(), 1);
+
+        // Update cfg-b to be default via save_ai_config_item — should succeed and clear cfg-a
+        let cfg2 = make_ai_config("config-b", true);
+        storage.save_ai_config_item(&cfg2).await.unwrap();
+
+        let loaded = storage.load_ai_configs().await.unwrap();
+        let defaults: Vec<_> = loaded.iter().filter(|c| c.is_default).collect();
+        assert_eq!(defaults.len(), 1);
+        assert_eq!(defaults[0].id, "cfg-config-b");
+
+        std::fs::remove_file(&db).ok();
+    }
+
+    #[tokio::test]
+    async fn ai_config_duplicate_name_error() {
+        let db = temp_db_path("ai-dup-name");
+        let storage = Storage::open(&db).await.unwrap();
+
+        let cfg1 = make_ai_config("same-name", false);
+        storage.save_ai_config_item(&cfg1).await.unwrap();
+
+        // Different id, same name → should fail with name conflict
+        let mut cfg2 = make_ai_config("same-name", false);
+        cfg2.id = "cfg-other".to_string();
+        let err = storage.save_ai_config_item(&cfg2).await.unwrap_err();
+        assert!(err.contains("ai.configNameExists"), "Expected name conflict error, got: {err}");
+
+        std::fs::remove_file(&db).ok();
+    }
+
+    #[tokio::test]
+    async fn ai_config_set_default_switches() {
+        let db = temp_db_path("ai-set-default");
+        let storage = Storage::open(&db).await.unwrap();
+
+        let cfg1 = make_ai_config("first", true);
+        let cfg2 = make_ai_config("second", false);
+        storage.save_ai_config_item(&cfg1).await.unwrap();
+        storage.save_ai_config_item(&cfg2).await.unwrap();
+
+        // Switch default to second
+        storage.set_default_ai_config("cfg-second").await.unwrap();
+
+        let loaded = storage.load_ai_configs().await.unwrap();
+        let first = loaded.iter().find(|c| c.id == "cfg-first").unwrap();
+        let second = loaded.iter().find(|c| c.id == "cfg-second").unwrap();
+        assert!(!first.is_default);
+        assert!(second.is_default);
+
+        std::fs::remove_file(&db).ok();
+    }
+
+    #[tokio::test]
+    async fn ai_config_delete_default_no_cascade() {
+        let db = temp_db_path("ai-delete-default");
+        let storage = Storage::open(&db).await.unwrap();
+
+        let cfg1 = make_ai_config("default-one", true);
+        let cfg2 = make_ai_config("other", false);
+        storage.save_ai_config_item(&cfg1).await.unwrap();
+        storage.save_ai_config_item(&cfg2).await.unwrap();
+
+        // Delete the default config
+        storage.delete_ai_config("cfg-default-one").await.unwrap();
+
+        let loaded = storage.load_ai_configs().await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        // Remaining config should NOT be auto-promoted to default
+        assert!(!loaded[0].is_default);
+
+        std::fs::remove_file(&db).ok();
+    }
+
+    #[tokio::test]
+    async fn ai_config_save_configs_batch() {
+        let db = temp_db_path("ai-batch");
+        let storage = Storage::open(&db).await.unwrap();
+
+        let configs =
+            vec![make_ai_config("batch-a", true), make_ai_config("batch-b", false), make_ai_config("batch-c", false)];
+        storage.save_ai_configs(&configs).await.unwrap();
+
+        let loaded = storage.load_ai_configs().await.unwrap();
+        assert_eq!(loaded.len(), 3);
+
+        std::fs::remove_file(&db).ok();
+    }
+
+    #[tokio::test]
+    async fn ai_config_save_configs_clears_old_tables() {
+        let db = temp_db_path("ai-clear-old");
+        let storage = Storage::open(&db).await.unwrap();
+
+        // Pre-populate old tables as if migration hasn't run yet
+        storage.save_ai_config(&make_ai_config("legacy-active", false).config).await.unwrap();
+        storage.save_ai_provider_config("openai", &make_ai_config("legacy-openai", false).config).await.unwrap();
+
+        // save_ai_configs should clear old tables
+        let configs = vec![make_ai_config("new-a", true)];
+        storage.save_ai_configs(&configs).await.unwrap();
+
+        // New table has the saved config
+        let loaded = storage.load_ai_configs().await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "new-a");
+
+        // Old tables are cleared — prevents re-migration on restart
+        assert!(storage.load_ai_config().await.unwrap().is_none(), "ai_config should be deleted");
+        let old_providers = storage.load_ai_provider_configs().await.unwrap();
+        assert!(old_providers.is_empty(), "ai_provider_configs should be deleted");
+
+        std::fs::remove_file(&db).ok();
     }
 }

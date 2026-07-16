@@ -1,8 +1,8 @@
 <div align="center">
-  <p style="font-size: 18px; white-space: nowrap;"><strong>15 MB 驾驭 60+ 种数据库。桌面端 & Docker 自托管，内置 AI 助手。</strong></p>
+  <p style="font-size: 18px; white-space: nowrap;"><strong>20 MB 驾驭 60+ 种数据库。桌面端 & Docker 自托管，内置 AI 助手。</strong></p>
 
   <p>
-    <img src="https://dl.dbxio.com/assets/readme-hero-20260517.png" alt="DBX 截图" width="820" />
+    <img src="https://dl.dbxio.com/assets/readme-hero-20260707.png" alt="DBX 截图" width="820" />
   </p>
 
   <p>
@@ -46,7 +46,7 @@
     <img src="https://img.shields.io/badge/JDBC-4B5563?logoColor=white" />
     <img src="https://img.shields.io/badge/and%20more...-555555?logoColor=white" />
     <a href="https://atomgit.com/t8y2/dbx"><img src="https://atomgit.com/t8y2/dbx/star/badge.svg" alt="AtomGit Stars" /></a>
-    <a href="https://atomgit.com/t8y2/dbx"><img src="https://atomgit.com/t8y2/dbx/star/badge.svg" alt="AtomGit Stars" /></a>
+    <a href="https://cnb.cool/dbxio.com/dbx"><img src="https://img.shields.io/badge/CNB-dbx-F76945?logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAppJREFUOE9tk01rE1EUhs+5H5lJ0iQT3FRX2Yi4avoLkv4CWxBcNt11oZiuFKGmXQhFN6kuRESSgitXKf6A5g+I6cqFLiKCiptOkraZ5H4cuZOkH9oLw+UO8z7nvGfei3DFohoEQLAKCGWyGJCSbQZsD3ei7r+f45WATV6xmjdISyAlYLaDliveux+ti5ozwLAaFPhIlk6G6f18sxuO7l9bBiWbVoncDGCMWMl++PI/gJ7IohkmD0zkBxT5oRn5LTpN7ULqBByEtFywWvRyHz8Fx3dvN0UwuMPyR0uJFycddH7tKPHZRn7BjnwwkQcUud0HO/K7oOENcTYPRCEAFERmsCpyfZDZfpdnBosOUKGx13BC60QTIdjpmSzrEWDR+UagjsgMciLXAwfhc4MNpKfQtOPE6mVh0gEOaeTXtWXXEdADpJAR/GaZ/rrM9Us82wORPd5zHbRp7JVcyxR5PRP5LTPy6uo0HXIlG9awMgLuEUABkBYI7VLyxs+yyPW3+Nyg4zqoG+UV7TDRlMBbWA/D43u3qlbLGmgRWM2BjFxjQjWQGQBuu4bYYvrm14JMnQSXcjBcny9A5DXIiDJp9/8FWCXAAOaFUEfILTgIcttOvf+2NJnLdI0fBFUyskZKBGTEJEAmBuzr9LCSUDwGQAwwgMzu+m9/VWOAeZSsk+YP48C4li/sRok1nlBd5PogBjgxNw70PfHyqBADyEVXicasZXCVpxYiLfO+HxVZDHCVYwvu2ebPT7fOLNAm65AWLnEAzvsEcOi9/lPU1aACXDfOLdhD9kxNszGdweQGYstqXgItJwDFNxKvwrp57G8h0zVwldHuA0IFt8El83yIs2FSDcpgxDJpUUTwK7gTduN3AK5iG7ehc/E2/gUPD3q3eY4awwAAAABJRU5ErkJggg==" alt="CNB" /></a>
   </p>
 	  <p>
     <a href="README.md">English</a> | 简体中文
@@ -67,7 +67,7 @@
 <table>
   <tr>
     <td width="50%">
-      <h3>🪶 15 MB，极致轻量</h3>
+      <h3>🪶 20 MB，极致轻量</h3>
       <p>无需 Java 运行环境，无需 Python 虚拟环境，不内嵌 Chromium。DBX 是单个小巧的二进制文件——下载、安装、连接。DBeaver 依赖 Java；TablePlus 仅限 macOS。DBX 全平台可用，无需额外运行时。</p>
     </td>
     <td width="50%">
@@ -91,7 +91,7 @@
 
 ### 60+ 种数据库，一个工具搞定
 
-MySQL、PostgreSQL、SQLite、Redis、MongoDB、DuckDB、ClickHouse、SQL Server、Oracle、Elasticsearch、MariaDB、TiDB、OceanBase、openGauss、GaussDB、KWDB、KingBase、Vastbase、GoldenDB、Doris、SelectDB、StarRocks、Manticore Search、Redshift、DM、TDengine、虚谷 XuguDB、CockroachDB、Access、HighGo 等数据库都能直接连接。Agent/JDBC 方向的配置还可扩展到 H2、Snowflake、Trino、Hive、DB2、Informix、Neo4j、Cassandra、BigQuery、Kylin、SunDB 和自定义 JDBC。新增的原生与 Agent 驱动还覆盖了 Databricks、SAP HANA、Teradata、Vertica、Firebird、Exasol、崖山 YashanDB、GBase、Databend、RQLite、Turso、InfluxDB、QuestDB、IoTDB、etcd、IRIS 等。全部装进约 15 MB 的应用里，不内嵌 Chromium。
+MySQL、PostgreSQL、SQLite、Cloudflare D1、Redis、MongoDB、DuckDB、ClickHouse、SQL Server、Oracle、Elasticsearch、MariaDB、TiDB、OceanBase、openGauss、GaussDB、KWDB、KingBase、Vastbase、GoldenDB、Doris、SelectDB、StarRocks、Manticore Search、Redshift、DM、TDengine、虚谷 XuguDB、CockroachDB、Access、HighGo 等数据库都能直接连接。Agent/JDBC 方向的配置还可扩展到 H2、Snowflake、Trino、Hive、DB2、Informix、Neo4j、Cassandra、BigQuery、Kylin、SunDB 和自定义 JDBC。新增的原生与 Agent 驱动还覆盖了 Databricks、SAP HANA、Teradata、Vertica、Firebird、Exasol、崖山 YashanDB、GBase、Databend、RQLite、Turso、InfluxDB、QuestDB、IoTDB、etcd、IRIS 等。全部装进约 20 MB 的应用里，不内嵌 Chromium。
 
 ### 查询编辑器
 
@@ -159,6 +159,23 @@ npx @dbx-app/mcp-server
 
 Windows 便携版需要在 MCP 配置中设置 `DBX_DATA_DIR`，指向 `DBX.exe` 同级的 `data` 目录（即包含 `dbx.db` 的文件夹）。
 
+如果连接的是 DBX Web 或 Docker 部署，请让 MCP Server 指向 Web 后端 API。如果 Web 登录页需要密码，`DBX_WEB_PASSWORD` 填写同一个 Web 登录密码：
+
+```json
+{
+  "mcpServers": {
+    "dbx": {
+      "command": "npx",
+      "args": ["-y", "@dbx-app/mcp-server"],
+      "env": {
+        "DBX_WEB_URL": "http://localhost:4224",
+        "DBX_WEB_PASSWORD": "你的 Web 登录密码"
+      }
+    }
+  }
+}
+```
+
 支持 Claude Code、Cursor、Windsurf 等 MCP 兼容的 AI 助手。可列出连接、浏览表、执行 SQL，还能直接在 DBX 界面中打开表。
 
 DBX 也提供独立 CLI 包，适合终端、脚本和 Codex 工作流：
@@ -196,20 +213,46 @@ scoop install dbx
 winget install t8y2.dbx
 ```
 
-## 自托管 (Docker)
-
-DBX 提供 Web 版本，可通过 Docker 部署。
+**Flatpak (Linux)：**
 
 ```bash
-docker run -d --name dbx -p 4224:4224 -v dbx-data:/app/data t8y2/dbx
+flatpak remote-add --if-not-exists flatpark https://dl.flatpark.org/flatpark.flatpakrepo
+flatpak install flatpark com.dbxio.dbx
 ```
 
-或使用 Docker Compose，示例文件位于 `deploy/docker-compose.yml`：
+之后通过常规的 `flatpak update` 即可获取更新。详见 [FlatPark 上的 DBX 页面](https://flatpark.org/apps/com.dbxio.dbx/)。
+
+**星火应用商店 / AmberPM (Linux)：**
+
+通过[星火应用商店](https://spk-resolv.spark-app.store/?spk=spk://store/development/dbx)一键安装，后续可直接在商店客户端中获取更新。
+
+银河麒麟 V10、统信 UOS 等系统推荐选择 **APM 版本**，以减少发行版依赖差异导致的安装或启动问题。APM 在兼容环境中运行 DBX；如果为 Agent/JDBC 驱动选择宿主机 Java，需要在路径前添加 `/host`，例如将 `/usr/bin/java` 填写为 `/host/usr/bin/java`。
+
+## 自托管 (Docker)
+
+DBX 提供 Web 版本，可通过 Docker 部署。示例使用 `latest` 标签以拉取当前发布版本。
+
+```bash
+docker run -d --pull=always --name dbx -p 4224:4224 -v dbx-data:/app/data t8y2/dbx:latest
+```
+
+这里使用跨平台的 `dbx-data` 命名卷。中国大陆用户可选用 CNB 镜像
+`docker.cnb.cool/dbxio.com/dbx:latest`，以获得更快的拉取速度。
+
+使用 Docker Compose 时，`deploy/docker-compose.yml` 保留为源码构建配置。
+如需部署已发布的镜像，请使用 `deploy/docker-compose.release.yml`：
+
+```bash
+docker compose -f deploy/docker-compose.release.yml up -d
+```
 
 ```yaml
 services:
   dbx:
-    image: t8y2/dbx
+    image: t8y2/dbx:latest
+    # 中国大陆用户可改用 CNB 镜像，以加快拉取速度：
+    # image: docker.cnb.cool/dbxio.com/dbx:latest
+    pull_policy: always
     ports:
       - "4224:4224"
     volumes:
@@ -323,12 +366,28 @@ make package
 | 编辑器 | [CodeMirror 6](https://codemirror.net/)                                                                                                                                                                          |
 | 后端   | Rust + [sqlx](https://github.com/launchbadge/sqlx) / [tiberius](https://github.com/prisma/tiberius) / [redis-rs](https://github.com/redis-rs/redis-rs) / [mongodb](https://github.com/mongodb/mongo-rust-driver) |
 
+## 文档
+
+- [官方文档](https://dbxio.com/cn/docs/what-is-dbx) — 功能说明与使用教程
+- [贡献指南](CONTRIBUTING.zh-CN.md) — 如何认领 Issue 并提交 PR
+- [Web API 参考](docs/content/docs/web-api.cn.mdx) — Docker/Web 部署的 HTTP API
+- [示例代码](examples/) — CLI、MCP、Docker 与 API 示例
+
 ## 社区
 
 <a href="https://discord.gg/W7NyVDRt6a" target="_blank"><img src="https://img.shields.io/badge/Discord-加入-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
 <a href="https://qm.qq.com/q/1087880322" target="_blank"><img src="https://img.shields.io/badge/QQ%20群-1087880322-EB1923?logo=tencentqq&logoColor=white" alt="QQ 群" /></a>
 <a href="https://docs.qq.com/doc/DVVhMY0h1ekJqc0tz" target="_blank"><img src="https://img.shields.io/badge/微信交流群-点击加入-07C160?logo=wechat&logoColor=white" alt="微信交流群" /></a>
 [![LINUX DO](https://img.shields.io/badge/LINUX%20DO-社区-blue)](https://linux.do)
+
+## 赞助与捐助
+
+DBX 是免费开源项目，但持续维护、数据库兼容性测试、基础设施建设和版本发布都需要长期投入时间与资源。
+
+- [支持 DBX](https://my.feishu.cn/wiki/WMTkwdATDiiu4rk14JMcoyhTnoh) —— 通过微信或支付宝自愿捐助
+- [赞助商与合作伙伴](https://my.feishu.cn/wiki/CgOWwwTzzify79k9Oq8cXpUNn6e) —— 支持基础设施、开发工具、服务或社区合作
+
+捐助和赞助不会影响任何人使用 DBX，也不代表购买功能排期。经双方确认后，赞助商和合作伙伴可在赞助页面展示。
 
 ## 常见问题
 
@@ -349,12 +408,12 @@ make package
 
 <details>
 <summary><strong>DBX 和 DBeaver / TablePlus / Beekeeper Studio 有什么区别？</strong></summary>
-DBX 仅 15 MB，无需运行时依赖（无需 Java、无需 Python）。AI 和 MCP 是原生内置功能，不是插件。单一代码库同时支持 60+ 数据库、桌面端、Docker 和 Web。
+DBX 仅 20 MB，无需运行时依赖（无需 Java、无需 Python）。AI 和 MCP 是原生内置功能，不是插件。单一代码库同时支持 60+ 数据库、桌面端、Docker 和 Web。
 </details>
 
 <details>
 <summary><strong>支持哪些数据库？</strong></summary>
-MySQL、PostgreSQL、SQLite、Redis、MongoDB、DuckDB、ClickHouse、SQL Server、Oracle、Elasticsearch、Qdrant、Milvus、Weaviate、MariaDB、TiDB、OceanBase、openGauss、GaussDB、KWDB、KingBase、Vastbase、GoldenDB、Doris、SelectDB、StarRocks、Manticore Search、Redshift、DM、TDengine、虚谷 XuguDB、CockroachDB、Access、HighGo 等。JDBC 方向配置可扩展到 H2、Snowflake、Trino、PrestoSQL、Hive、DB2、Informix、Neo4j、Cassandra、BigQuery、Kylin、SunDB、Databricks、SAP HANA、Teradata、Vertica、Firebird、Exasol、崖山 YashanDB、GBase 8a/8s、Databend、RQLite、Turso、InfluxDB、QuestDB、IoTDB、etcd、ZooKeeper、Nacos、IRIS 及自定义 JDBC 连接，并支持消息队列管理（Pulsar、Kafka、RocketMQ）。
+MySQL、PostgreSQL、SQLite、Cloudflare D1、Redis、MongoDB、DuckDB、ClickHouse、SQL Server、Oracle、Elasticsearch、Qdrant、Milvus、Weaviate、MariaDB、TiDB、OceanBase、openGauss、GaussDB、KWDB、KingBase、Vastbase、GoldenDB、Doris、SelectDB、StarRocks、Manticore Search、Redshift、DM、TDengine、虚谷 XuguDB、CockroachDB、Access、HighGo 等。JDBC 方向配置可扩展到 H2、Snowflake、Trino、PrestoSQL、Hive、DB2、Informix、Neo4j、Cassandra、BigQuery、Kylin、SunDB、Databricks、SAP HANA、Teradata、Vertica、Firebird、Exasol、崖山 YashanDB、GBase 8a/8s、Databend、RQLite、Turso、InfluxDB、QuestDB、IoTDB、etcd、ZooKeeper、Nacos、IRIS 及自定义 JDBC 连接，并支持消息队列管理（Pulsar、Kafka、RocketMQ）。
 </details>
 
 <details>

@@ -76,6 +76,7 @@ pub struct DocumentInsertRequest {
     pub database: String,
     pub collection: String,
     pub doc_json: String,
+    pub routing: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -105,6 +106,25 @@ pub struct GridFsBucketRequest {
     pub connection_id: String,
     pub database: String,
     pub bucket: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GridFsFileListRequest {
+    pub connection_id: String,
+    pub database: String,
+    pub bucket: String,
+    pub filter: Option<String>,
+    pub sort: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GridFsBucketListRequest {
+    pub connection_id: String,
+    pub database: String,
+    pub filter: Option<String>,
+    pub sort: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -177,6 +197,7 @@ pub async fn insert_document(
         &req.database,
         &req.collection,
         &req.doc_json,
+        req.routing.as_deref(),
     )
     .await
     .map_err(AppError)?;
@@ -222,22 +243,34 @@ pub async fn delete_document(
 
 pub async fn list_gridfs_files(
     State(state): State<Arc<WebState>>,
-    Json(req): Json<GridFsBucketRequest>,
+    Json(req): Json<GridFsFileListRequest>,
 ) -> Result<Json<Vec<dbx_core::document_ops::MongoGridFsFileInfo>>, AppError> {
-    let result =
-        dbx_core::document_ops::list_gridfs_files_core(&state.app, &req.connection_id, &req.database, &req.bucket)
-            .await
-            .map_err(AppError)?;
+    let result = dbx_core::document_ops::list_gridfs_files_core(
+        &state.app,
+        &req.connection_id,
+        &req.database,
+        &req.bucket,
+        req.filter.as_deref(),
+        req.sort.as_deref(),
+    )
+    .await
+    .map_err(AppError)?;
     Ok(Json(result))
 }
 
 pub async fn list_gridfs_buckets(
     State(state): State<Arc<WebState>>,
-    Json(req): Json<DocumentListCollectionsRequest>,
+    Json(req): Json<GridFsBucketListRequest>,
 ) -> Result<Json<Vec<dbx_core::document_ops::MongoGridFsBucketInfo>>, AppError> {
-    let result = dbx_core::document_ops::list_gridfs_buckets_core(&state.app, &req.connection_id, &req.database)
-        .await
-        .map_err(AppError)?;
+    let result = dbx_core::document_ops::list_gridfs_buckets_core(
+        &state.app,
+        &req.connection_id,
+        &req.database,
+        req.filter.as_deref(),
+        req.sort.as_deref(),
+    )
+    .await
+    .map_err(AppError)?;
     Ok(Json(result))
 }
 

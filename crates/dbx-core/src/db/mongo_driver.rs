@@ -15,6 +15,10 @@ use std::{collections::HashSet, time::Duration};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MongoDocumentResult {
     pub documents: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_documents: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extended_documents: Option<Vec<serde_json::Value>>,
     pub total: u64,
 }
 
@@ -207,18 +211,41 @@ pub async fn list_gridfs_files(
     client: &Client,
     database: &str,
     bucket: &str,
+    filter: Option<&str>,
+    sort: Option<&str>,
 ) -> Result<Vec<MongoGridFsFileInfo>, String> {
     let bucket = normalized_gridfs_bucket_name(bucket)?;
     let collection_name = format!("{bucket}.files");
     let collection = client.database(database).collection::<Document>(&collection_name);
-    let mut cursor =
-        collection.find(doc! {}).sort(doc! { "uploadDate": -1_i32, "_id": -1_i32 }).await.map_err(|e| e.to_string())?;
+    let filter_doc = gridfs_file_filter_document(filter)?;
+    let sort_doc = gridfs_file_sort_document(sort)?;
+    let mut cursor = collection.find(filter_doc).sort(sort_doc).await.map_err(|e| e.to_string())?;
     let mut files = Vec::new();
     while cursor.advance().await.map_err(|e| e.to_string())? {
         let doc = cursor.deserialize_current().map_err(|e| e.to_string())?;
         files.push(gridfs_file_info_from_document(&doc));
     }
     Ok(files)
+}
+
+fn gridfs_file_filter_document(filter: Option<&str>) -> Result<Document, String> {
+    match filter {
+        Some(raw) if !raw.trim().is_empty() => {
+            let json: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("Invalid filter JSON: {e}"))?;
+            json_filter_to_document(&json)
+        }
+        _ => Ok(doc! {}),
+    }
+}
+
+fn gridfs_file_sort_document(sort: Option<&str>) -> Result<Document, String> {
+    match sort {
+        Some(raw) if !raw.trim().is_empty() => {
+            let json: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("Invalid sort JSON: {e}"))?;
+            json_object_to_document(&json).map_err(|e| format!("Invalid sort: {e}"))
+        }
+        _ => Ok(doc! { "uploadDate": -1_i32, "_id": -1_i32 }),
+    }
 }
 
 pub async fn gridfs_bucket_summary(
@@ -561,12 +588,94 @@ pub async fn find_documents(
     let mut cursor = find.await.map_err(|e| e.to_string())?;
 
     let mut documents = Vec::new();
+    let mut extended_documents = Vec::new();
     while cursor.advance().await.map_err(|e| e.to_string())? {
         let doc = cursor.deserialize_current().map_err(|e| e.to_string())?;
-        documents.push(bson_to_json(&Bson::Document(doc)));
+        documents.push(bson_to_json(&Bson::Document(doc.clone())));
+        extended_documents.push(Bson::Document(doc).into_relaxed_extjson());
     }
 
-    Ok(MongoDocumentResult { documents, total })
+    Ok(MongoDocumentResult { documents, raw_documents: None, extended_documents: Some(extended_documents), total })
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MongoFindOneOptions {
+    sort: Option<serde_json::Value>,
+}
+
+pub async fn find_one(
+    client: &Client,
+    database: &str,
+    collection: &str,
+    filter: Option<&str>,
+    projection: Option<&str>,
+    options: Option<&str>,
+) -> Result<MongoDocumentResult, String> {
+    let filter_doc = parse_optional_filter_document(filter)?.unwrap_or_default();
+    let projection_doc = parse_optional_json_document(projection, "projection")?;
+    let options = parse_find_one_options(options)?;
+    let sort_doc = parse_optional_document(options.sort.as_ref(), "sort")?;
+
+    let col = client.database(database).collection::<Document>(collection);
+    let mut action = col.find_one(filter_doc);
+    if let Some(projection) = projection_doc {
+        action = action.projection(projection);
+    }
+    if let Some(sort) = sort_doc {
+        action = action.sort(sort);
+    }
+
+    let result = action.await.map_err(|e| e.to_string())?;
+    Ok(single_document_result(result))
+}
+
+fn parse_optional_filter_document(value: Option<&str>) -> Result<Option<Document>, String> {
+    let Some(raw) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let json: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("Invalid filter JSON: {e}"))?;
+    json_filter_to_document(&json).map(Some).map_err(|e| format!("Invalid filter: {e}"))
+}
+
+fn parse_find_one_options(options: Option<&str>) -> Result<MongoFindOneOptions, String> {
+    match options.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(raw) => serde_json::from_str(raw).map_err(|e| format!("Invalid findOne options: {e}")),
+        None => Ok(MongoFindOneOptions::default()),
+    }
+}
+
+fn parse_optional_json_document(value: Option<&str>, label: &str) -> Result<Option<Document>, String> {
+    let Some(raw) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let json: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("Invalid {label} JSON: {e}"))?;
+    json_object_to_document(&json).map(Some).map_err(|e| format!("Invalid {label}: {e}"))
+}
+
+pub async fn count_documents(
+    client: &Client,
+    database: &str,
+    collection: &str,
+    filter: Option<&str>,
+    accurate: bool,
+) -> Result<u64, String> {
+    let col = client.database(database).collection::<Document>(collection);
+
+    let filter_doc: Document = match filter {
+        Some(f) if !f.trim().is_empty() => {
+            let json: serde_json::Value = serde_json::from_str(f).map_err(|e| format!("Invalid filter JSON: {e}"))?;
+            json_filter_to_document(&json)?
+        }
+        _ => doc! {},
+    };
+
+    if !accurate && filter_doc.is_empty() {
+        // Legacy count() permits the metadata-backed fast path; countDocuments() must scan accurately.
+        col.estimated_document_count().await.map_err(|e| e.to_string())
+    } else {
+        col.count_documents(filter_doc).await.map_err(|e| e.to_string())
+    }
 }
 
 /// Find MongoDB documents as relaxed Extended JSON for MongoDB transfer paths.
@@ -622,7 +731,7 @@ pub async fn find_documents_extended_json(
         documents.push(Bson::Document(doc).into_relaxed_extjson());
     }
 
-    Ok(MongoDocumentResult { documents, total })
+    Ok(MongoDocumentResult { extended_documents: Some(documents.clone()), documents, raw_documents: None, total })
 }
 
 pub async fn aggregate_documents(
@@ -644,15 +753,50 @@ pub async fn aggregate_documents(
     let max_rows = max_rows.unwrap_or(100);
     let fetch_limit = max_rows.saturating_add(1);
     let mut documents = Vec::new();
+    let mut extended_documents = Vec::new();
     while documents.len() < fetch_limit && cursor.advance().await.map_err(|e| e.to_string())? {
         let doc = cursor.deserialize_current().map_err(|e| e.to_string())?;
-        documents.push(bson_to_json(&Bson::Document(doc)));
+        documents.push(bson_to_json(&Bson::Document(doc.clone())));
+        extended_documents.push(Bson::Document(doc).into_relaxed_extjson());
     }
     let total = documents.len() as u64;
     if documents.len() > max_rows {
         documents.truncate(max_rows);
+        extended_documents.truncate(max_rows);
     }
-    Ok(MongoDocumentResult { documents, total })
+    Ok(MongoDocumentResult { documents, raw_documents: None, extended_documents: Some(extended_documents), total })
+}
+
+/// Distinct values of a field, matching the mongo shell's `db.coll.distinct(field, filter)`:
+/// array fields contribute their elements rather than the whole array, and the server may
+/// answer from an index with a DISTINCT_SCAN. Values are returned in the `documents` slot as
+/// bare scalars, which `mongoDocumentsToQueryResult` already renders as a single column.
+pub async fn distinct(
+    client: &Client,
+    database: &str,
+    collection: &str,
+    field: &str,
+    filter: Option<&str>,
+) -> Result<MongoDocumentResult, String> {
+    if field.trim().is_empty() {
+        return Err("Distinct field name is required".to_string());
+    }
+
+    let filter_doc: Document = match filter {
+        Some(f) if !f.trim().is_empty() => {
+            let json: serde_json::Value = serde_json::from_str(f).map_err(|e| format!("Invalid filter JSON: {e}"))?;
+            json_filter_to_document(&json)?
+        }
+        _ => doc! {},
+    };
+
+    let col = client.database(database).collection::<Document>(collection);
+    let values = col.distinct(field, filter_doc).await.map_err(|e| e.to_string())?;
+    let documents = values.iter().map(bson_to_json).collect::<Vec<_>>();
+    let extended_documents = values.into_iter().map(|value| value.into_relaxed_extjson()).collect::<Vec<_>>();
+    let total = documents.len() as u64;
+
+    Ok(MongoDocumentResult { documents, raw_documents: None, extended_documents: Some(extended_documents), total })
 }
 
 pub async fn create_index(
@@ -855,7 +999,7 @@ pub async fn update_document(
                 return Ok(result.modified_count);
             }
         }
-        return Ok(0);
+        return Err(no_matching_document_error(id));
     }
 
     for filter in document_id_filters(id) {
@@ -868,7 +1012,12 @@ pub async fn update_document(
             return Ok(result.modified_count);
         }
     }
-    Ok(0)
+    Err(no_matching_document_error(id))
+}
+
+fn no_matching_document_error(id: &str) -> String {
+    let display = decode_string_document_id(id).unwrap_or_else(|| id.to_string());
+    format!("No document matched _id {display}. It may have been deleted or its _id changed since the query ran.")
 }
 
 fn is_update_operator_document(doc: &Document) -> bool {
@@ -882,6 +1031,7 @@ pub async fn update_documents(
     filter_json: &str,
     update_json: &str,
     many: bool,
+    options_json: Option<&str>,
 ) -> Result<u64, String> {
     let filter_value: serde_json::Value =
         serde_json::from_str(filter_json).map_err(|e| format!("Invalid filter JSON: {e}"))?;
@@ -889,13 +1039,229 @@ pub async fn update_documents(
         serde_json::from_str(update_json).map_err(|e| format!("Invalid update JSON: {e}"))?;
     let filter = json_filter_to_document(&filter_value).map_err(|e| format!("Invalid filter: {e}"))?;
     let update = json_object_to_document(&update_value).map_err(|e| format!("Invalid update: {e}"))?;
+    let array_filters = parse_update_array_filters(options_json)?;
     let col = client.database(database).collection::<Document>(collection);
     let result = if many {
-        col.update_many(filter, update).await.map_err(|e| e.to_string())?
+        let mut action = col.update_many(filter, update);
+        if let Some(filters) = array_filters {
+            action = action.array_filters(filters);
+        }
+        action.await.map_err(|e| e.to_string())?
     } else {
-        col.update_one(filter, update).await.map_err(|e| e.to_string())?
+        let mut action = col.update_one(filter, update);
+        if let Some(filters) = array_filters {
+            action = action.array_filters(filters);
+        }
+        action.await.map_err(|e| e.to_string())?
     };
     Ok(result.modified_count)
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MongoUpdateOptions {
+    array_filters: Option<Vec<serde_json::Value>>,
+}
+
+fn parse_update_array_filters(options_json: Option<&str>) -> Result<Option<Vec<Document>>, String> {
+    let Some(raw) = options_json.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let options: MongoUpdateOptions = serde_json::from_str(raw).map_err(|e| format!("Invalid update options: {e}"))?;
+    options
+        .array_filters
+        .map(|filters| {
+            filters
+                .iter()
+                .map(json_filter_to_document)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Invalid arrayFilters: {e}"))
+        })
+        .transpose()
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MongoFindOneAndUpdateOptions {
+    return_document: Option<String>,
+    return_new_document: Option<bool>,
+    new: Option<bool>,
+    upsert: Option<bool>,
+    projection: Option<serde_json::Value>,
+    sort: Option<serde_json::Value>,
+    array_filters: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MongoFindOneAndReplaceOptions {
+    return_document: Option<String>,
+    return_new_document: Option<bool>,
+    new: Option<bool>,
+    upsert: Option<bool>,
+    projection: Option<serde_json::Value>,
+    sort: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MongoFindOneAndDeleteOptions {
+    projection: Option<serde_json::Value>,
+    sort: Option<serde_json::Value>,
+}
+
+fn parse_find_and_modify_options<T>(options_json: Option<&str>, command: &str) -> Result<T, String>
+where
+    T: Default + for<'de> Deserialize<'de>,
+{
+    match options_json.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(raw) => serde_json::from_str(raw).map_err(|e| format!("Invalid {command} options: {e}")),
+        None => Ok(T::default()),
+    }
+}
+
+fn find_and_modify_returns_after(
+    return_document: Option<&str>,
+    return_new_document: Option<bool>,
+    new: Option<bool>,
+) -> Result<bool, String> {
+    if let Some(return_document) = return_document {
+        if return_document.eq_ignore_ascii_case("after") {
+            return Ok(true);
+        }
+        if return_document.eq_ignore_ascii_case("before") {
+            return Ok(false);
+        }
+        return Err("returnDocument must be either 'before' or 'after'".to_string());
+    }
+    Ok(return_new_document.or(new).unwrap_or(false))
+}
+
+fn parse_optional_document(field: Option<&serde_json::Value>, label: &str) -> Result<Option<Document>, String> {
+    field.map(|value| json_object_to_document(value).map_err(|e| format!("Invalid {label}: {e}"))).transpose()
+}
+
+fn find_and_modify_array_filters(
+    array_filters: Option<&Vec<serde_json::Value>>,
+) -> Result<Option<Vec<Document>>, String> {
+    array_filters
+        .map(|filters| {
+            filters
+                .iter()
+                .map(json_filter_to_document)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Invalid arrayFilters: {e}"))
+        })
+        .transpose()
+}
+
+fn single_document_result(document: Option<Document>) -> MongoDocumentResult {
+    match document {
+        Some(document) => MongoDocumentResult {
+            documents: vec![bson_to_json(&Bson::Document(document.clone()))],
+            raw_documents: None,
+            extended_documents: Some(vec![Bson::Document(document).into_relaxed_extjson()]),
+            total: 1,
+        },
+        None => MongoDocumentResult {
+            documents: Vec::new(),
+            raw_documents: None,
+            extended_documents: Some(Vec::new()),
+            total: 0,
+        },
+    }
+}
+
+pub async fn find_one_and_update(
+    client: &Client,
+    database: &str,
+    collection: &str,
+    filter_json: &str,
+    update_json: &str,
+    options_json: Option<&str>,
+) -> Result<MongoDocumentResult, String> {
+    let filter_value: serde_json::Value =
+        serde_json::from_str(filter_json).map_err(|e| format!("Invalid filter JSON: {e}"))?;
+    let update_value: serde_json::Value =
+        serde_json::from_str(update_json).map_err(|e| format!("Invalid update JSON: {e}"))?;
+    let filter = json_filter_to_document(&filter_value).map_err(|e| format!("Invalid filter: {e}"))?;
+    let update = json_object_to_document(&update_value).map_err(|e| format!("Invalid update: {e}"))?;
+    let options: MongoFindOneAndUpdateOptions = parse_find_and_modify_options(options_json, "findOneAndUpdate")?;
+    let col = client.database(database).collection::<Document>(collection);
+    let mut action = col.find_one_and_update(filter, update);
+    if find_and_modify_returns_after(options.return_document.as_deref(), options.return_new_document, options.new)? {
+        action = action.return_document(mongodb::options::ReturnDocument::After);
+    }
+    if let Some(upsert) = options.upsert {
+        action = action.upsert(upsert);
+    }
+    if let Some(projection) = parse_optional_document(options.projection.as_ref(), "projection")? {
+        action = action.projection(projection);
+    }
+    if let Some(sort) = parse_optional_document(options.sort.as_ref(), "sort")? {
+        action = action.sort(sort);
+    }
+    if let Some(array_filters) = find_and_modify_array_filters(options.array_filters.as_ref())? {
+        action = action.array_filters(array_filters);
+    }
+    let result = action.await.map_err(|e| e.to_string())?;
+    Ok(single_document_result(result))
+}
+
+pub async fn find_one_and_replace(
+    client: &Client,
+    database: &str,
+    collection: &str,
+    filter_json: &str,
+    replacement_json: &str,
+    options_json: Option<&str>,
+) -> Result<MongoDocumentResult, String> {
+    let filter_value: serde_json::Value =
+        serde_json::from_str(filter_json).map_err(|e| format!("Invalid filter JSON: {e}"))?;
+    let replacement_value: serde_json::Value =
+        serde_json::from_str(replacement_json).map_err(|e| format!("Invalid replacement JSON: {e}"))?;
+    let filter = json_filter_to_document(&filter_value).map_err(|e| format!("Invalid filter: {e}"))?;
+    let replacement = json_object_to_document(&replacement_value).map_err(|e| format!("Invalid replacement: {e}"))?;
+    let options: MongoFindOneAndReplaceOptions = parse_find_and_modify_options(options_json, "findOneAndReplace")?;
+    let col = client.database(database).collection::<Document>(collection);
+    let mut action = col.find_one_and_replace(filter, replacement);
+    if find_and_modify_returns_after(options.return_document.as_deref(), options.return_new_document, options.new)? {
+        action = action.return_document(mongodb::options::ReturnDocument::After);
+    }
+    if let Some(upsert) = options.upsert {
+        action = action.upsert(upsert);
+    }
+    if let Some(projection) = parse_optional_document(options.projection.as_ref(), "projection")? {
+        action = action.projection(projection);
+    }
+    if let Some(sort) = parse_optional_document(options.sort.as_ref(), "sort")? {
+        action = action.sort(sort);
+    }
+    let result = action.await.map_err(|e| e.to_string())?;
+    Ok(single_document_result(result))
+}
+
+pub async fn find_one_and_delete(
+    client: &Client,
+    database: &str,
+    collection: &str,
+    filter_json: &str,
+    options_json: Option<&str>,
+) -> Result<MongoDocumentResult, String> {
+    let filter_value: serde_json::Value =
+        serde_json::from_str(filter_json).map_err(|e| format!("Invalid filter JSON: {e}"))?;
+    let filter = json_filter_to_document(&filter_value).map_err(|e| format!("Invalid filter: {e}"))?;
+    let options: MongoFindOneAndDeleteOptions = parse_find_and_modify_options(options_json, "findOneAndDelete")?;
+    let col = client.database(database).collection::<Document>(collection);
+    let mut action = col.find_one_and_delete(filter);
+    if let Some(projection) = parse_optional_document(options.projection.as_ref(), "projection")? {
+        action = action.projection(projection);
+    }
+    if let Some(sort) = parse_optional_document(options.sort.as_ref(), "sort")? {
+        action = action.sort(sort);
+    }
+    let result = action.await.map_err(|e| e.to_string())?;
+    Ok(single_document_result(result))
 }
 
 pub async fn delete_document(client: &Client, database: &str, collection: &str, id: &str) -> Result<u64, String> {
@@ -910,11 +1276,55 @@ pub async fn delete_document(client: &Client, database: &str, collection: &str, 
 }
 
 fn document_id_filters(id: &str) -> Vec<Document> {
+    if let Some(string_id) = decode_string_document_id(id) {
+        // The marker is emitted for an explicitly typed BSON string; do not reinterpret it as ObjectId.
+        return vec![doc! { "_id": Bson::String(string_id) }];
+    }
+    if let Some(filter) = extended_json_document_id_filter(id) {
+        return vec![filter];
+    }
+    if let Some(numeric) = numeric_document_id(id) {
+        return vec![doc! { "_id": numeric }, doc! { "_id": Bson::String(id.to_string()) }];
+    }
+    object_id_then_string_filters(id)
+}
+
+fn object_id_then_string_filters(id: &str) -> Vec<Document> {
     let string_filter = doc! { "_id": Bson::String(id.to_string()) };
     match ObjectId::parse_str(id) {
         Ok(oid) => vec![doc! { "_id": Bson::ObjectId(oid) }, string_filter],
         Err(_) => vec![string_filter],
     }
+}
+
+fn numeric_document_id(id: &str) -> Option<Bson> {
+    if id.trim() != id || id.is_empty() {
+        return None;
+    }
+    if let Ok(value) = id.parse::<i64>() {
+        return Some(Bson::Int64(value));
+    }
+    match id.parse::<f64>() {
+        Ok(value) if value.is_finite() => Some(Bson::Double(value)),
+        _ => None,
+    }
+}
+
+fn decode_string_document_id(id: &str) -> Option<String> {
+    id.strip_prefix("__dbx_mongo_string_id__").and_then(|payload| serde_json::from_str::<String>(payload).ok())
+}
+
+fn extended_json_document_id_filter(id: &str) -> Option<Document> {
+    let trimmed = id.trim();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    let bson = json_value_to_bson(&value);
+    if matches!(bson, Bson::Document(_)) {
+        return None;
+    }
+    Some(doc! { "_id": bson })
 }
 
 pub async fn delete_documents(
@@ -953,12 +1363,23 @@ fn bson_to_json(bson: &Bson) -> serde_json::Value {
         Bson::Document(doc) => {
             let mut map = serde_json::Map::new();
             for (k, v) in doc {
-                map.insert(k.clone(), bson_to_json(v));
+                map.insert(k.clone(), bson_document_field_to_json(k, v));
             }
             serde_json::Value::Object(map)
         }
         _ => serde_json::Value::String(format!("{bson}")),
     }
+}
+
+fn bson_document_field_to_json(key: &str, bson: &Bson) -> serde_json::Value {
+    if key == "_id" {
+        match bson {
+            Bson::Int64(value) => return serde_json::json!({ "$numberLong": value.to_string() }),
+            Bson::ObjectId(value) => return serde_json::json!({ "$oid": value.to_hex() }),
+            _ => {}
+        }
+    }
+    bson_to_json(bson)
 }
 
 /// Convert a `serde_json::Value` (JSON object) to a BSON `Document`,
@@ -1061,6 +1482,9 @@ fn json_value_to_bson(value: &serde_json::Value) -> Bson {
                         return Bson::ObjectId(oid);
                     }
                 }
+                if let Some(value) = parse_extended_json_int64(obj) {
+                    return Bson::Int64(value);
+                }
                 if let Some(date) = parse_extended_json_date(obj) {
                     return Bson::DateTime(date);
                 }
@@ -1126,6 +1550,14 @@ fn parse_extended_json_date(obj: &serde_json::Map<String, serde_json::Value>) ->
     }
 }
 
+fn parse_extended_json_int64(obj: &serde_json::Map<String, serde_json::Value>) -> Option<i64> {
+    match obj.get("$numberLong")? {
+        serde_json::Value::String(value) => value.parse().ok(),
+        serde_json::Value::Number(value) => value.as_i64(),
+        _ => None,
+    }
+}
+
 fn json_filter_value_to_bson(value: &serde_json::Value, field_name: Option<&str>) -> Bson {
     if field_name == Some("_id") {
         if let Some(id) = value.as_str() {
@@ -1143,6 +1575,16 @@ fn json_filter_value_to_bson(value: &serde_json::Value, field_name: Option<&str>
                     if let Ok(oid) = ObjectId::parse_str(hex) {
                         return Bson::ObjectId(oid);
                     }
+                }
+                if let Some(value) = parse_extended_json_int64(obj) {
+                    return Bson::Int64(value);
+                }
+                // Extended JSON dates must be decoded in filters too, otherwise
+                // {"$date": ...} reaches the server as a raw document: a bare
+                // { field: {"$date": ...} } fails with "unknown operator: $date"
+                // and { field: {"$gte": {"$date": ...}} } silently matches nothing.
+                if let Some(date) = parse_extended_json_date(obj) {
+                    return Bson::DateTime(date);
                 }
             }
 
@@ -1219,6 +1661,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn update_options_parse_array_filters() {
+        let filters = parse_update_array_filters(Some(r#"{"arrayFilters":[{"item.id":322678},{"item.active":true}]}"#))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(filters, vec![doc! { "item.id": 322678_i64 }, doc! { "item.active": true }]);
+    }
+
+    #[test]
+    fn update_options_reject_unsupported_fields() {
+        let error = parse_update_array_filters(Some(r#"{"upsert":true}"#)).unwrap_err();
+
+        assert!(error.starts_with("Invalid update options:"));
+        assert!(error.contains("unknown field `upsert`"));
+    }
+
+    #[test]
     fn multi_seed_uri_removes_direct_connection_true_before_driver_parse() {
         let uri =
             "mongodb://read:pass@host1:27017,host2:27017/admin?directConnection=true&replicaSet=rs0&authSource=admin";
@@ -1268,7 +1727,7 @@ mod tests {
     #[test]
     fn document_id_filters_try_object_id_then_string_for_hex_ids() {
         let id = "507f1f77bcf86cd799439011";
-        let filters = document_id_filters(id);
+        let filters = document_id_filters(&id);
 
         assert_eq!(filters.len(), 2);
         assert!(matches!(filters[0].get("_id"), Some(Bson::ObjectId(_))));
@@ -1278,10 +1737,67 @@ mod tests {
     #[test]
     fn document_id_filters_use_string_only_for_non_hex_ids() {
         let id = "customer-42";
-        let filters = document_id_filters(id);
+        let filters = document_id_filters(&id);
 
         assert_eq!(filters.len(), 1);
         assert!(matches!(filters[0].get("_id"), Some(Bson::String(value)) if value == id));
+    }
+
+    #[test]
+    fn document_id_filters_preserve_extended_json_int64_ids() {
+        let filters = document_id_filters(r#"{"$numberLong":"2048938405781032962"}"#);
+
+        assert_eq!(filters.len(), 1);
+        assert!(matches!(filters[0].get("_id"), Some(Bson::Int64(2_048_938_405_781_032_962))));
+    }
+
+    #[test]
+    fn document_id_filters_decode_explicit_string_ids_before_extended_json() {
+        let original = r#"{"$numberLong":"2048938405781032962"}"#;
+        let id = format!("__dbx_mongo_string_id__{}", serde_json::to_string(original).unwrap());
+        let filters = document_id_filters(&id);
+
+        assert_eq!(filters.len(), 1);
+        assert!(
+            matches!(filters[0].get("_id"), Some(Bson::String(value)) if value == r####"{"$numberLong":"2048938405781032962"}"####)
+        );
+    }
+
+    #[test]
+    fn document_id_filters_keep_explicit_hex_string_ids_as_strings() {
+        let hex = "507f1f77bcf86cd799439011";
+        let id = format!("__dbx_mongo_string_id__{}", serde_json::to_string(hex).unwrap());
+        let filters = document_id_filters(&id);
+
+        assert_eq!(filters.len(), 1);
+        assert!(matches!(filters[0].get("_id"), Some(Bson::String(value)) if value == hex));
+    }
+
+    #[test]
+    fn document_id_filters_keep_explicit_object_ids_as_object_ids() {
+        let filters = document_id_filters(r#"{"$oid":"507f1f77bcf86cd799439011"}"#);
+
+        assert_eq!(filters.len(), 1);
+        assert!(
+            matches!(filters[0].get("_id"), Some(Bson::ObjectId(oid)) if oid.to_hex() == "507f1f77bcf86cd799439011")
+        );
+    }
+
+    #[test]
+    fn document_id_filters_match_numeric_ids_before_string() {
+        let filters = document_id_filters("42");
+
+        assert_eq!(filters.len(), 2);
+        assert!(matches!(filters[0].get("_id"), Some(Bson::Int64(42))));
+        assert!(matches!(filters[1].get("_id"), Some(Bson::String(value)) if value == "42"));
+    }
+
+    #[test]
+    fn json_filter_to_document_preserves_extended_json_int64_values() {
+        let filter = serde_json::json!({ "snowflake": { "$numberLong": "2048938405781032962" } });
+        let document = json_filter_to_document(&filter).unwrap();
+
+        assert!(matches!(document.get("snowflake"), Some(Bson::Int64(2_048_938_405_781_032_962))));
     }
 
     #[test]
@@ -1328,6 +1844,27 @@ mod tests {
     }
 
     #[test]
+    fn json_filter_to_document_decodes_extended_json_dates() {
+        let iso = "2025-02-25T04:57:39.965Z";
+        let expected = DateTime::parse_rfc3339_str(iso).unwrap();
+
+        // Direct equality must yield a BSON DateTime, not a raw { "$date": ... }
+        // document that the server rejects with "unknown operator: $date".
+        let filter = serde_json::json!({ "createdAt": { "$date": iso } });
+        let doc = json_filter_to_document(&filter).unwrap();
+        assert_eq!(doc.get("createdAt"), Some(&Bson::DateTime(expected)));
+
+        // Range operands must be decoded too, otherwise $gte compares against a
+        // sub-document and silently matches nothing.
+        let range = serde_json::json!({ "createdAt": { "$gte": { "$date": iso } } });
+        let range_doc = json_filter_to_document(&range).unwrap();
+        let Some(Bson::Document(op)) = range_doc.get("createdAt") else {
+            panic!("expected operator document");
+        };
+        assert_eq!(op.get("$gte"), Some(&Bson::DateTime(expected)));
+    }
+
+    #[test]
     fn bson_to_json_displays_date_as_mongo_isodate() {
         let date = DateTime::parse_rfc3339_str("2026-06-10T13:59:31.287Z").unwrap();
         let value = bson_to_json(&Bson::DateTime(date));
@@ -1336,10 +1873,45 @@ mod tests {
     }
 
     #[test]
+    fn mongo_document_result_keeps_extended_json_types_for_copying() {
+        let date = DateTime::parse_rfc3339_str("2025-05-06T08:35:32Z").unwrap();
+        let result = single_document_result(Some(doc! {
+            "lastUpdatedDate": date,
+            "dateText": "ISODate(\"2025-05-06T08:35:32Z\")",
+        }));
+
+        assert_eq!(result.documents[0]["lastUpdatedDate"], serde_json::json!("ISODate(\"2025-05-06T08:35:32Z\")"));
+        let extended = result.extended_documents.expect("extended documents");
+        assert_eq!(extended[0]["lastUpdatedDate"], serde_json::json!({ "$date": "2025-05-06T08:35:32Z" }));
+        assert_eq!(extended[0]["dateText"], serde_json::json!("ISODate(\"2025-05-06T08:35:32Z\")"));
+    }
+
+    #[test]
     fn bson_to_json_preserves_unsafe_int64_for_js() {
         let value = bson_to_json(&Bson::Int64(2_326_645_729_978_441_729));
 
         assert_eq!(value, serde_json::json!("2326645729978441729"));
+    }
+
+    #[test]
+    fn bson_to_json_preserves_int64_id_type_for_updates() {
+        let value = bson_to_json(&Bson::Document(doc! {
+            "_id": Bson::Int64(2_048_938_405_781_032_962),
+            "snowflake": Bson::Int64(2_048_938_405_781_032_962),
+        }));
+
+        assert_eq!(value["_id"], serde_json::json!({ "$numberLong": "2048938405781032962" }));
+        assert_eq!(value["snowflake"], serde_json::json!("2048938405781032962"));
+    }
+
+    #[test]
+    fn bson_to_json_preserves_object_id_type_for_updates() {
+        let oid = ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap();
+        let value = bson_to_json(&Bson::Document(doc! {
+            "_id": Bson::ObjectId(oid),
+        }));
+
+        assert_eq!(value["_id"], serde_json::json!({ "$oid": "507f1f77bcf86cd799439011" }));
     }
 
     #[test]
@@ -1584,6 +2156,16 @@ mod tests {
     }
 
     #[test]
+    fn gridfs_file_sort_uses_upload_date_desc_by_default() {
+        assert_eq!(gridfs_file_sort_document(None).unwrap(), doc! { "uploadDate": -1_i32, "_id": -1_i32 });
+    }
+
+    #[test]
+    fn gridfs_file_sort_parses_explicit_sort_json() {
+        assert_eq!(gridfs_file_sort_document(Some(r#"{"filename":1}"#)).unwrap(), doc! { "filename": 1_i64 });
+    }
+
+    #[test]
     fn json_object_to_document_parses_find_projection() {
         let value = serde_json::json!({
             "title": 1,
@@ -1687,6 +2269,57 @@ mod tests {
         assert!(is_update_operator_document(&doc! { "$set": { "name": "Ada" }, "$unset": { "old": "" } }));
         assert!(!is_update_operator_document(&doc! { "name": "Ada" }));
         assert!(!is_update_operator_document(&Document::new()));
+    }
+
+    #[test]
+    fn find_one_options_accept_sort_and_reject_unimplemented_fields() {
+        let options = parse_find_one_options(Some(r#"{"sort":{"createdAt":-1}}"#)).unwrap();
+        assert_eq!(options.sort, Some(serde_json::json!({ "createdAt": -1 })));
+
+        let error = parse_find_one_options(Some(r#"{"hint":{"createdAt":1}}"#)).unwrap_err();
+        assert!(error.contains("unknown field `hint`"));
+    }
+
+    #[test]
+    fn find_and_modify_options_reject_fields_not_applied_by_each_command() {
+        let update_error = parse_find_and_modify_options::<MongoFindOneAndUpdateOptions>(
+            Some(r#"{"hint":{"name":1}}"#),
+            "findOneAndUpdate",
+        )
+        .unwrap_err();
+        assert!(update_error.contains("unknown field `hint`"));
+
+        let replace_error = parse_find_and_modify_options::<MongoFindOneAndReplaceOptions>(
+            Some(r#"{"arrayFilters":[{"item.active":true}]}"#),
+            "findOneAndReplace",
+        )
+        .unwrap_err();
+        assert!(replace_error.contains("unknown field `arrayFilters`"));
+
+        let delete_error = parse_find_and_modify_options::<MongoFindOneAndDeleteOptions>(
+            Some(r#"{"returnDocument":"after"}"#),
+            "findOneAndDelete",
+        )
+        .unwrap_err();
+        assert!(delete_error.contains("unknown field `returnDocument`"));
+    }
+
+    #[test]
+    fn find_and_modify_return_document_rejects_invalid_values() {
+        assert!(find_and_modify_returns_after(Some("after"), None, None).unwrap());
+        assert!(!find_and_modify_returns_after(Some("before"), None, None).unwrap());
+        assert!(find_and_modify_returns_after(Some("newest"), None, None).is_err());
+    }
+
+    #[test]
+    fn single_document_result_has_zero_or_one_metadata() {
+        let empty = single_document_result(None);
+        assert!(empty.documents.is_empty());
+        assert_eq!(empty.total, 0);
+
+        let one = single_document_result(Some(doc! { "_id": 1, "name": "Ada" }));
+        assert_eq!(one.documents.len(), 1);
+        assert_eq!(one.total, 1);
     }
 
     #[test]

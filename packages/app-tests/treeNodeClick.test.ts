@@ -1,6 +1,6 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { copyNameForTreeNode, isDocumentBrowserTreeNode, objectSourceKindForTreeNode, shouldRunTreeNodeRowAction, sidebarSelectionCopyAction, treeNodeRowAction, treeNodeRowDoubleClickAction } from "../../apps/desktop/src/lib/treeNodeClick.ts";
+import { copyNameForTreeNode, isDocumentBrowserTreeNode, objectSourceKindForTreeNode, shouldRunTreeNodeRowAction, sidebarSelectionCopyAction, treeNodeRowAction, treeNodeRowDoubleClickAction } from "../../apps/desktop/src/lib/sidebar/treeNodeClick.ts";
 
 test("table and view rows open data without toggling structure groups", () => {
   assert.equal(treeNodeRowAction("table", true), "open-data");
@@ -14,9 +14,14 @@ test("double click navigation mode selects rows on single click", () => {
   assert.equal(treeNodeRowAction("saved-sql-file", false, "double"), "none");
 });
 
-test("double click navigation mode opens actionable rows on double click", () => {
-  assert.equal(treeNodeRowDoubleClickAction("table", true, "double"), "open-data");
+test("table rows refresh on double click in both navigation modes", () => {
+  assert.equal(treeNodeRowDoubleClickAction("table", true, "single"), "refresh-data");
+  assert.equal(treeNodeRowDoubleClickAction("table", true, "double"), "refresh-data");
+});
+
+test("double click navigation mode opens other actionable rows on double click", () => {
   assert.equal(treeNodeRowDoubleClickAction("view", true, "double"), "open-data");
+  assert.equal(treeNodeRowDoubleClickAction("materialized_view", true, "double"), "open-data");
   assert.equal(treeNodeRowDoubleClickAction("procedure", false, "double"), "open-source");
   assert.equal(treeNodeRowDoubleClickAction("saved-sql-file", false, "double"), "open-saved-sql");
 });
@@ -51,10 +56,11 @@ test("document browser helper covers Mongo collections and GridFS buckets", () =
   assert.equal(isDocumentBrowserTreeNode("redis-db"), false);
 });
 
-test("repeated clicks continue to toggle expandable rows", () => {
+test("double-click follow-up clicks do not run row actions", () => {
   assert.equal(shouldRunTreeNodeRowAction("toggle", 1), true);
-  assert.equal(shouldRunTreeNodeRowAction("toggle", 2), true);
-  assert.equal(shouldRunTreeNodeRowAction("toggle", 3), true);
+  assert.equal(shouldRunTreeNodeRowAction("toggle", 2), false);
+  assert.equal(shouldRunTreeNodeRowAction("toggle", 3), false);
+  assert.equal(shouldRunTreeNodeRowAction("open-data", 1), true);
   assert.equal(shouldRunTreeNodeRowAction("open-data", 2), false);
   assert.equal(shouldRunTreeNodeRowAction("none", 1), false);
 });
@@ -95,7 +101,8 @@ test("double click navigation mode opens object browser and expands expandable d
 
 test("double click does not open object browser for non-browsable rows", () => {
   assert.equal(treeNodeRowDoubleClickAction("database", false), "none");
-  assert.equal(treeNodeRowDoubleClickAction("table", true), "none");
+  assert.equal(treeNodeRowDoubleClickAction("view", true), "none");
+  assert.equal(treeNodeRowDoubleClickAction("materialized_view", true), "none");
   assert.equal(treeNodeRowDoubleClickAction("column", true), "none");
 });
 

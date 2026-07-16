@@ -19,6 +19,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.sql.Types;
@@ -65,6 +66,78 @@ final class DbxJdbcPluginTest {
 
         assertFalse(response.has("error"), response.toString());
         assertEquals("APP", response.path("result").path("rows").path(0).path(0).asText());
+    }
+
+    @Test
+    void reportsDriverLinkageErrorsWithoutTerminatingThePlugin() throws Exception {
+        JsonNode response = request("testConnection", """
+            {
+              "connection": {
+                "connection_string": "jdbc:broken:test",
+                "jdbc_driver_class": "app.dbx.jdbc.DbxJdbcPluginTest$ErrorOnLoad"
+              }
+            }
+            """);
+
+        assertEquals("linkage boom", response.path("error").path("message").asText());
+    }
+
+    @Test
+    void testConnectionAndConnectionInfoExposeH2Metadata() throws Exception {
+        JsonNode tested = request("testConnection", """
+            { "connection": %s }
+            """.formatted(CONNECTION));
+        assertDatabaseInfo(tested.path("result").path("databaseInfo"));
+
+        request("connect", """
+            { "connection": %s }
+            """.formatted(CONNECTION));
+        JsonNode connected = request("connectionInfo", """
+            { "connection": %s }
+            """.formatted(CONNECTION));
+        assertDatabaseInfo(connected.path("result").path("databaseInfo"));
+    }
+
+    @Test
+    void databaseInfoKeepsSupportedFieldsWhenOneMetadataGetterFails() throws Exception {
+        DatabaseMetaData metadata = (DatabaseMetaData) Proxy.newProxyInstance(
+            DatabaseMetaData.class.getClassLoader(),
+            new Class<?>[]{DatabaseMetaData.class},
+            (proxy, method, args) -> switch (method.getName()) {
+                case "getDatabaseProductName" -> "ExampleDB";
+                case "getDatabaseProductVersion" -> throw new SQLFeatureNotSupportedException("version unavailable");
+                case "storesLowerCaseIdentifiers" -> throw new UnsupportedOperationException("case unavailable");
+                case "storesUpperCaseIdentifiers" -> true;
+                case "storesMixedCaseQuotedIdentifiers" -> true;
+                case "getDriverName" -> "Example JDBC";
+                case "getDriverVersion" -> "1.2.3";
+                case "getJDBCMajorVersion" -> 4;
+                case "getJDBCMinorVersion" -> 2;
+                default -> defaultValue(method.getReturnType());
+            }
+        );
+        Method method = DbxJdbcPlugin.class.getDeclaredMethod("databaseInfo", DatabaseMetaData.class);
+        method.setAccessible(true);
+
+        JsonNode info = MAPPER.valueToTree(method.invoke(null, metadata));
+
+        assertEquals("ExampleDB", info.path("productName").asText());
+        assertFalse(info.has("productVersion"));
+        assertEquals("upper", info.path("unquotedIdentifierCase").asText());
+        assertEquals("mixed", info.path("quotedIdentifierCase").asText());
+        assertEquals("Example JDBC", info.path("driverName").asText());
+        assertEquals("1.2.3", info.path("driverVersion").asText());
+        assertEquals("4.2", info.path("jdbcVersion").asText());
+    }
+
+    private static void assertDatabaseInfo(JsonNode info) {
+        assertEquals("H2", info.path("productName").asText());
+        assertFalse(info.path("productVersion").asText().isEmpty());
+        assertEquals("upper", info.path("unquotedIdentifierCase").asText());
+        assertFalse(info.has("quotedIdentifierCase"));
+        assertFalse(info.path("driverName").asText().isEmpty());
+        assertFalse(info.path("driverVersion").asText().isEmpty());
+        assertFalse(info.path("jdbcVersion").asText().isEmpty());
     }
 
     @Test
@@ -732,6 +805,43 @@ final class DbxJdbcPluginTest {
     }
 
     @Test
+    void listTablesAppliesMetadataConstraints() throws Exception {
+        request("executeQuery", """
+            {
+              "connection": %s,
+              "sql": "CREATE SCHEMA IF NOT EXISTS app"
+            }
+            """.formatted(CONNECTION));
+        request("executeQuery", """
+            {
+              "connection": %s,
+              "sql": "CREATE TABLE IF NOT EXISTS app.people (id INT PRIMARY KEY)"
+            }
+            """.formatted(CONNECTION));
+        request("executeQuery", """
+            {
+              "connection": %s,
+              "sql": "CREATE TABLE IF NOT EXISTS app.people_archive (id INT PRIMARY KEY)"
+            }
+            """.formatted(CONNECTION));
+
+        JsonNode response = request("listTables", """
+            {
+              "connection": %s,
+              "schema": "APP",
+              "filter": "people",
+              "limit": 1,
+              "offset": 1,
+              "object_types": ["TABLE"]
+            }
+            """.formatted(CONNECTION));
+
+        assertFalse(response.has("error"), response.toString());
+        assertEquals(1, response.path("result").size());
+        assertEquals("PEOPLE_ARCHIVE", response.path("result").path(0).path("name").asText());
+    }
+
+    @Test
     void listDatabasesIncludesConfiguredDatabaseWhenDriverDoesNotReturnIt() throws Exception {
         String connection = """
             {
@@ -792,6 +902,43 @@ final class DbxJdbcPluginTest {
 
         assertFalse(response.has("error"), response.toString());
         assertEquals("PEOPLE", response.path("result").path(0).path("name").asText());
+    }
+
+    @Test
+    void listObjectsAppliesMetadataConstraints() throws Exception {
+        request("executeQuery", """
+            {
+              "connection": %s,
+              "sql": "CREATE SCHEMA IF NOT EXISTS app"
+            }
+            """.formatted(CONNECTION));
+        request("executeQuery", """
+            {
+              "connection": %s,
+              "sql": "CREATE TABLE IF NOT EXISTS app.people (id INT PRIMARY KEY)"
+            }
+            """.formatted(CONNECTION));
+        request("executeQuery", """
+            {
+              "connection": %s,
+              "sql": "CREATE TABLE IF NOT EXISTS app.people_archive (id INT PRIMARY KEY)"
+            }
+            """.formatted(CONNECTION));
+
+        JsonNode response = request("listObjects", """
+            {
+              "connection": %s,
+              "schema": "APP",
+              "filter": "people",
+              "limit": 1,
+              "offset": 1,
+              "object_types": ["TABLE"]
+            }
+            """.formatted(CONNECTION));
+
+        assertFalse(response.has("error"), response.toString());
+        assertEquals(1, response.path("result").size());
+        assertEquals("PEOPLE_ARCHIVE", response.path("result").path(0).path("name").asText());
     }
 
     @Test
@@ -1690,6 +1837,14 @@ final class DbxJdbcPluginTest {
         if (returnType == double.class) return 0d;
         if (returnType == char.class) return '\0';
         return null;
+    }
+
+    public static final class ErrorOnLoad {
+        private static final Object FAILURE = fail();
+
+        private static Object fail() {
+            throw new AssertionError("linkage boom");
+        }
     }
 
     private static JsonNode request(String method, String params) throws Exception {

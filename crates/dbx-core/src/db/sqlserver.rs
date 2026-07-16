@@ -5,7 +5,6 @@ use crate::types::{
     TriggerInfo,
 };
 use futures::{FutureExt, TryStreamExt};
-use rust_decimal::Decimal;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
@@ -16,8 +15,19 @@ use tokio_util::sync::CancellationToken;
 
 pub type SqlServerClient = Client<Compat<TcpStream>>;
 pub const SQLSERVER_DRIVER_PANIC_ERROR_PREFIX: &str = "SQL Server driver panic:";
+pub const SQLSERVER_LEGACY_DRIVER_PROFILE: &str = "sqlserver-legacy";
+pub const SQLSERVER_LEGACY_DRIVER_LABEL: &str = "SQL Server legacy compatibility component";
+const SQLSERVER_DEFAULT_PORT: u16 = 1433;
 const SIMPLE_QUERY_MODULE_KEYWORDS: &[&str] = &["FUNCTION", "PROC", "PROCEDURE", "TRIGGER", "VIEW"];
+// Match JDBC/tiberius `encrypt=false`: encrypt only login, then drop back to raw TDS.
 const SQLSERVER_LEGACY_ENCRYPTION_LEVEL: tiberius::EncryptionLevel = tiberius::EncryptionLevel::Off;
+// Some very old SQL Server setups only accepted DBX <= 0.5.48 because the fallback
+// advertised no encryption support at all. Keep it as the last-resort compatibility path.
+const SQLSERVER_UNSUPPORTED_ENCRYPTION_LEVEL: tiberius::EncryptionLevel = tiberius::EncryptionLevel::NotSupported;
+const SQLSERVER_LEGACY_ENCRYPTION_FALLBACKS: [(&str, tiberius::EncryptionLevel); 2] = [
+    ("login-only encryption", SQLSERVER_LEGACY_ENCRYPTION_LEVEL),
+    ("no-encryption compatibility fallback", SQLSERVER_UNSUPPORTED_ENCRYPTION_LEVEL),
+];
 
 #[derive(Debug, PartialEq, Eq)]
 struct SqlServerEndpoint<'a> {
@@ -35,6 +45,10 @@ fn sqlserver_endpoint(host: &str) -> SqlServerEndpoint<'_> {
     SqlServerEndpoint { host: host.trim(), instance_name: None }
 }
 
+fn sqlserver_uses_named_instance_resolution(endpoint: &SqlServerEndpoint<'_>, port: u16, port_explicit: bool) -> bool {
+    endpoint.instance_name.is_some() && (port == 0 || (port == SQLSERVER_DEFAULT_PORT && !port_explicit))
+}
+
 fn query_result_row_limit(max_rows: Option<usize>) -> usize {
     max_rows.unwrap_or(MAX_ROWS).max(1)
 }
@@ -45,29 +59,39 @@ pub async fn connect(
     user: &str,
     pass: &str,
     database: Option<&str>,
-    url_params: Option<&str>,
+    _url_params: Option<&str>,
     timeout: Duration,
 ) -> Result<SqlServerClient, String> {
-    if sqlserver_legacy_encryption_disabled(url_params) {
-        return try_connect(host, port, user, pass, database, SQLSERVER_LEGACY_ENCRYPTION_LEVEL, timeout).await;
-    }
+    connect_with_port_explicit(host, port, false, user, pass, database, timeout).await
+}
 
-    match try_connect(host, port, user, pass, database, tiberius::EncryptionLevel::Required, timeout).await {
+pub async fn connect_with_port_explicit(
+    host: &str,
+    port: u16,
+    port_explicit: bool,
+    user: &str,
+    pass: &str,
+    database: Option<&str>,
+    timeout: Duration,
+) -> Result<SqlServerClient, String> {
+    match try_connect(host, port, port_explicit, user, pass, database, tiberius::EncryptionLevel::Required, timeout)
+        .await
+    {
         Ok(client) => Ok(client),
         Err(encrypted_error) => {
-            try_connect(host, port, user, pass, database, tiberius::EncryptionLevel::NotSupported, timeout)
+            try_connect_legacy_sqlserver_encryption(host, port, port_explicit, user, pass, database, timeout)
                 .await
                 .map_err(|plain_error| {
                     if is_sqlserver_tls_handshake_error(&encrypted_error) {
                         format!(
-                            "{encrypted_error}\n\nThis may be caused by an old SQL Server TLS configuration. \
-                         If you are connecting to SQL Server 2008/2008 R2 or another legacy instance, \
-                         try SQL Server legacy unencrypted mode. It behaves like encrypt=false and only helps \
-                         when the server allows unencrypted transport or login-only encryption. It will still fail \
-                         if the server requires TLS 1.0 encryption. Only use this mode on trusted networks, VPNs, \
+                        "{encrypted_error}\n\nThis may be caused by an old SQL Server TLS/encryption configuration. \
+                         If you are connecting to SQL Server 2008/2008 R2/2012 or another legacy instance, \
+                         try SQL Server legacy compatibility mode. It first behaves like encrypt=false and, \
+                         when explicitly enabled, DBX can also fall back to the SQL Server legacy compatibility \
+                         driver for TLS 1.0 encrypted transport. Only use this mode on trusted networks, VPNs, \
                          or SSH tunnels.\n\n\
-                         Automatic unencrypted fallback also failed: {plain_error}"
-                        )
+                         Automatic native legacy fallback also failed: {plain_error}"
+                    )
                     } else {
                         plain_error
                     }
@@ -76,14 +100,36 @@ pub async fn connect(
     }
 }
 
-fn sqlserver_legacy_encryption_disabled(url_params: Option<&str>) -> bool {
+async fn try_connect_legacy_sqlserver_encryption(
+    host: &str,
+    port: u16,
+    port_explicit: bool,
+    user: &str,
+    pass: &str,
+    database: Option<&str>,
+    timeout: Duration,
+) -> Result<SqlServerClient, String> {
+    let mut errors = Vec::new();
+    for (label, encryption) in SQLSERVER_LEGACY_ENCRYPTION_FALLBACKS {
+        match try_connect(host, port, port_explicit, user, pass, database, encryption, timeout).await {
+            Ok(client) => return Ok(client),
+            Err(error) => errors.push(format!("{label} failed: {error}")),
+        }
+    }
+
+    Err(errors.join("\n"))
+}
+
+pub fn sqlserver_legacy_compatibility_enabled(url_params: Option<&str>) -> bool {
     let Some(params) = url_params.map(str::trim).filter(|params| !params.is_empty()) else {
         return false;
     };
 
     params.trim_start_matches('?').split(['&', ';']).filter_map(|pair| pair.split_once('=')).any(|(key, value)| {
-        key.trim().eq_ignore_ascii_case("sqlserverEncryption")
-            && matches!(value.trim().to_ascii_lowercase().as_str(), "disabled" | "disable" | "false" | "0" | "off")
+        let key = key.trim();
+        let value = value.trim().to_ascii_lowercase();
+        let disabled = matches!(value.as_str(), "disabled" | "disable" | "false" | "0" | "off" | "no");
+        (key.eq_ignore_ascii_case("sqlserverEncryption") || key.eq_ignore_ascii_case("encrypt")) && disabled
     })
 }
 
@@ -95,6 +141,7 @@ fn is_sqlserver_tls_handshake_error(error: &str) -> bool {
 async fn try_connect(
     host: &str,
     port: u16,
+    port_explicit: bool,
     user: &str,
     pass: &str,
     database: Option<&str>,
@@ -103,8 +150,9 @@ async fn try_connect(
 ) -> Result<SqlServerClient, String> {
     let mut config = Config::new();
     let endpoint = sqlserver_endpoint(host);
+    let uses_named_instance_resolution = sqlserver_uses_named_instance_resolution(&endpoint, port, port_explicit);
     config.host(endpoint.host);
-    if let Some(instance_name) = endpoint.instance_name {
+    if let Some(instance_name) = endpoint.instance_name.filter(|_| uses_named_instance_resolution) {
         config.instance_name(instance_name);
     } else {
         config.port(port);
@@ -116,7 +164,7 @@ async fn try_connect(
     config.trust_cert();
     config.encryption(encryption);
 
-    let tcp = if endpoint.instance_name.is_some() {
+    let tcp = if uses_named_instance_resolution {
         tokio::time::timeout(timeout, TcpStream::connect_named(&config))
             .await
             .map_err(|_| format!("SQL Server connection timed out ({}s)", timeout.as_secs()))?
@@ -207,7 +255,7 @@ pub struct SqlServerStreamExportSummary {
 }
 
 pub enum SqlServerStreamItem<'a> {
-    Columns(&'a [String]),
+    Columns { columns: &'a [String], column_types: &'a [String] },
     Row(&'a [serde_json::Value]),
 }
 
@@ -260,20 +308,20 @@ async fn describe_sqlserver_result_set(
         .collect())
 }
 
-async fn spatial_safe_sqlserver_query(client: &mut SqlServerClient, sql: &str) -> Result<Option<String>, String> {
+async fn sqlserver_unsafe_type_query(client: &mut SqlServerClient, sql: &str) -> Result<Option<String>, String> {
     if !is_single_sqlserver_select(sql) {
         return Ok(None);
     }
     let columns = describe_sqlserver_result_set(client, sql).await?;
-    Ok(build_spatial_safe_sqlserver_query(sql, &columns))
+    Ok(build_sqlserver_unsafe_type_query(sql, &columns))
 }
 
-fn build_spatial_safe_sqlserver_query(sql: &str, columns: &[SqlServerDescribedColumn]) -> Option<String> {
-    if columns.is_empty() || !columns.iter().any(is_sqlserver_spatial_column) {
+fn build_sqlserver_unsafe_type_query(sql: &str, columns: &[SqlServerDescribedColumn]) -> Option<String> {
+    if columns.is_empty() || !columns.iter().any(is_sqlserver_unsafe_column) {
         return None;
     }
     let statement = normalized_sqlserver_select_statement(sql)?;
-    let source_alias = quote_sqlserver_identifier("dbx_spatial_source");
+    let source_alias = quote_sqlserver_identifier("dbx_unsafe_source");
     let source_columns = (0..columns.len()).map(sqlserver_source_column_name).collect::<Vec<_>>();
     let source_alias_list =
         source_columns.iter().map(|name| quote_sqlserver_identifier(name)).collect::<Vec<_>>().join(", ");
@@ -287,6 +335,8 @@ fn build_spatial_safe_sqlserver_query(sql: &str, columns: &[SqlServerDescribedCo
             let value_ref = format!("{source_alias}.{source_column}");
             if is_sqlserver_spatial_column(column) {
                 format!("{quoted_output} = CASE WHEN {value_ref} IS NULL THEN NULL ELSE {value_ref}.STAsText() END")
+            } else if is_sqlserver_variant_column(column) {
+                format!("{quoted_output} = CAST({value_ref} AS NVARCHAR(MAX))")
             } else {
                 format!("{quoted_output} = {value_ref}")
             }
@@ -297,6 +347,10 @@ fn build_spatial_safe_sqlserver_query(sql: &str, columns: &[SqlServerDescribedCo
     Some(format!("SELECT {select_list} FROM ({statement}) AS {source_alias}({source_alias_list})"))
 }
 
+fn is_sqlserver_unsafe_column(column: &SqlServerDescribedColumn) -> bool {
+    is_sqlserver_spatial_column(column) || is_sqlserver_variant_column(column)
+}
+
 fn is_sqlserver_spatial_column(column: &SqlServerDescribedColumn) -> bool {
     [&column.system_type_name, &column.user_type_name].into_iter().flatten().any(|name| {
         let normalized = name.trim().trim_matches(['[', ']']).to_ascii_lowercase();
@@ -304,6 +358,13 @@ fn is_sqlserver_spatial_column(column: &SqlServerDescribedColumn) -> bool {
             || normalized == "geography"
             || normalized.ends_with(".geometry")
             || normalized.ends_with(".geography")
+    })
+}
+
+fn is_sqlserver_variant_column(column: &SqlServerDescribedColumn) -> bool {
+    [&column.system_type_name, &column.user_type_name].into_iter().flatten().any(|name| {
+        let normalized = name.trim().trim_matches(['[', ']']).to_ascii_lowercase();
+        normalized == "sql_variant" || normalized.ends_with(".sql_variant")
     })
 }
 
@@ -569,13 +630,14 @@ pub async fn stream_first_result_set(
     cancel_token: Option<CancellationToken>,
     mut on_item: impl for<'a> FnMut(SqlServerStreamItem<'a>) -> Result<(), String>,
 ) -> Result<SqlServerStreamExportSummary, String> {
-    let query_sql = match spatial_safe_sqlserver_query(client, sql).await {
+    let query_sql = match sqlserver_unsafe_type_query(client, sql).await {
         Ok(Some(sql)) => sql,
         Ok(None) | Err(_) => sql.to_string(),
     };
     let mut stream = sqlserver_driver_result(client.query(query_sql.as_str(), &[])).await?;
     let mut active_result_index: Option<usize> = None;
     let mut columns: Vec<String> = Vec::new();
+    let mut column_types: Vec<String> = Vec::new();
     let mut columns_emitted = false;
     let mut rows_exported = 0_u64;
 
@@ -601,7 +663,8 @@ pub async fn stream_first_result_set(
                 if active_result_index.is_none() {
                     active_result_index = Some(metadata.result_index());
                     columns = columns_from_metadata(&metadata);
-                    on_item(SqlServerStreamItem::Columns(&columns))?;
+                    column_types = column_types_from_metadata(&metadata);
+                    on_item(SqlServerStreamItem::Columns { columns: &columns, column_types: &column_types })?;
                     columns_emitted = true;
                 }
             }
@@ -609,7 +672,8 @@ pub async fn stream_first_result_set(
                 if active_result_index.is_none() {
                     active_result_index = Some(row.result_index());
                     columns = row.columns().iter().map(|c| c.name().to_string()).collect();
-                    on_item(SqlServerStreamItem::Columns(&columns))?;
+                    column_types = row.columns().iter().map(sqlserver_column_type_name).collect();
+                    on_item(SqlServerStreamItem::Columns { columns: &columns, column_types: &column_types })?;
                     columns_emitted = true;
                 }
                 if Some(row.result_index()) != active_result_index {
@@ -626,12 +690,40 @@ pub async fn stream_first_result_set(
     }
 
     if !columns_emitted {
-        on_item(SqlServerStreamItem::Columns(&columns))?;
+        on_item(SqlServerStreamItem::Columns { columns: &columns, column_types: &column_types })?;
     }
     Ok(SqlServerStreamExportSummary { columns, rows_exported })
 }
 
+// rust_decimal (behind tiberius's `Decimal: FromSql`) only supports scale <= 28 and a
+// 96-bit mantissa, while SQL Server NUMERIC allows precision/scale up to 38; converting
+// such values panics and aborts the app (issue #3648). Format the raw i128 value and
+// scale manually instead.
+fn format_sqlserver_numeric(value: i128, scale: u8) -> String {
+    if scale == 0 {
+        return value.to_string();
+    }
+    let digits = value.unsigned_abs().to_string();
+    let scale = scale as usize;
+    let sign = if value < 0 { "-" } else { "" };
+    if digits.len() > scale {
+        let (int_part, frac_part) = digits.split_at(digits.len() - scale);
+        format!("{}{}.{}", sign, int_part, frac_part)
+    } else {
+        format!("{}0.{:0>width$}", sign, digits, width = scale)
+    }
+}
+
 fn sqlserver_cell_to_json(cell: &ColumnData<'static>) -> serde_json::Value {
+    if let ColumnData::Numeric(numeric) = cell {
+        return match numeric {
+            Some(n) => serde_json::Value::String(format_sqlserver_numeric(n.value(), n.scale())),
+            None => serde_json::Value::Null,
+        };
+    }
+    if let Ok(Some(v)) = <&tiberius::xml::XmlData as FromSql>::from_sql(cell) {
+        return serde_json::Value::String(v.as_ref().to_string());
+    }
     if let Ok(Some(v)) = <&str as FromSql>::from_sql(cell) {
         return serde_json::Value::String(v.to_string());
     }
@@ -650,9 +742,6 @@ fn sqlserver_cell_to_json(cell: &ColumnData<'static>) -> serde_json::Value {
     }
     if let Ok(Some(v)) = <chrono::DateTime<chrono::FixedOffset> as FromSql>::from_sql(cell) {
         return serde_json::Value::String(v.to_rfc3339());
-    }
-    if let Ok(Some(v)) = <Decimal as FromSql>::from_sql(cell) {
-        return serde_json::Value::String(v.to_string());
     }
     if let Ok(Some(v)) = <u8 as FromSql>::from_sql(cell) {
         return serde_json::Value::Number(v.into());
@@ -835,6 +924,8 @@ pub async fn get_linked_server_columns(
                 numeric_precision: column_size,
                 numeric_scale,
                 character_maximum_length: linked_i32(row, 15),
+                enum_values: None,
+                ..Default::default()
             })
         })
         .collect())
@@ -1395,6 +1486,8 @@ pub async fn get_columns(client: &mut SqlServerClient, schema: &str, table: &str
                 numeric_precision: num_prec,
                 numeric_scale: num_scale,
                 character_maximum_length: max_len,
+                enum_values: None,
+                ..Default::default()
             }
         })
         .collect())
@@ -1590,7 +1683,7 @@ pub async fn execute_query_with_max_rows(
     let start = Instant::now();
 
     if starts_with_executable_sql_keyword(sql, &["SELECT", "EXEC", "WITH", "TABLE"]) {
-        let query_sql = match spatial_safe_sqlserver_query(client, sql).await {
+        let query_sql = match sqlserver_unsafe_type_query(client, sql).await {
             Ok(Some(sql)) => sql,
             Ok(None) | Err(_) => sql.to_string(),
         };
@@ -1598,7 +1691,7 @@ pub async fn execute_query_with_max_rows(
         let mut result = sqlserver_driver_result(collect_first_result_limited(stream, start, max_rows)).await?;
         strip_dbx_sqlserver_row_number_column(&mut result, sql);
         Ok(result)
-    } else if requires_simple_query_batch(sql) || is_transaction_control(sql) {
+    } else if requires_simple_query_batch(sql) || contains_transaction_control(sql) {
         let stream = sqlserver_driver_result(client.simple_query(sql)).await?;
         let _ = sqlserver_driver_result(collect_result_sets_limited(stream, start, max_rows)).await?;
         Ok(QueryResult {
@@ -1654,7 +1747,7 @@ pub async fn execute_batch_with_max_rows(
     }
 
     if is_single_sqlserver_select(sql) {
-        if let Ok(Some(query_sql)) = spatial_safe_sqlserver_query(client, sql).await {
+        if let Ok(Some(query_sql)) = sqlserver_unsafe_type_query(client, sql).await {
             let stream = sqlserver_driver_result(client.query(query_sql.as_str(), &[])).await?;
             return sqlserver_driver_result(collect_first_result_limited(stream, start, max_rows)).await.map(
                 |mut result| {
@@ -1664,6 +1757,20 @@ pub async fn execute_batch_with_max_rows(
             );
         }
     }
+    execute_simple_batch_with_max_rows(client, sql, max_rows).await
+}
+
+/// Execute a SQL Server batch directly through TDS simple-query mode.
+///
+/// This intentionally bypasses result-set type probing and SQL rewriting. It is
+/// required while `SHOWPLAN_XML` is enabled because any probe issued on the same
+/// session is itself affected by SHOWPLAN state.
+pub async fn execute_simple_batch_with_max_rows(
+    client: &mut SqlServerClient,
+    sql: &str,
+    max_rows: Option<usize>,
+) -> Result<Vec<QueryResult>, String> {
+    let start = Instant::now();
     let stream = sqlserver_driver_result(client.simple_query(sql)).await?;
     let mut results = sqlserver_driver_result(collect_result_sets_limited(stream, start, max_rows)).await?;
     for result in &mut results {
@@ -1718,6 +1825,10 @@ fn is_dbx_sqlserver_row_number_page_sql(sql: &str) -> bool {
 
 fn sqlserver_batch_can_use_execute(sql: &str) -> bool {
     !requires_simple_query_batch(sql)
+        // Tiberius executes this path through an RPC. SQL Server rejects an RPC
+        // that changes @@TRANCOUNT with error 266, while a regular batch is allowed
+        // to leave an explicit transaction open for a later COMMIT or ROLLBACK.
+        && !contains_transaction_control(sql)
         && !sqlserver_batch_may_return_result_set(sql)
         && !sqlserver_dml_output_returns_rows(sql)
 }
@@ -1732,23 +1843,33 @@ fn sqlserver_dml_output_returns_rows(sql: &str) -> bool {
         && first_sql_tokens(sql, 64).iter().any(|token| token.eq_ignore_ascii_case("OUTPUT"))
 }
 
-fn is_transaction_control(sql: &str) -> bool {
-    let tokens = first_sql_tokens(sql, 2);
-    if tokens.is_empty() {
-        return false;
-    }
-    let first = &tokens[0];
-    if first.eq_ignore_ascii_case("COMMIT") || first.eq_ignore_ascii_case("ROLLBACK") {
-        return true;
-    }
-    if first.eq_ignore_ascii_case("BEGIN") {
-        return tokens.get(1).is_some_and(|t| t.eq_ignore_ascii_case("TRANSACTION") || t.eq_ignore_ascii_case("TRAN"));
-    }
-    false
+fn contains_transaction_control(sql: &str) -> bool {
+    let tokens = top_level_sqlserver_tokens(sql);
+    tokens.iter().enumerate().any(|(index, token)| {
+        if matches!(token.text.as_str(), "COMMIT" | "ROLLBACK") {
+            return true;
+        }
+        if token.text == "BEGIN" {
+            if tokens.get(index + 1).is_some_and(|next| matches!(next.text.as_str(), "TRANSACTION" | "TRAN")) {
+                return true;
+            }
+            if tokens.get(index + 1).is_some_and(|next| next.text == "DISTRIBUTED")
+                && tokens.get(index + 2).is_some_and(|next| matches!(next.text.as_str(), "TRANSACTION" | "TRAN"))
+            {
+                return true;
+            }
+        }
+        token.text == "SET"
+            && tokens.get(index + 1).is_some_and(|next| next.text == "IMPLICIT_TRANSACTIONS")
+            && tokens.get(index + 2).is_some_and(|next| next.text == "ON")
+    })
 }
 
 fn requires_simple_query_batch(sql: &str) -> bool {
     let tokens = first_sql_tokens(sql, 4);
+    if tokens.len() >= 2 && tokens[0].eq_ignore_ascii_case("SET") && tokens[1].eq_ignore_ascii_case("SHOWPLAN_XML") {
+        return true;
+    }
     if tokens.len() >= 2 && tokens[0].eq_ignore_ascii_case("CREATE") && tokens[1].eq_ignore_ascii_case("SCHEMA") {
         return true;
     }
@@ -1813,18 +1934,19 @@ fn first_sql_tokens(sql: &str, limit: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_spatial_safe_sqlserver_query, is_sqlserver_spatial_column, requires_simple_query_batch,
-        sqlserver_batch_can_use_execute, sqlserver_cell_to_json, sqlserver_columns_sql,
-        sqlserver_completion_assistant_sql, sqlserver_dml_output_returns_rows, sqlserver_hidden_schema_names,
-        sqlserver_indexes_sql, sqlserver_list_objects_sql, sqlserver_list_schemas_sql, sqlserver_list_tables_sql,
-        sqlserver_table_comment_sql, sqlserver_visible_object_predicate, strip_dbx_sqlserver_row_number_column,
-        SqlServerDescribedColumn, SqlServerResultSet,
+        build_sqlserver_unsafe_type_query, format_sqlserver_numeric, is_sqlserver_spatial_column,
+        is_sqlserver_variant_column, requires_simple_query_batch, sqlserver_batch_can_use_execute,
+        sqlserver_cell_to_json, sqlserver_columns_sql, sqlserver_completion_assistant_sql,
+        sqlserver_dml_output_returns_rows, sqlserver_hidden_schema_names, sqlserver_indexes_sql,
+        sqlserver_list_objects_sql, sqlserver_list_schemas_sql, sqlserver_list_tables_sql, sqlserver_table_comment_sql,
+        sqlserver_visible_object_predicate, strip_dbx_sqlserver_row_number_column, SqlServerDescribedColumn,
+        SqlServerResultSet,
     };
     use crate::types::{
         CompletionAssistantMatchMode, CompletionAssistantObjectKind, CompletionAssistantRequest, QueryResult,
     };
     use chrono::NaiveDate;
-    use std::time::Instant;
+    use std::{borrow::Cow, time::Instant};
     use tiberius::{ColumnData, IntoSql};
 
     #[test]
@@ -1836,6 +1958,18 @@ mod tests {
         assert_eq!(
             super::sqlserver_endpoint(r" db.example.com\SQLEXPRESS "),
             super::SqlServerEndpoint { host: "db.example.com", instance_name: Some("SQLEXPRESS") }
+        );
+    }
+
+    #[test]
+    fn sqlserver_xml_cells_are_returned_as_strings() {
+        let cell = ColumnData::Xml(Some(Cow::Owned(tiberius::xml::XmlData::new(
+            "<ShowPlanXML><RelOp NodeId=\"0\" /></ShowPlanXML>",
+        ))));
+
+        assert_eq!(
+            sqlserver_cell_to_json(&cell),
+            serde_json::Value::String("<ShowPlanXML><RelOp NodeId=\"0\" /></ShowPlanXML>".to_string())
         );
     }
 
@@ -1852,25 +1986,43 @@ mod tests {
     }
 
     #[test]
+    fn sqlserver_named_instance_resolution_yields_to_explicit_port() {
+        let endpoint = super::sqlserver_endpoint(r"db.example.com\SQLEXPRESS");
+        assert!(super::sqlserver_uses_named_instance_resolution(&endpoint, 0, false));
+        assert!(super::sqlserver_uses_named_instance_resolution(&endpoint, 1433, false));
+        assert!(!super::sqlserver_uses_named_instance_resolution(&endpoint, 1433, true));
+        assert!(!super::sqlserver_uses_named_instance_resolution(&endpoint, 40030, false));
+    }
+
+    #[test]
     fn sqlserver_connect_uses_named_instance_resolution() {
         let source = include_str!("sqlserver.rs");
-        let try_connect = source.split("async fn try_connect").nth(1).unwrap();
+        let try_connect = source.split("\nasync fn try_connect(").nth(1).unwrap();
         let try_connect = try_connect.split("fn row_to_json").next().unwrap();
         assert!(try_connect.contains("connect_named(&config)"));
     }
 
     #[test]
-    fn sqlserver_legacy_encryption_flag_is_opt_in() {
-        assert!(!super::sqlserver_legacy_encryption_disabled(None));
-        assert!(!super::sqlserver_legacy_encryption_disabled(Some("encrypt=false")));
-        assert!(super::sqlserver_legacy_encryption_disabled(Some("sqlserverEncryption=disabled")));
-        assert!(super::sqlserver_legacy_encryption_disabled(Some("applicationName=dbx;sqlserverEncryption=off")));
-        assert!(super::sqlserver_legacy_encryption_disabled(Some("?sqlserverEncryption=false&applicationName=dbx")));
+    fn sqlserver_legacy_compatibility_flag_accepts_dbx_and_jdbc_params() {
+        assert!(!super::sqlserver_legacy_compatibility_enabled(None));
+        assert!(!super::sqlserver_legacy_compatibility_enabled(Some("encrypt=true")));
+        assert!(super::sqlserver_legacy_compatibility_enabled(Some("sqlserverEncryption=disabled")));
+        assert!(super::sqlserver_legacy_compatibility_enabled(Some("applicationName=dbx;sqlserverEncryption=off")));
+        assert!(super::sqlserver_legacy_compatibility_enabled(Some("?sqlserverEncryption=false&applicationName=dbx")));
+        assert!(super::sqlserver_legacy_compatibility_enabled(Some("applicationName=dbx;encrypt=false")));
+        assert!(super::sqlserver_legacy_compatibility_enabled(Some("?Encrypt=0&applicationName=dbx")));
     }
 
     #[test]
-    fn sqlserver_legacy_encryption_mode_matches_jdbc_encrypt_false_semantics() {
+    fn sqlserver_legacy_encryption_modes_cover_jdbc_and_no_encryption_fallback() {
         assert_eq!(super::SQLSERVER_LEGACY_ENCRYPTION_LEVEL, tiberius::EncryptionLevel::Off);
+        assert_eq!(super::SQLSERVER_UNSUPPORTED_ENCRYPTION_LEVEL, tiberius::EncryptionLevel::NotSupported);
+    }
+
+    #[test]
+    fn sqlserver_automatic_fallback_preserves_v48_no_encryption_compatibility() {
+        let levels = super::SQLSERVER_LEGACY_ENCRYPTION_FALLBACKS.map(|(_, encryption)| encryption);
+        assert_eq!(levels, [tiberius::EncryptionLevel::Off, tiberius::EncryptionLevel::NotSupported]);
     }
 
     #[test]
@@ -1884,6 +2036,8 @@ mod tests {
 
     #[test]
     fn sqlserver_module_definitions_require_simple_query_batch() {
+        assert!(requires_simple_query_batch("SET SHOWPLAN_XML ON;"));
+        assert!(requires_simple_query_batch("SET SHOWPLAN_XML OFF;"));
         assert!(requires_simple_query_batch("CREATE SCHEMA [analytics];"));
         assert!(requires_simple_query_batch("CREATE FUNCTION dbo.fn_demo() RETURNS INT AS BEGIN RETURN 1; END;"));
         assert!(requires_simple_query_batch("ALTER PROCEDURE dbo.usp_demo AS SELECT 1;"));
@@ -1912,6 +2066,24 @@ mod tests {
     }
 
     #[test]
+    fn sqlserver_transaction_batches_keep_simple_query_path() {
+        assert!(!sqlserver_batch_can_use_execute("BEGIN TRANSACTION\nUPDATE dbo.users SET active = 0 WHERE id = 1;"));
+        assert!(!sqlserver_batch_can_use_execute("UPDATE dbo.users SET active = 0 WHERE id = 1;\nCOMMIT;"));
+        assert!(!sqlserver_batch_can_use_execute("ROLLBACK TRANSACTION;"));
+        assert!(!sqlserver_batch_can_use_execute(
+            "BEGIN DISTRIBUTED TRANSACTION\nUPDATE dbo.users SET active = 0 WHERE id = 1;"
+        ));
+        assert!(!sqlserver_batch_can_use_execute(
+            "SET IMPLICIT_TRANSACTIONS ON\nUPDATE dbo.users SET active = 0 WHERE id = 1;"
+        ));
+        assert!(sqlserver_batch_can_use_execute("BEGIN TRY\nUPDATE dbo.users SET active = 0 WHERE id = 1;\nEND TRY"));
+        assert!(sqlserver_batch_can_use_execute(
+            "UPDATE dbo.users SET note = 'BEGIN TRANSACTION; ROLLBACK' WHERE id = 1;"
+        ));
+        assert!(sqlserver_batch_can_use_execute("UPDATE dbo.users SET [rollback] = 1 WHERE id = 1;"));
+    }
+
+    #[test]
     fn sqlserver_result_returning_batches_keep_simple_query_path() {
         assert!(!sqlserver_batch_can_use_execute("SELECT * FROM dbo.users;"));
         assert!(!sqlserver_batch_can_use_execute("EXEC dbo.list_users;"));
@@ -1937,6 +2109,17 @@ mod tests {
         let execute_batch = source.split("pub async fn execute_batch").nth(1).unwrap();
         let execute_batch = execute_batch.split("#[cfg(test)]").next().unwrap();
         assert!(!execute_batch.contains("into_results"));
+    }
+
+    #[test]
+    fn sqlserver_explicit_simple_batch_bypasses_result_type_probing() {
+        let source = include_str!("sqlserver.rs");
+        let simple_batch = source.split("pub async fn execute_simple_batch_with_max_rows").nth(1).unwrap();
+        let simple_batch = simple_batch.split("fn strip_dbx_sqlserver_row_number_column").next().unwrap();
+
+        assert!(simple_batch.contains("client.simple_query(sql)"));
+        assert!(!simple_batch.contains("sqlserver_unsafe_type_query"));
+        assert!(!simple_batch.contains("describe_sqlserver_result_set"));
     }
 
     #[test]
@@ -2218,6 +2401,42 @@ mod tests {
     }
 
     #[test]
+    fn sqlserver_numeric_cells_with_scale_over_28_do_not_panic() {
+        // NUMERIC(38, 29) with data used to abort the app: rust_decimal caps scale at 28 (issue #3648).
+        let cell = ColumnData::Numeric(Some(tiberius::numeric::Numeric::new_with_scale(5, 29)));
+        assert_eq!(sqlserver_cell_to_json(&cell), serde_json::json!("0.00000000000000000000000000005"));
+    }
+
+    #[test]
+    fn sqlserver_numeric_cells_beyond_96_bit_mantissa_do_not_panic() {
+        // Precision-38 values overflow rust_decimal's 96-bit mantissa even at low scale.
+        let value: i128 = 12_345_678_901_234_567_890_123_456_789_012_345_678;
+        let cell = ColumnData::Numeric(Some(tiberius::numeric::Numeric::new_with_scale(value, 10)));
+        assert_eq!(sqlserver_cell_to_json(&cell), serde_json::json!("1234567890123456789012345678.9012345678"));
+    }
+
+    #[test]
+    fn sqlserver_null_numeric_cells_are_json_null() {
+        assert_eq!(sqlserver_cell_to_json(&ColumnData::Numeric(None)), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn format_sqlserver_numeric_covers_sign_scale_and_padding() {
+        assert_eq!(format_sqlserver_numeric(42, 0), "42");
+        assert_eq!(format_sqlserver_numeric(-42, 0), "-42");
+        assert_eq!(format_sqlserver_numeric(12345, 2), "123.45");
+        // Trailing zeros are kept, matching the previous rust_decimal display.
+        assert_eq!(format_sqlserver_numeric(1500, 3), "1.500");
+        assert_eq!(format_sqlserver_numeric(-15, 1), "-1.5");
+        assert_eq!(format_sqlserver_numeric(-5, 2), "-0.05");
+        assert_eq!(format_sqlserver_numeric(0, 2), "0.00");
+        // digits.len() == scale must keep the leading "0." (guards `>` vs `>=` in the split).
+        assert_eq!(format_sqlserver_numeric(123, 3), "0.123");
+        // Largest scale tiberius can deliver (its decoder asserts scale < 38).
+        assert_eq!(format_sqlserver_numeric(9, 37), format!("0.{}9", "0".repeat(36)));
+    }
+
+    #[test]
     fn sqlserver_datetime2_cells_are_json_strings() {
         let datetime = NaiveDate::from_ymd_opt(2026, 5, 13).unwrap().and_hms_milli_opt(9, 8, 7, 123).unwrap();
         let cell: ColumnData<'static> = datetime.into_sql();
@@ -2286,7 +2505,7 @@ mod tests {
 
     #[test]
     fn sqlserver_wraps_geometry_columns_as_text() {
-        let rewritten = build_spatial_safe_sqlserver_query(
+        let rewritten = build_sqlserver_unsafe_type_query(
             "SELECT * FROM dbo.tLandPolygon;",
             &[
                 SqlServerDescribedColumn {
@@ -2307,14 +2526,14 @@ mod tests {
 
         assert_eq!(
             rewritten,
-            "SELECT [landId] = [dbx_spatial_source].[dbx_col_1], [polygon] = CASE WHEN [dbx_spatial_source].[dbx_col_2] IS NULL THEN NULL ELSE [dbx_spatial_source].[dbx_col_2].STAsText() END FROM (SELECT * FROM dbo.tLandPolygon) AS [dbx_spatial_source]([dbx_col_1], [dbx_col_2])"
+            "SELECT [landId] = [dbx_unsafe_source].[dbx_col_1], [polygon] = CASE WHEN [dbx_unsafe_source].[dbx_col_2] IS NULL THEN NULL ELSE [dbx_unsafe_source].[dbx_col_2].STAsText() END FROM (SELECT * FROM dbo.tLandPolygon) AS [dbx_unsafe_source]([dbx_col_1], [dbx_col_2])"
         );
     }
 
     #[test]
     fn sqlserver_does_not_wrap_non_spatial_columns() {
         assert_eq!(
-            build_spatial_safe_sqlserver_query(
+            build_sqlserver_unsafe_type_query(
                 "SELECT landId FROM dbo.tLandPolygon",
                 &[SqlServerDescribedColumn {
                     name: Some("landId".to_string()),
@@ -2329,7 +2548,7 @@ mod tests {
 
     #[test]
     fn sqlserver_preserves_order_by_when_wrapping_geometry_columns() {
-        let rewritten = build_spatial_safe_sqlserver_query(
+        let rewritten = build_sqlserver_unsafe_type_query(
             "SELECT landId, polygon FROM dbo.tLandPolygon ORDER BY landId DESC",
             &[
                 SqlServerDescribedColumn {
@@ -2384,5 +2603,104 @@ mod tests {
         );
 
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn sqlserver_detects_sql_variant_columns() {
+        assert!(is_sqlserver_variant_column(&SqlServerDescribedColumn {
+            name: Some("value".to_string()),
+            system_type_name: Some("sql_variant".to_string()),
+            user_type_schema: None,
+            user_type_name: None,
+        }));
+        assert!(is_sqlserver_variant_column(&SqlServerDescribedColumn {
+            name: Some("value".to_string()),
+            system_type_name: None,
+            user_type_schema: None,
+            user_type_name: Some("sql_variant".to_string()),
+        }));
+        assert!(!is_sqlserver_variant_column(&SqlServerDescribedColumn {
+            name: Some("name".to_string()),
+            system_type_name: Some("nvarchar(128)".to_string()),
+            user_type_schema: None,
+            user_type_name: None,
+        }));
+    }
+
+    #[test]
+    fn sqlserver_wraps_sql_variant_columns_as_nvarchar() {
+        let rewritten = build_sqlserver_unsafe_type_query(
+            "SELECT name, value FROM sys.extended_properties;",
+            &[
+                SqlServerDescribedColumn {
+                    name: Some("name".to_string()),
+                    system_type_name: Some("sysname".to_string()),
+                    user_type_schema: None,
+                    user_type_name: None,
+                },
+                SqlServerDescribedColumn {
+                    name: Some("value".to_string()),
+                    system_type_name: Some("sql_variant".to_string()),
+                    user_type_schema: None,
+                    user_type_name: None,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert!(rewritten.contains("CAST("));
+        assert!(rewritten.contains("AS NVARCHAR(MAX))"));
+        assert!(rewritten.contains("FROM sys.extended_properties"));
+        // The name column should not be cast
+        assert_eq!(rewritten.matches("CAST(").count(), 1);
+    }
+
+    #[test]
+    fn sqlserver_does_not_wrap_non_variant_columns() {
+        assert_eq!(
+            build_sqlserver_unsafe_type_query(
+                "SELECT name FROM sys.extended_properties",
+                &[SqlServerDescribedColumn {
+                    name: Some("name".to_string()),
+                    system_type_name: Some("sysname".to_string()),
+                    user_type_schema: None,
+                    user_type_name: None,
+                }]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn sqlserver_wraps_both_spatial_and_variant_columns() {
+        let rewritten = build_sqlserver_unsafe_type_query(
+            "SELECT id, shape, metadata FROM dbo.t;",
+            &[
+                SqlServerDescribedColumn {
+                    name: Some("id".to_string()),
+                    system_type_name: Some("int".to_string()),
+                    user_type_schema: None,
+                    user_type_name: None,
+                },
+                SqlServerDescribedColumn {
+                    name: Some("shape".to_string()),
+                    system_type_name: Some("geometry".to_string()),
+                    user_type_schema: Some("sys".to_string()),
+                    user_type_name: Some("geometry".to_string()),
+                },
+                SqlServerDescribedColumn {
+                    name: Some("metadata".to_string()),
+                    system_type_name: Some("sql_variant".to_string()),
+                    user_type_schema: None,
+                    user_type_name: None,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert!(rewritten.contains(".STAsText()"));
+        assert!(rewritten.contains("CAST("));
+        assert!(rewritten.contains("AS NVARCHAR(MAX))"));
+        assert!(rewritten.contains("FROM dbo.t"));
     }
 }

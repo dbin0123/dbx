@@ -3,8 +3,9 @@ use dbx_core::agent_manager::{
     JreInfo, DEFAULT_JRE_KEY,
 };
 use dbx_core::agent_service::{
-    build_agent_list, github_url_to_r2_path, import_agent_jar, import_agents_from_zip, is_app_version_compatible,
-    jre_needs_install, local_agent_jar_candidates, replace_download, uninstall_agent_driver, AgentProgressEvent,
+    build_agent_list, clear_agent_download_cache, github_url_to_r2_path, import_agent_jar, import_agents_from_zip,
+    is_app_version_compatible, jre_needs_install, local_agent_jar_candidates, replace_download, uninstall_agent_driver,
+    AgentProgressEvent,
 };
 
 fn test_manager(name: &str) -> AgentManager {
@@ -445,6 +446,31 @@ async fn uninstall_driver_removes_artifact_and_state() {
 }
 
 #[test]
+fn clear_download_cache_removes_only_cache_entries() {
+    let manager = test_manager("clear-download-cache");
+    let cache_dir = manager.download_cache_dir();
+    let driver_dir = manager.driver_dir("h2");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::create_dir_all(&driver_dir).unwrap();
+    let driver_cache = cache_dir.join("driver-h2-0.1.0-abc-agent.jar");
+    let jre_cache = cache_dir.join("jre-21-21.0.11-abc-jre-download.tar.gz");
+    let nested_cache = cache_dir.join("stale-dir");
+    let installed_driver = driver_dir.join("agent.jar");
+    std::fs::write(&driver_cache, b"h2").unwrap();
+    std::fs::write(&jre_cache, b"jre").unwrap();
+    std::fs::create_dir_all(&nested_cache).unwrap();
+    std::fs::write(nested_cache.join("artifact"), b"x").unwrap();
+    std::fs::write(&installed_driver, b"driver").unwrap();
+
+    clear_agent_download_cache(&manager).unwrap();
+
+    assert!(!driver_cache.exists());
+    assert!(!jre_cache.exists());
+    assert!(!nested_cache.exists());
+    assert!(installed_driver.exists());
+}
+
+#[test]
 fn offline_zip_import_emits_progress_and_updates_state() {
     let manager = test_manager("offline-progress");
     let zip_path = test_path("offline-progress-zip").join("agents.zip");
@@ -466,6 +492,26 @@ fn offline_zip_import_emits_progress_and_updates_state() {
 }
 
 #[test]
+fn offline_zip_import_installs_release_named_jre() {
+    let manager = test_manager("offline-release-jre");
+    let zip_path = test_path("offline-release-jre-zip").join("agents.zip");
+    std::fs::create_dir_all(zip_path.parent().unwrap()).unwrap();
+    write_offline_driver_zip_with_jre(&zip_path, "h2", "0.2.0", "21.0.12");
+    let events = std::sync::Mutex::new(Vec::new());
+
+    let result = import_agents_from_zip(&manager, &zip_path, |event| {
+        events.lock().unwrap().push(event);
+    })
+    .unwrap();
+
+    assert_eq!(result.jre_installed, vec![DEFAULT_JRE_KEY]);
+    assert_eq!(result.drivers_installed, vec!["h2"]);
+    assert!(manager.is_jre_installed(DEFAULT_JRE_KEY));
+    assert_eq!(manager.load_state().jre_versions.get(DEFAULT_JRE_KEY).map(String::as_str), Some("21.0.12"));
+    assert!(events.lock().unwrap().iter().any(|event| event.step == "jre-extract"));
+}
+
+#[test]
 fn offline_zip_import_rejects_corrupt_jar() {
     let manager = test_manager("offline-corrupt-driver");
     let zip_path = test_path("offline-corrupt-driver-zip").join("agents.zip");
@@ -481,6 +527,64 @@ fn offline_zip_import_rejects_corrupt_jar() {
 
 fn write_offline_driver_zip(path: &std::path::Path, db_type: &str, version: &str) {
     write_offline_driver_zip_with_jar(path, db_type, version, test_agent_jar_bytes());
+}
+
+fn write_offline_driver_zip_with_jre(path: &std::path::Path, db_type: &str, version: &str, jre_version: &str) {
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let jar = test_agent_jar_bytes();
+    let jre_archive = test_jre_archive_bytes();
+    let registry = serde_json::json!({
+        "jres": {
+            DEFAULT_JRE_KEY: {
+                "version": jre_version,
+                "platforms": {}
+            }
+        },
+        "drivers": {
+            db_type: {
+                "version": version,
+                "label": db_type,
+                "min_app_version": "0.1.0",
+                "jre": DEFAULT_JRE_KEY,
+                "jar": { "url": format!("https://example.com/dbx-agent-{db_type}.jar"), "size": jar.len() }
+            }
+        }
+    });
+
+    zip.start_file("agent-registry.json", options).unwrap();
+    std::io::Write::write_all(&mut zip, registry.to_string().as_bytes()).unwrap();
+    zip.start_file(format!("jre/dbx-jre-{DEFAULT_JRE_KEY}-{}.tar.gz", AgentManager::current_platform()), options)
+        .unwrap();
+    std::io::Write::write_all(&mut zip, &jre_archive).unwrap();
+    zip.start_file(format!("drivers/dbx-agent-{db_type}.jar"), options).unwrap();
+    std::io::Write::write_all(&mut zip, &jar).unwrap();
+    zip.finish().unwrap();
+}
+
+fn test_jre_archive_bytes() -> Vec<u8> {
+    let root = test_path("jre-archive");
+    let runtime_root = root.join("dbx-jre");
+    let bin_dir = runtime_root.join("bin");
+    let archive = root.join("jre.tar.gz");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    std::fs::write(bin_dir.join("java"), b"java").unwrap();
+    std::fs::write(bin_dir.join("java.exe"), b"java").unwrap();
+
+    let status = std::process::Command::new("tar")
+        .arg("czf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&root)
+        .arg("dbx-jre")
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let bytes = std::fs::read(&archive).unwrap();
+    std::fs::remove_dir_all(root).ok();
+    bytes
 }
 
 fn write_offline_driver_zip_with_jar(path: &std::path::Path, db_type: &str, version: &str, jar: Vec<u8>) {

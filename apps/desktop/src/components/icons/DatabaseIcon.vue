@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { Database } from "@lucide/vue";
-import { webPath } from "@/lib/webPath";
+import { webPath } from "@/lib/common/webPath";
 
 const props = defineProps<{
   dbType: string;
@@ -14,6 +14,7 @@ const assetIcons: Record<string, string> = {
   sqlite: "sqlite",
   rqlite: "rqlite.png",
   turso: "turso.png",
+  cloudflare_d1: "cloudflare-d1",
   redis: "redis",
   mongodb: "mongodb",
   mongodb_legacy: "mongodb",
@@ -47,6 +48,7 @@ const assetIcons: Record<string, string> = {
   presto: "presto",
   prestosql: "presto",
   hive: "hive",
+  spark: "spark-logo.png",
   apache_kylin: "apache_kylin",
   sundb: "sundb",
   trino: "trino",

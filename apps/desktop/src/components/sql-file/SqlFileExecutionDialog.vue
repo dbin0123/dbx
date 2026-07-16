@@ -1,20 +1,23 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { uuid } from "@/lib/utils";
+import { uuid } from "@/lib/common/utils";
 import { useI18n } from "vue-i18n";
 import { useSqlHighlighter } from "@/composables/useSqlHighlighter";
-import { isTauriRuntime } from "@/lib/tauriRuntime";
+import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { Dialog, DialogFooter, DialogHeader, DialogScrollContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
+import ConnectionGroupBadge from "@/components/connection/ConnectionGroupBadge.vue";
 import { useToast } from "@/composables/useToast";
 import { useConnectionStore } from "@/stores/connectionStore";
+import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
+import { productionContextForDatabase } from "@/lib/database/productionSafety";
 import { databaseOptionsForConnection } from "@/composables/useDatabaseOptions";
-import { requiresSqlFileTargetDatabaseSelection } from "@/lib/connectionLevelDatabaseBootstrap";
-import { cancelSqlFileExecution, executeSqlFile, listenSqlFileProgress, listDatabases, previewSqlFile, type SqlFilePreview, type SqlFileProgress, type SqlFileStatus } from "@/lib/api";
+import { requiresSqlFileTargetDatabaseSelection } from "@/lib/connection/connectionLevelDatabaseBootstrap";
+import { cancelSqlFileExecution, executeSqlFile, listenSqlFileProgress, listDatabases, previewSqlFile, type SqlFilePreview, type SqlFileProgress, type SqlFileStatus } from "@/lib/backend/api";
 import { useExportTracker } from "@/composables/useExportTracker";
 import { Check, CheckSquare, FileCode, FolderOpen, Loader2, Play, Square, X } from "@lucide/vue";
 
@@ -27,9 +30,11 @@ const open = defineModel<boolean>("open", { default: false });
 const props = defineProps<{
   prefillConnectionId?: string;
   prefillDatabase?: string;
+  prefillFilePath?: string;
 }>();
 
 const store = useConnectionStore();
+const productionSafetyStore = useProductionSafetyStore();
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const filePath = ref("");
@@ -205,7 +210,7 @@ async function previewSelectedSqlFile(fileOrPath: string | File) {
   if (isTauriRuntime()) {
     return previewSqlFile(fileOrPath as string);
   }
-  const { previewSqlFile: previewWebSqlFile } = await import("@/lib/http");
+  const { previewSqlFile: previewWebSqlFile } = await import("@/lib/backend/http");
   return previewWebSqlFile(fileOrPath as File);
 }
 
@@ -263,7 +268,7 @@ async function listenProgress(id: string, handler: (next: SqlFileProgress) => vo
   if (isTauriRuntime()) {
     return listenSqlFileProgress(handler);
   }
-  const { listenSqlFileProgressById } = await import("@/lib/httpSqlFileProgress");
+  const { listenSqlFileProgressById } = await import("@/lib/sql/httpSqlFileProgress");
   return listenSqlFileProgressById(id, handler);
 }
 
@@ -279,6 +284,18 @@ async function refreshTargetAfterImport() {
 
 async function startExecution() {
   if (!canStart.value || !preview.value) return;
+  const productionContext = productionContextForDatabase(selectedConnection.value, database.value);
+  if (productionContext.active) {
+    // File previews are truncated, so production file execution is always reviewed instead of inferring safety from a partial preview.
+    const confirmed = await productionSafetyStore.requestConfirmation({
+      sql: preview.value.preview,
+      connectionName: selectedConnection.value?.name,
+      database: database.value,
+      productionDatabases: productionContext.databases,
+      source: t("production.sourceSqlFile"),
+    });
+    if (!confirmed) return;
+  }
 
   const id = uuid();
   executionId.value = id;
@@ -410,6 +427,11 @@ watch(
     if (connectionId.value) {
       loadDatabasesForConnection(connectionId.value);
     }
+    // When opened from the SQL Files panel with a pre-selected file, load its
+    // preview automatically so the user can review statements before running.
+    if (props.prefillFilePath) {
+      void loadPreview(props.prefillFilePath);
+    }
   },
   { immediate: true },
 );
@@ -417,15 +439,16 @@ watch(
 
 <template>
   <Dialog :open="open" @update:open="handleOpenChange">
-    <DialogScrollContent class="sm:max-w-[860px] min-w-0 overflow-hidden" :trap-focus="false" @interact-outside.prevent>
-      <DialogHeader>
+    <DialogScrollContent class="flex max-h-[calc(100dvh-6rem)] min-h-0 min-w-0 flex-col overflow-hidden sm:max-w-[860px]" :trap-focus="false" @interact-outside.prevent>
+      <DialogHeader class="shrink-0">
         <DialogTitle class="flex items-center gap-2">
           <FileCode class="w-4 h-4" />
           {{ t("sqlFile.title") }}
         </DialogTitle>
       </DialogHeader>
 
-      <div class="grid min-w-0 gap-4 py-3">
+      <!-- Keep terminal actions reachable while long previews and errors scroll inside the viewport. -->
+      <div class="grid min-h-0 min-w-0 flex-1 gap-4 overflow-y-auto py-3">
         <div class="min-w-0 space-y-3">
           <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider">
             {{ t("sqlFile.file") }}
@@ -467,7 +490,7 @@ watch(
             {{ t("sqlFile.target") }}
           </div>
 
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div class="space-y-1.5">
               <Label class="text-xs">{{ t("sqlFile.connection") }}</Label>
               <Select v-model="connectionId" :disabled="running">
@@ -480,9 +503,10 @@ watch(
                 </SelectTrigger>
                 <SelectContent position="popper">
                   <SelectItem v-for="c in sqlConnections" :key="c.id" :value="c.id">
-                    <div class="flex items-center gap-1.5">
-                      <DatabaseIcon :db-type="c.driver_profile || c.db_type" class="w-3.5 h-3.5" />
-                      {{ c.name }}
+                    <div class="flex min-w-0 items-center gap-1.5">
+                      <DatabaseIcon :db-type="c.driver_profile || c.db_type" class="w-3.5 h-3.5 shrink-0" />
+                      <ConnectionGroupBadge :connection-id="c.id" />
+                      <span class="min-w-0 flex-1 truncate">{{ c.name }}</span>
                     </div>
                   </SelectItem>
                 </SelectContent>
@@ -574,7 +598,7 @@ watch(
         </div>
       </div>
 
-      <DialogFooter>
+      <DialogFooter class="shrink-0">
         <template v-if="running">
           <Button variant="outline" size="sm" @click="open = false">
             {{ t("sqlFile.runInBackground") }}

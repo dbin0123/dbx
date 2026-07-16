@@ -33,6 +33,9 @@ export interface ColumnInfo {
   numeric_precision?: number | null;
   numeric_scale?: number | null;
   character_maximum_length?: number | null;
+  enum_values?: string[] | null;
+  character_set?: string | null;
+  collation?: string | null;
 }
 
 export interface QueryResult {
@@ -268,7 +271,10 @@ function normalizePostgresUrlParams(value: string, forceTls: boolean): string {
       const [rawKey, rawValue] = splitUrlParam(parts[optionsIndex]);
       const optionsValue = decodeUrlParamPart(rawValue);
       const lowerOptions = optionsValue.toLowerCase();
-      const appended = connectionOptions.filter((option) => !lowerOptions.includes(option.needle)).map((option) => option.value).join(" ");
+      const appended = connectionOptions
+        .filter((option) => !lowerOptions.includes(option.needle))
+        .map((option) => option.value)
+        .join(" ");
       if (appended) {
         const combined = `${optionsValue.trim()} ${appended}`.trim();
         parts[optionsIndex] = `${rawKey}=${encodeURIComponent(combined)}`;
@@ -406,16 +412,7 @@ function isStarrocksConnection(config: ConnectionConfig): boolean {
 
 function needsBareMysql(config: ConnectionConfig): boolean {
   const profile = config.driver_profile?.toLowerCase();
-  return (
-    config.db_type === "doris" ||
-    config.db_type === "starrocks" ||
-    config.db_type === "manticoresearch" ||
-    profile === "doris" ||
-    profile === "starrocks" ||
-    profile === "manticoresearch" ||
-    profile === "selectdb" ||
-    profile === "oceanbase"
-  );
+  return config.db_type === "doris" || config.db_type === "starrocks" || config.db_type === "manticoresearch" || profile === "doris" || profile === "starrocks" || profile === "manticoresearch" || profile === "selectdb" || profile === "oceanbase";
 }
 
 function mysqlTlsFileParamIs(key: string, target: "cert" | "key"): boolean {
@@ -472,14 +469,7 @@ function normalizeBareMysqlUrlParams(value: string): string {
     .filter((part) => {
       if (!part) return false;
       const key = decodeUrlParamPart(splitUrlParam(part)[0]).toLowerCase();
-      return (
-        key !== "charset" &&
-        key !== "ssl-mode" &&
-        key !== "sslmode" &&
-        key !== "require_ssl" &&
-        key !== "verify_ca" &&
-        key !== "verify_identity"
-      );
+      return key !== "charset" && key !== "ssl-mode" && key !== "sslmode" && key !== "require_ssl" && key !== "verify_ca" && key !== "verify_identity";
     })
     .join("&");
 }
@@ -509,13 +499,8 @@ function normalizeMysqlUrlParams(value: string, forceTls: boolean, acceptInvalid
     return filtered.join("&");
   }
 
-  if (
-    !parts.some(
-      (part) =>
-        urlParamKeyIs(part, "ssl-mode") || urlParamKeyIs(part, "sslmode") || urlParamKeyIs(part, "require_ssl"),
-    )
-  ) {
-    parts.unshift("ssl-mode=preferred");
+  if (!parts.some((part) => urlParamKeyIs(part, "ssl-mode") || urlParamKeyIs(part, "sslmode") || urlParamKeyIs(part, "require_ssl"))) {
+    parts.unshift("ssl-mode=disabled");
   }
   if (!parts.some((part) => urlParamKeyIs(part, "charset"))) {
     parts.push("charset=utf8mb4");
@@ -580,6 +565,114 @@ interface BridgeColumnInfo {
   numeric_precision?: number | null;
   numeric_scale?: number | null;
   character_maximum_length?: number | null;
+  enum_values?: string[] | null;
+  character_set?: string | null;
+  collation?: string | null;
+}
+
+const POSTGRES_DESCRIBE_TABLE_SQL = `SELECT c.column_name AS name, CASE WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name ELSE c.data_type END AS data_type, c.is_nullable = 'YES' AS is_nullable, c.column_default, CASE WHEN tc.constraint_type = 'PRIMARY KEY' THEN true ELSE false END AS is_primary_key, col_description(cls.oid, c.ordinal_position) AS comment, CASE WHEN enum_t.oid IS NULL THEN NULL ELSE COALESCE((SELECT array_to_json(array_agg(e.enumlabel ORDER BY e.enumsortorder)) FROM pg_enum e WHERE e.enumtypid = enum_t.oid), '[]'::json) END AS enum_values FROM information_schema.columns c LEFT JOIN information_schema.key_column_usage kcu ON kcu.table_schema = c.table_schema AND kcu.table_name = c.table_name AND kcu.column_name = c.column_name LEFT JOIN information_schema.table_constraints tc ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema AND tc.constraint_type = 'PRIMARY KEY' LEFT JOIN pg_class cls ON cls.relname = c.table_name AND cls.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = c.table_schema) LEFT JOIN pg_namespace type_ns ON type_ns.nspname = c.udt_schema LEFT JOIN pg_type t ON t.typnamespace = type_ns.oid AND t.typname = c.udt_name LEFT JOIN pg_type enum_t ON enum_t.oid = CASE WHEN t.typtype = 'd' THEN t.typbasetype WHEN t.typtype = 'e' THEN t.oid ELSE NULL END AND enum_t.typtype = 'e' WHERE c.table_schema = $1 AND c.table_name = $2 ORDER BY c.ordinal_position`;
+const POSTGRES_DESCRIBE_TABLE_COMPAT_SQL = `SELECT c.column_name AS name, CASE WHEN c.data_type = 'USER-DEFINED' THEN c.udt_name ELSE c.data_type END AS data_type, c.is_nullable = 'YES' AS is_nullable, c.column_default, CASE WHEN tc.constraint_type = 'PRIMARY KEY' THEN true ELSE false END AS is_primary_key, col_description(cls.oid, c.ordinal_position) AS comment, NULL AS enum_values FROM information_schema.columns c LEFT JOIN information_schema.key_column_usage kcu ON kcu.table_schema = c.table_schema AND kcu.table_name = c.table_name AND kcu.column_name = c.column_name LEFT JOIN information_schema.table_constraints tc ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema AND tc.constraint_type = 'PRIMARY KEY' LEFT JOIN pg_class cls ON cls.relname = c.table_name AND cls.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = c.table_schema) WHERE c.table_schema = $1 AND c.table_name = $2 ORDER BY c.ordinal_position`;
+const MYSQL_DESCRIBE_TABLE_SQL = `SELECT c.COLUMN_NAME AS name, c.DATA_TYPE AS data_type, c.COLUMN_TYPE AS column_type, c.IS_NULLABLE = 'YES' AS is_nullable, c.COLUMN_DEFAULT AS column_default, c.COLUMN_KEY = 'PRI' AS is_primary_key, c.COLUMN_COMMENT AS comment, c.CHARACTER_SET_NAME AS character_set, c.COLLATION_NAME AS collation FROM information_schema.COLUMNS c WHERE c.TABLE_SCHEMA = DATABASE() AND c.TABLE_NAME = ? ORDER BY c.ORDINAL_POSITION`;
+
+function normalizeEnumValues(value: unknown): string[] | null {
+  if (value == null) return null;
+  if (Array.isArray(value)) return value.map((item) => String(item));
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return Array.isArray(parsed) ? parsed.map((item) => String(item)) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function parseMysqlEnumValues(columnType: unknown): string[] | null {
+  if (typeof columnType !== "string") return null;
+  const trimmed = columnType.trim();
+  if (!trimmed.toLowerCase().startsWith("enum(") || !trimmed.endsWith(")")) return null;
+
+  const inner = trimmed.slice(5, -1);
+  const values: string[] = [];
+  let index = 0;
+
+  const skipWhitespace = () => {
+    while (index < inner.length && /\s/.test(inner[index] ?? "")) index += 1;
+  };
+
+  while (index < inner.length) {
+    skipWhitespace();
+    if (inner[index] !== "'") return null;
+    index += 1;
+
+    let value = "";
+    while (index < inner.length) {
+      const char = inner[index++];
+      if (char === "'") {
+        if (inner[index] === "'") {
+          value += "'";
+          index += 1;
+          continue;
+        }
+        break;
+      }
+      if (char === "\\") {
+        if (index >= inner.length) return null;
+        const escaped = inner[index++];
+        if (escaped === "0") value += "\0";
+        else if (escaped === "b") value += "\b";
+        else if (escaped === "n") value += "\n";
+        else if (escaped === "r") value += "\r";
+        else if (escaped === "t") value += "\t";
+        else if (escaped === "Z") value += "\x1a";
+        else value += escaped;
+        continue;
+      }
+      value += char;
+    }
+    values.push(value);
+
+    skipWhitespace();
+    if (index >= inner.length) return values;
+    if (inner[index] !== ",") return null;
+    index += 1;
+  }
+
+  return values;
+}
+
+function mapDescribeTableColumn(
+  row: {
+    name?: unknown;
+    data_type?: unknown;
+    is_nullable?: unknown;
+    column_default?: unknown;
+    is_primary_key?: unknown;
+    comment?: unknown;
+    numeric_precision?: number | null;
+    numeric_scale?: number | null;
+    character_maximum_length?: number | null;
+    character_set?: string | null;
+    collation?: string | null;
+  },
+  enumValues: string[] | null,
+): ColumnInfo {
+  const column: ColumnInfo = {
+    name: String(row.name || ""),
+    data_type: String(row.data_type || ""),
+    is_nullable: Boolean(row.is_nullable),
+    column_default: row.column_default != null ? String(row.column_default) : null,
+    is_primary_key: Boolean(row.is_primary_key),
+    comment: row.comment != null ? String(row.comment) : null,
+    enum_values: enumValues,
+  };
+  if ("numeric_precision" in row) column.numeric_precision = row.numeric_precision;
+  if ("numeric_scale" in row) column.numeric_scale = row.numeric_scale;
+  if ("character_maximum_length" in row) column.character_maximum_length = row.character_maximum_length;
+  if ("character_set" in row) column.character_set = row.character_set ?? null;
+  if ("collation" in row) column.collation = row.collation ?? null;
+  return column;
 }
 
 export function collectionListToTableInfos(collections: CollectionListEntry[]): TableInfo[] {
@@ -771,6 +864,7 @@ export async function executeQuery(config: ConnectionConfig, sql: string, option
   if (hasActiveSshLayer(config)) {
     const result = await withTimeout(
       bridgeDataRequest<BridgeQueryResult>("/data/execute-query", {
+        connection_id: config.id,
         connection_name: config.name,
         database: config.database || "",
         sql,
@@ -787,8 +881,8 @@ export async function executeQuery(config: ConnectionConfig, sql: string, option
     }
     const count = parseMongoCountDocumentsCommand(sql);
     if (count) {
-      const result = await withTimeout(mongoFindDocuments(config, count.collection, 0, 1, count.filter), resolveTimeoutMs(options));
-      return { columns: ["count"], rows: [{ count: result.total }], row_count: 1 };
+      const total = await withTimeout(mongoCountDocuments(config, count.collection, count.filter, count.mode), resolveTimeoutMs(options));
+      return { columns: ["count"], rows: [{ count: total }], row_count: 1 };
     }
     const find = parseMongoFindCommand(sql);
     if (find) {
@@ -801,6 +895,11 @@ export async function executeQuery(config: ConnectionConfig, sql: string, option
       if (!safety.allowed) throw new Error(safety.reason);
       const result = await withTimeout(mongoAggregateDocuments(config, aggregate.collection, aggregate.pipeline, resolveMaxRows(options)), resolveTimeoutMs(options));
       return mongoDocumentsToQueryResult(result.documents.slice(0, resolveMaxRows(options)), result.total);
+    }
+    const distinct = parseMongoDistinctCommand(sql);
+    if (distinct) {
+      const result = await withTimeout(mongoDistinct(config, distinct.collection, distinct.field, distinct.filter), resolveTimeoutMs(options));
+      return mongoDistinctToQueryResult(distinct.field, result.documents.slice(0, resolveMaxRows(options)));
     }
     const getIndexes = parseMongoGetIndexesCommand(sql);
     if (getIndexes) {
@@ -834,7 +933,7 @@ export async function executeQuery(config: ConnectionConfig, sql: string, option
       return { columns: [], rows: [], row_count: result.affectedRows };
     }
     throw new Error(
-      "Use MongoDB shell-style commands, for example: db.projects.find({}).limit(100), db.version(), db.projects.countDocuments({}), db.projects.count({}), db.projects.getIndexes(), db.projects.dataSize(), db.projects.storageSize(1024), db.projects.totalIndexSize(), db.projects.stats(), db.projects.createIndex({...}), db.projects.dropIndex(\"name\"), db.projects.dropIndexes(), db.projects.insertOne({...}), db.projects.updateOne({...}, {$set: {...}}), or db.projects.deleteOne({...})",
+      'Use MongoDB shell-style commands, for example: db.projects.find({}).limit(100), db.version(), db.projects.countDocuments({}), db.projects.count({}), db.projects.distinct("status"), db.projects.getIndexes(), db.projects.dataSize(), db.projects.storageSize(1024), db.projects.totalIndexSize(), db.projects.stats(), db.projects.createIndex({...}), db.projects.dropIndex("name"), db.projects.dropIndexes(), db.projects.drop(), db.projects.insertOne({...}), db.projects.updateOne({...}, {$set: {...}}), or db.projects.deleteOne({...})',
     );
   }
   if (isDirectQueryType(config.db_type)) {
@@ -842,6 +941,7 @@ export async function executeQuery(config: ConnectionConfig, sql: string, option
   }
   const result = await withTimeout(
     bridgeDataRequest<BridgeQueryResult>("/data/execute-query", {
+      connection_id: config.id,
       connection_name: config.name,
       database: config.database || "",
       sql,
@@ -860,6 +960,7 @@ export async function executeRedisCommand(config: ConnectionConfig, db: number, 
   }
   return withTimeout(
     bridgeDataRequest<RedisCommandResult>("/data/redis/execute-command", {
+      connection_id: config.id,
       connection_name: config.name,
       db,
       command,
@@ -874,7 +975,7 @@ async function executeRedisCommandDirect(config: ConnectionConfig, db: number, c
   const command = argv[0].toUpperCase();
   const safety = classifyRedisCommand(command) as RedisCommandSafety;
   if (!options?.skipSafetyCheck && safety === "blocked") {
-    throw new Error(`Redis command is blocked for safety: ${command}`);
+    throw new Error("Redis command is blocked for safety. Enable dangerous commands with DBX_MCP_ALLOW_DANGEROUS_SQL=1.");
   }
 
   const { Redis } = await import("ioredis");
@@ -944,6 +1045,7 @@ function redisTextToJson(value: string): unknown {
 export async function listTables(config: ConnectionConfig, schema?: string): Promise<TableInfo[]> {
   if (config.db_type === "mongodb") {
     const collections = await bridgeDataRequest<CollectionListEntry[]>("/data/mongo/list-collections", {
+      connection_id: config.id,
       connection_name: config.name,
       database: config.database || "",
       schema: schema || "",
@@ -956,6 +1058,7 @@ export async function listTables(config: ConnectionConfig, schema?: string): Pro
   }
   if (hasActiveSshLayer(config) || !isDirectQueryType(config.db_type)) {
     const tables = await bridgeDataRequest<BridgeTableInfo[]>("/data/list-tables", {
+      connection_id: config.id,
       connection_name: config.name,
       database: config.database || "",
       schema: schema || "",
@@ -989,49 +1092,33 @@ export async function describeTable(config: ConnectionConfig, table: string, sch
   }
   if (hasActiveSshLayer(config) || !isDirectQueryType(config.db_type)) {
     const columns = await bridgeDataRequest<BridgeColumnInfo[]>("/data/describe-table", {
+      connection_id: config.id,
       connection_name: config.name,
       database: config.database || "",
       schema: schema || "",
       table,
     });
-    return columns.map((c) => ({
-      name: c.name,
-      data_type: c.data_type,
-      is_nullable: c.is_nullable,
-      column_default: c.column_default,
-      is_primary_key: c.is_primary_key,
-      comment: c.comment,
-      numeric_precision: c.numeric_precision,
-      numeric_scale: c.numeric_scale,
-      character_maximum_length: c.character_maximum_length,
-    }));
+    return columns.map((column) => mapDescribeTableColumn(column, column.enum_values ?? null));
   }
   let result: QueryResult;
   if (isMysqlType(config.db_type)) {
-    result = await query(
-      config,
-      `SELECT c.COLUMN_NAME AS name, c.DATA_TYPE AS data_type, c.IS_NULLABLE = 'YES' AS is_nullable, c.COLUMN_DEFAULT AS column_default, c.COLUMN_KEY = 'PRI' AS is_primary_key, c.COLUMN_COMMENT AS comment FROM information_schema.COLUMNS c WHERE c.TABLE_SCHEMA = DATABASE() AND c.TABLE_NAME = ? ORDER BY c.ORDINAL_POSITION`,
-      [table],
-    );
+    result = await query(config, MYSQL_DESCRIBE_TABLE_SQL, [table]);
+    return result.rows.map((row) => mapDescribeTableColumn(row, String(row.data_type || "").toLowerCase() === "enum" ? parseMysqlEnumValues(row.column_type) : null));
+  } else if (config.db_type === "postgres") {
+    try {
+      result = await query(config, POSTGRES_DESCRIBE_TABLE_SQL, [schema || "public", table]);
+    } catch {
+      result = await query(config, POSTGRES_DESCRIBE_TABLE_COMPAT_SQL, [schema || "public", table]);
+    }
   } else {
-    result = await query(
-      config,
-      `SELECT c.column_name AS name, c.data_type, c.is_nullable = 'YES' AS is_nullable, c.column_default, CASE WHEN tc.constraint_type = 'PRIMARY KEY' THEN true ELSE false END AS is_primary_key, col_description(cls.oid, c.ordinal_position) AS comment FROM information_schema.columns c LEFT JOIN information_schema.key_column_usage kcu ON kcu.table_schema = c.table_schema AND kcu.table_name = c.table_name AND kcu.column_name = c.column_name LEFT JOIN information_schema.table_constraints tc ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema AND tc.constraint_type = 'PRIMARY KEY' LEFT JOIN pg_class cls ON cls.relname = c.table_name AND cls.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = c.table_schema) WHERE c.table_schema = $1 AND c.table_name = $2 ORDER BY c.ordinal_position`,
-      [schema || "public", table],
-    );
+    result = await query(config, POSTGRES_DESCRIBE_TABLE_COMPAT_SQL, [schema || "public", table]);
   }
-  return result.rows.map((r) => ({
-    name: String(r.name || ""),
-    data_type: String(r.data_type || ""),
-    is_nullable: Boolean(r.is_nullable),
-    column_default: r.column_default != null ? String(r.column_default) : null,
-    is_primary_key: Boolean(r.is_primary_key),
-    comment: r.comment != null ? String(r.comment) : null,
-  }));
+  return result.rows.map((row) => mapDescribeTableColumn(row, normalizeEnumValues(row.enum_values)));
 }
 
 async function mongoFindDocuments(config: ConnectionConfig, collection: string, skip: number, limit: number, filter: string, projection?: string, sort?: string): Promise<MongoDocumentResult> {
   return bridgeDataRequest<MongoDocumentResult>("/data/mongo/find-documents", {
+    connection_id: config.id,
     connection_name: config.name,
     database: config.database || "",
     collection,
@@ -1043,19 +1130,28 @@ async function mongoFindDocuments(config: ConnectionConfig, collection: string, 
   });
 }
 
+async function mongoCountDocuments(config: ConnectionConfig, collection: string, filter: string, mode: MongoCountDocumentsCommand["mode"]): Promise<number> {
+  return bridgeDataRequest<number>("/data/mongo/count-documents", {
+    connection_id: config.id,
+    connection_name: config.name,
+    database: config.database || "",
+    collection,
+    filter,
+    mode,
+  });
+}
+
 async function mongoServerVersion(config: ConnectionConfig): Promise<string> {
   return bridgeDataRequest<string>("/data/mongo/server-version", {
+    connection_id: config.id,
     connection_name: config.name,
     database: config.database || "",
   });
 }
 
-async function mongoCollectionStats(
-  config: ConnectionConfig,
-  collection: string,
-  scale?: number,
-): Promise<Record<string, unknown>> {
+async function mongoCollectionStats(config: ConnectionConfig, collection: string, scale?: number): Promise<Record<string, unknown>> {
   return bridgeDataRequest<Record<string, unknown>>("/data/mongo/collection-stats", {
+    connection_id: config.id,
     connection_name: config.name,
     database: config.database || "",
     collection,
@@ -1063,12 +1159,10 @@ async function mongoCollectionStats(
   });
 }
 
-async function executeMongoWrite(
-  config: ConnectionConfig,
-  command: MongoWriteCommand,
-): Promise<{ affectedRows: number; indexName?: string; droppedNames?: string[] }> {
+async function executeMongoWrite(config: ConnectionConfig, command: MongoWriteCommand): Promise<{ affectedRows: number; indexName?: string; droppedNames?: string[] }> {
   if (command.kind === "insert") {
     const result = await bridgeDataRequest<{ affected_rows: number }>("/data/mongo/insert-documents", {
+      connection_id: config.id,
       connection_name: config.name,
       database: config.database || "",
       collection: command.collection,
@@ -1078,17 +1172,20 @@ async function executeMongoWrite(
   }
   if (command.kind === "update") {
     const result = await bridgeDataRequest<{ affected_rows: number }>("/data/mongo/update-documents", {
+      connection_id: config.id,
       connection_name: config.name,
       database: config.database || "",
       collection: command.collection,
       filter_json: command.filter,
       update_json: command.update,
       many: command.many,
+      options_json: command.options,
     });
     return { affectedRows: result.affected_rows };
   }
   if (command.kind === "createIndex") {
     const result = await bridgeDataRequest<{ name: string }>("/data/mongo/create-index", {
+      connection_id: config.id,
       connection_name: config.name,
       database: config.database || "",
       collection: command.collection,
@@ -1099,6 +1196,7 @@ async function executeMongoWrite(
   }
   if (command.kind === "dropIndex" || command.kind === "dropIndexes") {
     const result = await bridgeDataRequest<{ dropped_names: string[]; affected_rows: number }>("/data/mongo/drop-indexes", {
+      connection_id: config.id,
       connection_name: config.name,
       database: config.database || "",
       collection: command.collection,
@@ -1107,7 +1205,17 @@ async function executeMongoWrite(
     });
     return { affectedRows: result.affected_rows, droppedNames: result.dropped_names };
   }
+  if (command.kind === "dropCollection") {
+    await bridgeDataRequest<{ ok: boolean }>("/data/mongo/drop-collection", {
+      connection_id: config.id,
+      connection_name: config.name,
+      database: config.database || "",
+      collection: command.collection,
+    });
+    return { affectedRows: 1 };
+  }
   const result = await bridgeDataRequest<{ affected_rows: number }>("/data/mongo/delete-documents", {
+    connection_id: config.id,
     connection_name: config.name,
     database: config.database || "",
     collection: command.collection,
@@ -1119,6 +1227,7 @@ async function executeMongoWrite(
 
 async function mongoAggregateDocuments(config: ConnectionConfig, collection: string, pipelineJson: string, maxRows: number): Promise<MongoDocumentResult> {
   return bridgeDataRequest<MongoDocumentResult>("/data/mongo/aggregate-documents", {
+    connection_id: config.id,
     connection_name: config.name,
     database: config.database || "",
     collection,
@@ -1127,10 +1236,27 @@ async function mongoAggregateDocuments(config: ConnectionConfig, collection: str
   });
 }
 
-export function mongoCollectionStatsToQueryResult(
-  metric: MongoCollectionStatsMetric,
-  stats: Record<string, unknown>,
-): QueryResult {
+async function mongoDistinct(config: ConnectionConfig, collection: string, field: string, filter?: string): Promise<MongoDocumentResult> {
+  return bridgeDataRequest<MongoDocumentResult>("/data/mongo/distinct", {
+    connection_id: config.id,
+    connection_name: config.name,
+    database: config.database || "",
+    collection,
+    field,
+    filter,
+  });
+}
+
+/** distinct returns bare values, so the single column is named after the field. */
+export function mongoDistinctToQueryResult(field: string, values: unknown[]): QueryResult {
+  return {
+    columns: [field],
+    rows: values.map((value) => ({ [field]: toCellValue(value) })),
+    row_count: values.length,
+  };
+}
+
+export function mongoCollectionStatsToQueryResult(metric: MongoCollectionStatsMetric, stats: Record<string, unknown>): QueryResult {
   if (metric === "stats") {
     const columns = ["count", "size", "avgObjSize", "storageSize", "totalIndexSize", "nindexes"];
     const row: Record<string, unknown> = {};
@@ -1206,11 +1332,18 @@ interface MongoFindCommand {
 interface MongoCountDocumentsCommand {
   collection: string;
   filter: string;
+  mode: "accurate" | "legacy";
 }
 
 interface MongoAggregateCommand {
   collection: string;
   pipeline: string;
+}
+
+interface MongoDistinctCommand {
+  collection: string;
+  field: string;
+  filter?: string;
 }
 
 interface MongoGetIndexesCommand {
@@ -1227,11 +1360,12 @@ interface MongoCollectionStatsCommand {
 
 export type MongoWriteCommand =
   | { kind: "insert"; collection: string; docsJson: string }
-  | { kind: "update"; collection: string; filter: string; update: string; many: boolean }
+  | { kind: "update"; collection: string; filter: string; update: string; options?: string; many: boolean }
   | { kind: "delete"; collection: string; filter: string; many: boolean }
   | { kind: "createIndex"; collection: string; keys: string; options?: string }
   | { kind: "dropIndex"; collection: string; index: string }
-  | { kind: "dropIndexes"; collection: string; indexes?: string };
+  | { kind: "dropIndexes"; collection: string; indexes?: string }
+  | { kind: "dropCollection"; collection: string };
 
 export function parseMongoFindCommand(input: string): MongoFindCommand | null {
   const source = input.trim().replace(/;$/, "").trim();
@@ -1273,13 +1407,7 @@ export function parseMongoVersionCommand(input: string): boolean {
 
 export function parseMongoCountDocumentsCommand(input: string): MongoCountDocumentsCommand | null {
   const source = input.trim().replace(/;$/, "").trim();
-  // Accept deprecated Mongo shell count helpers for old server workflows, but
-  // keep DBX's internal execution mapped to the countDocuments result shape.
-  return (
-    parseCollectionCountCommand(source, "countDocuments") ??
-    parseCollectionCountCommand(source, "count") ??
-    parseFindCountCommand(source)
-  );
+  return parseCollectionCountCommand(source, "countDocuments") ?? parseCollectionCountCommand(source, "count") ?? parseFindCountCommand(source);
 }
 
 function parseCollectionCountCommand(source: string, method: "countDocuments" | "count"): MongoCountDocumentsCommand | null {
@@ -1291,7 +1419,7 @@ function parseCollectionCountCommand(source: string, method: "countDocuments" | 
   const args = splitTopLevel(source.slice(openIndex + 1, closeIndex));
   if (args.length > 1 && args.slice(1).some((arg) => arg.trim())) return null;
   const filter = normalizeJsonArgument(args[0] || "{}");
-  return filter ? { collection: target.collection, filter } : null;
+  return filter ? { collection: target.collection, filter, mode: method === "countDocuments" ? "accurate" : "legacy" } : null;
 }
 
 function parseFindCountCommand(source: string): MongoCountDocumentsCommand | null {
@@ -1305,7 +1433,7 @@ function parseFindCountCommand(source: string): MongoCountDocumentsCommand | nul
   const findArgs = splitTopLevel(source.slice(findOpenIndex + 1, findCloseIndex));
   if (findArgs.length > 2 && findArgs.slice(2).some((arg) => arg.trim())) return null;
   const filter = normalizeJsonArgument(findArgs[0] || "{}");
-  return filter ? { collection: target.collection, filter } : null;
+  return filter ? { collection: target.collection, filter, mode: "legacy" } : null;
 }
 
 export function parseMongoAggregateCommand(input: string): MongoAggregateCommand | null {
@@ -1317,6 +1445,28 @@ export function parseMongoAggregateCommand(input: string): MongoAggregateCommand
   const pipeline = normalizeJsonArgument(args[0]);
   if (!pipeline) return null;
   return Array.isArray(JSON.parse(pipeline)) ? { collection: target.collection, pipeline } : null;
+}
+
+export function parseMongoDistinctCommand(input: string): MongoDistinctCommand | null {
+  const source = input.trim().replace(/;$/, "").trim();
+  const target = parseCollectionMethodTarget(source, "distinct");
+  if (!target) return null;
+  const args = parseMethodArgs(source, target.methodCallIndex);
+  if (!args || args.length < 1 || args.length > 2) return null;
+
+  const fieldJson = normalizeJsonArgument(args[0] ?? "");
+  if (!fieldJson) return null;
+  let field: unknown;
+  try {
+    field = JSON.parse(fieldJson);
+  } catch {
+    return null;
+  }
+  if (typeof field !== "string" || !field.trim()) return null;
+
+  if (args.length === 1) return { collection: target.collection, field };
+  const filter = normalizeJsonArgument(args[1] ?? "");
+  return filter ? { collection: target.collection, field, filter } : null;
 }
 
 export function parseMongoGetIndexesCommand(input: string): MongoGetIndexesCommand | null {
@@ -1379,11 +1529,13 @@ export function parseMongoWriteCommand(input: string): MongoWriteCommand | null 
     const target = parseCollectionMethodTarget(source, method);
     if (!target) continue;
     const args = parseMethodArgs(source, target.methodCallIndex);
-    if (!args || args.length !== 2) return null;
+    if (!args || args.length < 2 || args.length > 3) return null;
     const filter = normalizeJsonArgument(args[0]);
     const update = normalizeJsonArgument(args[1]);
     if (!filter || !update) return null;
-    return { kind: "update", collection: target.collection, filter, update, many: method === "updateMany" };
+    const options = args[2]?.trim() ? normalizeJsonArgument(args[2]) : undefined;
+    if (args[2]?.trim() && !options) return null;
+    return { kind: "update", collection: target.collection, filter, update, ...(options ? { options } : {}), many: method === "updateMany" };
   }
 
   for (const method of ["deleteOne", "deleteMany"] as const) {
@@ -1427,6 +1579,13 @@ export function parseMongoWriteCommand(input: string): MongoWriteCommand | null 
     return indexes !== null ? { kind: "dropIndexes", collection: dropIndexes.collection, ...(indexes ? { indexes } : {}) } : null;
   }
 
+  const dropCollection = parseCollectionMethodTarget(source, "drop");
+  if (dropCollection) {
+    const args = parseMethodArgs(source, dropCollection.methodCallIndex);
+    if (!args || args.some((arg) => arg.trim())) return null;
+    return { kind: "dropCollection", collection: dropCollection.collection };
+  }
+
   return null;
 }
 
@@ -1447,6 +1606,12 @@ export function evaluateMongoWriteSafety(command: MongoWriteCommand, options: { 
     return {
       allowed: false,
       reason: "MongoDB dropIndexes() without a specific single index requires DBX_MCP_ALLOW_DANGEROUS_SQL=1.",
+    };
+  }
+  if (!options.allowDangerous && command.kind === "dropCollection") {
+    return {
+      allowed: false,
+      reason: "MongoDB drop() requires DBX_MCP_ALLOW_DANGEROUS_SQL=1.",
     };
   }
   return { allowed: true };
@@ -1500,11 +1665,7 @@ function hasSingleEmptyChainedCall(chain: string, method: string): boolean {
   if (!match || match.index !== 0) return false;
   const openIndex = trimmed.indexOf("(", match.index);
   const closeIndex = findMatchingParen(trimmed, openIndex);
-  return (
-    closeIndex >= 0 &&
-    !trimmed.slice(openIndex + 1, closeIndex).trim() &&
-    !trimmed.slice(closeIndex + 1).trim()
-  );
+  return closeIndex >= 0 && !trimmed.slice(openIndex + 1, closeIndex).trim() && !trimmed.slice(closeIndex + 1).trim();
 }
 
 function findChainedMethodCallIndex(source: string, method: string): number {

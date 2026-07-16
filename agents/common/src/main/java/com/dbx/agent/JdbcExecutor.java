@@ -16,6 +16,7 @@ import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 public final class JdbcExecutor {
     public static final JdbcExecutor INSTANCE = new JdbcExecutor();
@@ -24,8 +25,13 @@ public final class JdbcExecutor {
 
     private final ConcurrentHashMap<String, QuerySession> sessions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, QuerySession> tableReadSessions = new ConcurrentHashMap<>();
+    private final java.util.Set<Statement> activeStatements = ConcurrentHashMap.newKeySet();
 
-    private JdbcExecutor() {
+    public JdbcExecutor() {
+    }
+
+    public static JdbcExecutor current() {
+        return AgentExecutionContext.jdbcExecutor();
     }
 
     public QueryResult execute(Connection conn, String sql, String schema, Function<String, String> setSchemaSql) {
@@ -65,13 +71,29 @@ public final class JdbcExecutor {
         int timeoutSecs,
         ResultValueReader valueReader
     ) {
+        return execute(conn, sql, schema, setSchemaSql, () -> "", maxRows, fetchSize, timeoutSecs, valueReader);
+    }
+
+    public QueryResult execute(
+        Connection conn,
+        String sql,
+        String schema,
+        Function<String, String> setSchemaSql,
+        Supplier<String> resetSchemaSql,
+        int maxRows,
+        Integer fetchSize,
+        int timeoutSecs,
+        ResultValueReader valueReader
+    ) {
         return unchecked(() -> {
             String trimmedSql = trimSql(sql);
             long start = System.currentTimeMillis();
 
-            applySchema(conn, schema, setSchemaSql);
+            applySchema(conn, schema, setSchemaSql, resetSchemaSql);
 
             try (Statement stmt = conn.createStatement()) {
+                activeStatements.add(stmt);
+                try {
                 int effectiveMaxRows = Math.max(maxRows, 1);
                 stmt.setMaxRows(effectiveMaxRows + 1);
                 applyQueryTimeout(stmt, timeoutSecs);
@@ -96,6 +118,9 @@ public final class JdbcExecutor {
                     elapsed,
                     false
                 );
+                } finally {
+                    activeStatements.remove(stmt);
+                }
             }
         });
     }
@@ -168,7 +193,19 @@ public final class JdbcExecutor {
         QueryPageOptions options,
         ResultValueReader valueReader
     ) {
-        return executePage(conn, sql, schema, setSchemaSql, options, valueReader, sessions);
+        return executePage(conn, sql, schema, setSchemaSql, () -> "", options, valueReader, sessions);
+    }
+
+    public QueryPageResult executePage(
+        Connection conn,
+        String sql,
+        String schema,
+        Function<String, String> setSchemaSql,
+        Supplier<String> resetSchemaSql,
+        QueryPageOptions options,
+        ResultValueReader valueReader
+    ) {
+        return executePage(conn, sql, schema, setSchemaSql, resetSchemaSql, options, valueReader, sessions);
     }
 
     public QueryPageResult startTableRead(
@@ -179,7 +216,19 @@ public final class JdbcExecutor {
         QueryPageOptions options,
         ResultValueReader valueReader
     ) {
-        return executePage(conn, sql, schema, setSchemaSql, options, valueReader, tableReadSessions);
+        return executePage(conn, sql, schema, setSchemaSql, () -> "", options, valueReader, tableReadSessions);
+    }
+
+    public QueryPageResult startTableRead(
+        Connection conn,
+        String sql,
+        String schema,
+        Function<String, String> setSchemaSql,
+        Supplier<String> resetSchemaSql,
+        QueryPageOptions options,
+        ResultValueReader valueReader
+    ) {
+        return executePage(conn, sql, schema, setSchemaSql, resetSchemaSql, options, valueReader, tableReadSessions);
     }
 
     private QueryPageResult executePage(
@@ -187,6 +236,7 @@ public final class JdbcExecutor {
         String sql,
         String schema,
         Function<String, String> setSchemaSql,
+        Supplier<String> resetSchemaSql,
         QueryPageOptions options,
         ResultValueReader valueReader,
         ConcurrentHashMap<String, QuerySession> targetSessions
@@ -196,9 +246,10 @@ public final class JdbcExecutor {
             String trimmedSql = trimSql(sql);
             long start = System.currentTimeMillis();
 
-            applySchema(conn, schema, setSchemaSql);
+            applySchema(conn, schema, setSchemaSql, resetSchemaSql);
 
             Statement stmt = conn.createStatement();
+            activeStatements.add(stmt);
             try {
                 applyQueryTimeout(stmt, options.getTimeoutSecs());
                 if (options.getFetchSize() != null && options.getFetchSize() > 0) {
@@ -210,6 +261,7 @@ public final class JdbcExecutor {
                 long elapsed = System.currentTimeMillis() - start;
                 if (!hasResultSet) {
                     int updateCount = stmt.getUpdateCount();
+                    activeStatements.remove(stmt);
                     stmt.close();
                     return new QueryPageResult(
                         Collections.emptyList(),
@@ -249,6 +301,7 @@ public final class JdbcExecutor {
                 targetSessions.put(sessionId, session);
                 return readSessionPage(targetSessions, session, options.getPageSize(), elapsed);
             } catch (Exception e) {
+                activeStatements.remove(stmt);
                 try {
                     stmt.close();
                 } catch (Exception ignored) {
@@ -282,6 +335,20 @@ public final class JdbcExecutor {
 
     public void closeAllTableReadSessions() {
         closeAllSessions(tableReadSessions);
+    }
+
+    public void cancelActiveStatements() {
+        for (Statement statement : activeStatements) {
+            try {
+                statement.cancel();
+            } catch (SQLException ignored) {
+            }
+        }
+        // Paged result sets can remain idle between fetch requests, so no
+        // Statement is executing when cancellation arrives. Close those
+        // session-owned cursors as part of the same cancellation boundary.
+        closeAllQuerySessions();
+        closeAllTableReadSessions();
     }
 
     public int expireIdleQuerySessions() {
@@ -504,6 +571,7 @@ public final class JdbcExecutor {
             return false;
         }
         synchronized (session) {
+            activeStatements.remove(session.statement);
             try {
                 session.resultSet.close();
             } catch (Exception ignored) {
@@ -564,32 +632,18 @@ public final class JdbcExecutor {
         return Math.min(requestedRows, 1024);
     }
 
-    private void applySchema(Connection conn, String schema, Function<String, String> setSchemaSql) throws SQLException {
-        if (schema == null || schema.trim().isEmpty()) {
-            return;
-        }
-        // Prefer JDBC standard APIs over database-specific SQL.
-        // setSchema (JDBC 4.1) and setCatalog (JDBC 1.0) work universally
-        // across all JDBC drivers without needing to know the database dialect.
+    private void applySchema(
+        Connection conn,
+        String schema,
+        Function<String, String> setSchemaSql,
+        Supplier<String> resetSchemaSql
+    ) throws SQLException {
         try {
-            conn.setSchema(schema);
-            return;
-        } catch (SQLException | AbstractMethodError ignored) {
-            // setSchema not supported by this driver
-        }
-        try {
-            conn.setCatalog(schema);
-            return;
-        } catch (SQLException | AbstractMethodError ignored) {
-            // setCatalog not supported either
-        }
-        // Fallback: execute database-specific SQL (e.g. USE, SET SCHEMA, etc.)
-        String schemaSql = setSchemaSql.apply(schema);
-        if (schemaSql == null || schemaSql.trim().isEmpty()) {
-            return;
-        }
-        try (Statement stmt = conn.createStatement()) {
-            stmt.execute(schemaSql);
+            JdbcSchemaSwitcher.apply(conn, schema, setSchemaSql, resetSchemaSql);
+        } catch (SQLException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new SQLException(e);
         }
     }
 

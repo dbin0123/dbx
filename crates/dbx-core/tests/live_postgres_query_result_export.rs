@@ -22,6 +22,7 @@ fn live_postgres_config(
         driver_profile: None,
         driver_label: None,
         url_params: None,
+        agent_java_options: Vec::new(),
         host: host.to_string(),
         port,
         username: user.to_string(),
@@ -30,6 +31,7 @@ fn live_postgres_config(
         visible_databases: None,
         visible_schemas: None,
         attached_databases: Vec::new(),
+        init_script: None,
         color: None,
         transport_layers: Vec::new(),
         connect_timeout_secs: 10,
@@ -60,6 +62,9 @@ fn live_postgres_config(
         jdbc_driver_paths: Vec::new(),
         one_time: false,
         read_only: false,
+        is_production: false,
+        production_databases: vec![],
+        database_info: None,
     }
 }
 
@@ -117,6 +122,7 @@ async fn live_postgres_query_result_export_uses_single_streamed_query() {
         use_agent_cursor: false,
         file_path: file_path.to_string_lossy().to_string(),
         format: "csv".to_string(),
+        include_sql_sheet: false,
         page_size: 100,
         row_limit: None,
         total_rows: None,
@@ -124,6 +130,7 @@ async fn live_postgres_query_result_export_uses_single_streamed_query() {
         keyset_optimization_enabled: true,
         client_session_id: None,
         execution_id: Some(format!("live-postgres-query-export-{suffix}")),
+        date_time_format: None,
     };
     let done_seen = AtomicBool::new(false);
     let result = export_query_result_core(&state, &request, None, |progress| {

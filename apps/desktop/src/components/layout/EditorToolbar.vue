@@ -1,20 +1,23 @@
 <script setup lang="ts">
 import { computed, ref, watch, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
-import { Play, Loader2, Square, Database, Check, Table2, AlignLeft, GitBranch, Save, FolderOpen, Layers, X, Shield, Upload, RotateCcw, AlertTriangle } from "@lucide/vue";
+import { Play, Loader2, Square, Database, Check, Table2, AlignLeft, GitBranch, Save, FolderOpen, Layers, X, Shield, Download, RotateCcw, AlertTriangle, ClipboardPaste } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import TruncatedTextTooltip from "@/components/ui/TruncatedTextTooltip.vue";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
+import ProductionContextBadge from "@/components/common/ProductionContextBadge.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useDatabaseOptions } from "@/composables/useDatabaseOptions";
 import { useSchemaOptions } from "@/composables/useSchemaOptions";
-import { connectionIconType } from "@/lib/connectionPresentation";
-import { formatDatabaseLabel, isDefaultDatabase } from "@/lib/defaultDatabase";
-import { connectionDisplayName } from "@/lib/tabPresentation";
-import { isSingleDatabase, supportsTransaction as supportsTransactionFeature } from "@/lib/databaseCapabilities";
-import { hexToRgba } from "@/lib/color";
+import { connectionIconType } from "@/lib/connection/connectionPresentation";
+import { formatDatabaseLabel, isDefaultDatabase } from "@/lib/database/defaultDatabase";
+import { connectionDisplayName } from "@/lib/tabs/tabPresentation";
+import { useConnectionGroupLabel } from "@/composables/useConnectionGroupLabel";
+import { isSingleDatabase, supportsClearableQuerySchema, supportsSqlInListPaste, supportsTransaction as supportsTransactionFeature } from "@/lib/database/databaseCapabilities";
+import { hexToRgba } from "@/lib/common/color";
+import { productionContextForDatabase } from "@/lib/database/productionSafety";
 import type { QueryTab, ConnectionConfig } from "@/types/database";
 
 const props = defineProps<{
@@ -40,6 +43,7 @@ const emit = defineEmits<{
   saveSql: [];
   openSql: [];
   importResultArchive: [];
+  pasteSqlInCondition: [];
   changeConnection: [connectionId: string];
   changeDatabase: [database: string];
   changeSchema: [schema: string | undefined];
@@ -63,7 +67,11 @@ const activeDatabaseOptions = computed(() => {
 });
 
 const connectionOptionIds = computed(() => connectionStore.connections.map((connection) => connection.id));
+const { connectionGroupLabel } = useConnectionGroupLabel();
 const activeDatabaseValue = computed(() => props.activeTab.database || "");
+const activeProductionContext = computed(() => productionContextForDatabase(props.activeConnection, props.activeTab.database));
+const showConnectionProductionBadge = computed(() => activeProductionContext.value.reason === "connection");
+const showDatabaseProductionBadge = computed(() => activeProductionContext.value.reason === "database");
 const activeConnectionValue = computed(() => props.activeConnection?.id || "");
 const activeSchemaValue = computed(() => props.activeTab.schema || "");
 const supportsExplain = computed(() => {
@@ -71,6 +79,7 @@ const supportsExplain = computed(() => {
   return dbType !== "redis" && dbType !== "mongodb" && dbType !== "elasticsearch" && dbType !== "qdrant" && dbType !== "milvus" && dbType !== "weaviate" && dbType !== "chromadb" && dbType !== "etcd" && dbType !== "zookeeper" && dbType !== "mq" && dbType !== "nacos";
 });
 const isSingleDb = computed(() => isSingleDatabase(props.activeConnection?.db_type));
+const supportsExPaste = computed(() => supportsSqlInListPaste(props.activeConnection?.db_type));
 const supportsTransaction = computed(() => supportsTransactionFeature(props.activeConnection?.db_type));
 const hasDefaultDatabaseOption = computed(() => activeDatabaseOptions.value.includes(""));
 const schemaDatabaseKey = computed(() => props.activeTab.database || (isSingleDb.value ? "_" : ""));
@@ -84,6 +93,10 @@ const transactionTooltip = computed(() => {
   if (isAgent && isManual) return t("toolbar.manualTransactionAgent");
   if (isAgent) return t("toolbar.autoCommitAgent");
   return isManual ? t("toolbar.manualTransaction") : t("toolbar.autoCommit");
+});
+const executeButtonClass = computed(() => {
+  if (props.activeTab.isExecuting) return "";
+  return activeProductionContext.value.active ? "bg-red-500/10 text-red-700 hover:bg-red-500/20 hover:text-red-800 dark:text-red-300 dark:hover:text-red-200" : "bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200";
 });
 
 const isTransactionActive = computed(() => !!props.txnSessionId);
@@ -142,10 +155,15 @@ function databaseDisplayName(database: string): string {
 function connectionById(connectionId: string): ConnectionConfig | undefined {
   return connectionStore.getConfig(connectionId);
 }
+
+function databaseOptionIsProduction(database: string): boolean {
+  if (!database || props.activeConnection?.is_production) return false;
+  return productionContextForDatabase(props.activeConnection, database).reason === "database";
+}
 </script>
 
 <template>
-  <div class="h-9 shrink-0 border-b bg-background/80 px-3 flex items-center gap-1 text-xs text-muted-foreground relative z-10" :style="toolbarStyle">
+  <div class="app-editor-toolbar h-9 shrink-0 border-b bg-background/80 px-3 flex items-center gap-1 text-xs text-muted-foreground relative z-10" :style="toolbarStyle">
     <div class="flex items-center gap-0.5">
       <Tooltip>
         <TooltipTrigger as-child>
@@ -153,7 +171,7 @@ function connectionById(connectionId: string): ConnectionConfig | undefined {
             :variant="activeTab.isExecuting ? 'destructive' : 'ghost'"
             size="icon"
             class="h-6 w-6"
-            :class="activeTab.isExecuting ? '' : 'bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200'"
+            :class="executeButtonClass"
             :disabled="activeTab.isCancelling || activeTab.isExplaining || (!activeTab.isExecuting && !executableSql.trim())"
             @click="activeTab.isExecuting ? emit('cancel') : emit('execute')"
           >
@@ -283,10 +301,18 @@ function connectionById(connectionId: string): ConnectionConfig | undefined {
       <Tooltip>
         <TooltipTrigger as-child>
           <Button variant="ghost" size="icon" class="h-6 w-6 text-cyan-600 hover:bg-cyan-500/10 hover:text-cyan-700 dark:text-cyan-300 dark:hover:text-cyan-200" @click="emit('importResultArchive')">
-            <Upload class="h-3.5 w-3.5" />
+            <Download class="h-3.5 w-3.5" />
           </Button>
         </TooltipTrigger>
         <TooltipContent>{{ t("tabs.importResultArchive") }}</TooltipContent>
+      </Tooltip>
+      <Tooltip v-if="supportsExPaste">
+        <TooltipTrigger as-child>
+          <Button variant="ghost" size="icon" class="h-6 w-6 text-teal-600 hover:bg-teal-500/10 hover:text-teal-700 dark:text-teal-300 dark:hover:text-teal-200" @click="emit('pasteSqlInCondition')">
+            <ClipboardPaste class="h-3.5 w-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{{ t("toolbar.exPasteSqlInCondition") }}</TooltipContent>
       </Tooltip>
     </div>
     <span class="flex-1 min-w-0" />
@@ -302,19 +328,25 @@ function connectionById(connectionId: string): ConnectionConfig | undefined {
           :loading-text="t('common.loading')"
           trigger-class="font-medium text-foreground"
           :display-name="connectionDisplayName"
+          list-class="w-96 max-w-[calc(100vw-2rem)]"
+          item-class="h-9"
           @update:model-value="(connectionId) => emit('changeConnection', connectionId)"
         >
           <template #trigger-label="{ label }">
             <div v-if="activeConnection" class="flex min-w-0 items-center gap-1.5">
               <DatabaseIcon :db-type="connectionIconType(activeConnection)" class="h-3.5 w-3.5 shrink-0" />
               <span class="truncate">{{ label }}</span>
+              <ProductionContextBadge v-if="showConnectionProductionBadge" compact />
             </div>
             <span v-else class="truncate text-muted-foreground">{{ t("editor.selectConnection") }}</span>
           </template>
           <template #option-label="{ option, label }">
             <div class="flex min-w-0 items-center gap-2">
               <DatabaseIcon :db-type="connectionIconType(connectionById(option))" class="h-3.5 w-3.5 shrink-0" />
-              <TruncatedTextTooltip :text="label" class="min-w-0 flex-1" side="left" :side-offset="8" />
+              <div class="flex min-w-0 flex-1 items-center gap-2">
+                <TruncatedTextTooltip :text="connectionGroupLabel(option)" class="block min-w-0 max-w-48 shrink-0 rounded-sm bg-muted/70 px-1.5 py-0.5 text-[11px] text-muted-foreground" side="left" :side-offset="8" />
+                <TruncatedTextTooltip :text="label" class="block min-w-[7rem] flex-1 text-sm font-medium" side="left" :side-offset="8" />
+              </div>
             </div>
           </template>
         </SearchableSelect>
@@ -344,9 +376,13 @@ function connectionById(connectionId: string): ConnectionConfig | undefined {
           <template #trigger-label="{ label, loading }">
             <Database class="h-3.5 w-3.5 shrink-0" />
             <span class="truncate">{{ loading ? t("common.loading") : label }}</span>
+            <ProductionContextBadge v-if="showDatabaseProductionBadge" compact />
           </template>
-          <template #option-label="{ label }">
-            <TruncatedTextTooltip :text="label" class="min-w-0 flex-1" side="left" :side-offset="8" />
+          <template #option-label="{ option, label }">
+            <div class="flex min-w-0 flex-1 items-center gap-1.5">
+              <TruncatedTextTooltip :text="label" class="min-w-0 flex-1" side="left" :side-offset="8" />
+              <ProductionContextBadge v-if="databaseOptionIsProduction(option)" compact />
+            </div>
           </template>
         </SearchableSelect>
         <Tooltip v-if="activeDatabaseValue && !isSingleDb">
@@ -371,6 +407,7 @@ function connectionById(connectionId: string): ConnectionConfig | undefined {
           :empty-text="t('grid.noSearchResults')"
           :loading-text="t('common.loading')"
           :loading="!!activeConnection && isLoadingSchemas(activeConnection.id, schemaDatabaseKey)"
+          :clear-selected-option="supportsClearableQuerySchema(activeConnection?.db_type)"
           trigger-class="gap-1.5"
           @update:model-value="(schema) => emit('changeSchema', schema || undefined)"
           @update:open="

@@ -52,6 +52,7 @@ pub fn is_schema_aware(database_type: DatabaseType) -> bool {
             | DatabaseType::Trino
             | DatabaseType::PrestoSql
             | DatabaseType::Hive
+            | DatabaseType::Spark
             | DatabaseType::Db2
             | DatabaseType::Tdengine
             | DatabaseType::Xugu
@@ -62,6 +63,10 @@ pub fn is_schema_aware(database_type: DatabaseType) -> bool {
 
 pub fn uses_fetch_first(database_type: DatabaseType) -> bool {
     matches!(database_type, DatabaseType::Oracle | DatabaseType::Dameng | DatabaseType::Db2)
+}
+
+pub fn uses_oracle_row_id(database_type: Option<DatabaseType>) -> bool {
+    matches!(database_type, Some(DatabaseType::Oracle | DatabaseType::OceanbaseOracle))
 }
 
 /// Oracle 系方言不支持 `INSERT ... VALUES (...), (...)` 多行语法，

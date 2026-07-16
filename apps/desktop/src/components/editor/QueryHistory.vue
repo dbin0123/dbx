@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, nextTick, onBeforeUnmount, onMounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useSqlHighlighter } from "@/composables/useSqlHighlighter";
 import { CalendarClock, Copy, Database, RotateCcw, Search, Sparkles, Trash2, X } from "@lucide/vue";
@@ -9,19 +9,22 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { useHistoryStore } from "@/stores/historyStore";
+import { useConnectionStore } from "@/stores/connectionStore";
 import { useToast } from "@/composables/useToast";
-import { resolveHistoryActivityKind } from "@/lib/historyActivityKind";
-import { canRollbackHistoryEntry } from "@/lib/historyAiAnalysis";
-import { hasHistoryDateRange, historyDateRangeIsValid, historyEntryMatchesDateRange, type HistoryDateRange } from "@/lib/historyTimeRange";
-import { HISTORY_ROW_HEIGHT, HISTORY_SCROLL_BUFFER, shouldVirtualizeHistory } from "@/lib/historyVirtualList";
-import type { HistoryEntry } from "@/lib/api";
-import { copyToClipboard } from "@/lib/clipboard";
-import * as api from "@/lib/api";
+import { resolveHistoryActivityKind } from "@/lib/history/historyActivityKind";
+import { canRollbackHistoryEntry } from "@/lib/history/historyAiAnalysis";
+import { hasHistoryDateRange, historyDateRangeIsValid, historyEntryMatchesDateRange, type HistoryDateRange } from "@/lib/history/historyTimeRange";
+import { HISTORY_ROW_HEIGHT, HISTORY_SCROLL_BUFFER, shouldVirtualizeHistory } from "@/lib/history/historyVirtualList";
+import type { HistoryEntry } from "@/lib/backend/api";
+import { copyToClipboard } from "@/lib/common/clipboard";
+import { executeWithProductionSqlGuard } from "@/lib/database/productionExecutionGuard";
+import * as api from "@/lib/backend/api";
 
 const { t } = useI18n();
 const { toast } = useToast();
 const { highlight } = useSqlHighlighter();
 const store = useHistoryStore();
+const connectionStore = useConnectionStore();
 
 const emit = defineEmits<{
   restore: [sql: string, entry: HistoryEntry];
@@ -43,6 +46,9 @@ const isRollingBack = ref(false);
 const showDeleteConfirm = ref(false);
 const showClearConfirm = ref(false);
 const deleteTargetId = ref<string | null>(null);
+const filterScrollRef = ref<HTMLElement | null>(null);
+const filtersScrollable = ref(false);
+let filterScrollResizeObserver: ResizeObserver | null = null;
 
 const filters: HistoryFilter[] = ["all", "query", "data_change", "schema_change", "failed"];
 const hasDateFilter = computed(() => hasHistoryDateRange(dateRange.value));
@@ -139,6 +145,16 @@ function filterLabel(filter: HistoryFilter) {
   return t(`history.filters.${filter}`);
 }
 
+function updateFilterScrollability() {
+  const el = filterScrollRef.value;
+  if (!el) return;
+  const scrollable = el.scrollWidth > el.clientWidth + 3;
+  filtersScrollable.value = scrollable;
+  if (!scrollable && el.scrollLeft !== 0) {
+    el.scrollLeft = 0;
+  }
+}
+
 function openDateRangeFilter() {
   dateRangeDraft.value = { ...dateRange.value };
 }
@@ -213,7 +229,14 @@ async function rollback(entry: HistoryEntry) {
   isRollingBack.value = true;
   const start = Date.now();
   try {
-    const result = await api.executeScript(connectionId, entry.database, rollbackSql);
+    const result = await executeWithProductionSqlGuard({
+      connection: connectionStore.getConfig(connectionId),
+      database: entry.database,
+      sql: rollbackSql,
+      source: t("production.sourceQueryHistory"),
+      execute: () => api.executeScript(connectionId, entry.database, rollbackSql),
+    });
+    if (!result) return;
     await store.add({
       connection_id: connectionId,
       connection_name: entry.connection_name,
@@ -252,7 +275,27 @@ function getHistoryMenuItems(entry: HistoryEntry): ContextMenuItem[] {
   ];
 }
 
-onMounted(() => store.load());
+watch(
+  () => filters.map((filter) => filterLabel(filter)).join("\0"),
+  () => {
+    void nextTick(updateFilterScrollability);
+  },
+);
+
+onMounted(() => {
+  store.load();
+  void nextTick(updateFilterScrollability);
+
+  if (filterScrollRef.value) {
+    filterScrollResizeObserver = new ResizeObserver(updateFilterScrollability);
+    filterScrollResizeObserver.observe(filterScrollRef.value);
+  }
+});
+
+onBeforeUnmount(() => {
+  filterScrollResizeObserver?.disconnect();
+  filterScrollResizeObserver = null;
+});
 </script>
 
 <template>
@@ -269,7 +312,7 @@ onMounted(() => store.load());
     </div>
 
     <div class="border-b shrink-0">
-      <div class="flex gap-1 overflow-x-auto px-2 pt-2">
+      <div ref="filterScrollRef" class="history-filter-scroll flex gap-1 px-2 pt-2" :class="{ 'history-filter-scroll--scrollable': filtersScrollable }">
         <button v-for="filter in filters" :key="filter" type="button" class="h-6 shrink-0 rounded border px-2 text-xs" :class="activeFilter === filter ? 'border-primary bg-primary text-primary-foreground' : 'bg-background'" @click="activeFilter = filter">
           {{ filterLabel(filter) }}
         </button>
@@ -454,3 +497,30 @@ onMounted(() => store.load());
     </Dialog>
   </div>
 </template>
+
+<style scoped>
+.history-filter-scroll {
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
+}
+
+.history-filter-scroll--scrollable {
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-color: color-mix(in oklab, var(--muted-foreground) 45%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.history-filter-scroll--scrollable::-webkit-scrollbar {
+  height: 4px;
+}
+
+.history-filter-scroll--scrollable::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.history-filter-scroll--scrollable::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--muted-foreground) 45%, transparent);
+}
+</style>

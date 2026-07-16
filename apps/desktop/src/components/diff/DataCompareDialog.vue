@@ -6,14 +6,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import SearchableSelect from "@/components/ui/searchable-select/SearchableSelect.vue";
+import ConnectionGroupBadge from "@/components/connection/ConnectionGroupBadge.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useToast } from "@/composables/useToast";
 import { databaseOptionsForConnection } from "@/composables/useDatabaseOptions";
-import { isSchemaAware } from "@/lib/databaseCapabilities";
-import { copyToClipboard } from "@/lib/clipboard";
-import type { DataCompareCellValue, DataCompareModifiedRow, DataCompareResult, DataCompareRow, DataCompareSyncPlan, DataCompareSyncPlanTableOptions, DegradationThreshold, SamplingStrategy } from "@/lib/dataCompare";
+import { isSchemaAware } from "@/lib/database/databaseCapabilities";
+import { copyToClipboard } from "@/lib/common/clipboard";
+import type { DataCompareCellValue, DataCompareModifiedRow, DataCompareResult, DataCompareRow, DataCompareSyncPlan, DataCompareSyncPlanTableOptions } from "@/lib/dataGrid/dataCompare";
 import type { ColumnInfo, DatabaseType } from "@/types/database";
-import * as api from "@/lib/api";
+import * as api from "@/lib/backend/api";
+import { executeWithProductionSqlGuard } from "@/lib/database/productionExecutionGuard";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
 import { ArrowLeftRight, CheckSquare, ChevronDown, ChevronRight, Copy, GitCompareArrows, Loader2, Play, Square } from "@lucide/vue";
 
@@ -112,13 +115,6 @@ const syncErrors = ref<{ sql: string; error: string }[]>([]);
 const showAdded = ref(true);
 const showRemoved = ref(true);
 const showModified = ref(true);
-
-// Sampling & degradation options
-const showDataCompareAdvanced = ref(false);
-const degradationLevel = ref("full");
-const samplingStrategy = ref("random");
-const maxRowsThreshold = ref(100000);
-const confidenceThreshold = ref(0.95);
 
 let syncPlanRequestId = 0;
 
@@ -263,24 +259,6 @@ function clearResult() {
   executedCount.value = 0;
   executeTotal.value = 0;
   syncPlanRequestId++;
-}
-
-function buildAdvancedCompareOptions(): { degradationThreshold?: DegradationThreshold; samplingStrategy?: SamplingStrategy; enableChecksum?: boolean } {
-  if (degradationLevel.value === "full") {
-    return { enableChecksum: true };
-  }
-  const threshold: DegradationThreshold = {
-    fullCompareMaxRows: maxRowsThreshold.value,
-    sampleMaxRows: maxRowsThreshold.value * 10,
-    sampleSize: 10000,
-    extremeSampleCount: 500,
-  };
-  const sampling: SamplingStrategy = samplingStrategy.value === "hybrid" ? "Hybrid" : samplingStrategy.value === "firstRows" ? "ExtremeValues" : "Random";
-  return {
-    degradationThreshold: threshold,
-    samplingStrategy: sampling,
-    enableChecksum: true,
-  };
 }
 
 function swapSourceTarget() {
@@ -599,7 +577,6 @@ async function startCompare() {
             targetSchema: targetSchema.value,
             targetTable: task.targetTable,
             keyColumns: resolvedKeys,
-            ...buildAdvancedCompareOptions(),
           });
           results.push({
             sourceTable: task.sourceTable,
@@ -656,7 +633,6 @@ async function startCompare() {
           targetTable: task.targetTable,
           columns,
           keyColumns: resolvedKeys,
-          ...buildAdvancedCompareOptions(),
         });
 
         const added = preparation.result.added.length;
@@ -739,30 +715,40 @@ async function copySql() {
 
 async function executeSql() {
   if (!syncPlan.value.syncSql.trim() || syncPlan.value.syncStatements.length === 0 || executing.value) return;
-  executing.value = true;
-  syncErrors.value = [];
-  executeTotal.value = syncPlan.value.syncStatements.length;
-  executedCount.value = 0;
+  const targetConnection = store.getConfig(targetConnectionId.value);
   try {
-    await store.ensureConnected(targetConnectionId.value);
-    const statements = syncPlan.value.syncStatements;
-    for (let index = 0; index < statements.length; index += SYNC_EXECUTE_BATCH_SIZE) {
-      const batch = statements.slice(index, index + SYNC_EXECUTE_BATCH_SIZE);
-      try {
-        await api.executeBatch(targetConnectionId.value, targetDatabase.value, batch, targetSchema.value);
-        executedCount.value += batch.length;
-      } catch (e: any) {
-        for (const stmt of batch) {
+    const failed = await executeWithProductionSqlGuard({
+      connection: targetConnection,
+      database: targetDatabase.value,
+      sql: syncPlan.value.syncSql,
+      source: t("production.sourceDataCompare"),
+      execute: async () => {
+        executing.value = true;
+        syncErrors.value = [];
+        executeTotal.value = syncPlan.value.syncStatements.length;
+        executedCount.value = 0;
+        await store.ensureConnected(targetConnectionId.value);
+        const statements = syncPlan.value.syncStatements;
+        for (let index = 0; index < statements.length; index += SYNC_EXECUTE_BATCH_SIZE) {
+          const batch = statements.slice(index, index + SYNC_EXECUTE_BATCH_SIZE);
           try {
-            await api.executeBatch(targetConnectionId.value, targetDatabase.value, [stmt], targetSchema.value);
-          } catch (singleError: any) {
-            syncErrors.value.push({ sql: stmt, error: singleError?.message || String(singleError) });
+            await api.executeBatch(targetConnectionId.value, targetDatabase.value, batch, targetSchema.value);
+            executedCount.value += batch.length;
+          } catch (e: any) {
+            for (const stmt of batch) {
+              try {
+                await api.executeBatch(targetConnectionId.value, targetDatabase.value, [stmt], targetSchema.value);
+              } catch (singleError: any) {
+                syncErrors.value.push({ sql: stmt, error: singleError?.message || String(singleError) });
+              }
+              executedCount.value++;
+            }
           }
-          executedCount.value++;
         }
-      }
-    }
-    const failed = syncErrors.value.length;
+        return syncErrors.value.length;
+      },
+    });
+    if (failed === undefined) return;
     if (failed === 0) {
       toast(t("dataCompare.syncSuccess"), 2000);
     } else {
@@ -916,31 +902,47 @@ watch(
         <div class="grid grid-cols-[1fr_auto_1fr] gap-4 items-start">
           <div class="space-y-2">
             <Label class="text-xs font-medium">{{ t("diff.source") }}</Label>
-            <Select :model-value="sourceConnectionId" @update:model-value="(v: any) => (sourceConnectionId = String(v))">
-              <SelectTrigger class="h-8 text-xs">
-                <div class="flex items-center gap-2">
-                  <DatabaseIcon v-if="sourceConnectionId" :db-type="connectionIconType(sourceConnectionId)" class="w-3.5 h-3.5" />
-                  <SelectValue :placeholder="t('diff.selectConnection')" />
+            <SearchableSelect
+              v-model="sourceConnectionId"
+              :options="sqlConnections.map((c) => c.id)"
+              :placeholder="t('diff.selectConnection')"
+              :search-placeholder="t('diff.searchConnection')"
+              :empty-text="t('common.noResults')"
+              :display-name="(id) => sqlConnections.find((c) => c.id === id)?.name ?? id"
+              trigger-variant="outline"
+              trigger-class="h-8 w-full justify-between text-xs"
+              content-class="w-[var(--reka-popover-trigger-width)]"
+            >
+              <template #option-label="{ option, label }">
+                <div class="flex min-w-0 items-center gap-2">
+                  <DatabaseIcon :db-type="connectionIconType(option)" class="h-3.5 w-3.5 shrink-0" />
+                  <ConnectionGroupBadge :connection-id="option" />
+                  <span class="min-w-0 flex-1 truncate">{{ label }}</span>
                 </div>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem v-for="connection in sqlConnections" :key="connection.id" :value="connection.id">
-                  {{ connection.name }}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <Select :model-value="sourceDatabase" @update:model-value="(v: any) => (sourceDatabase = String(v))">
-              <SelectTrigger class="h-8 text-xs"><SelectValue :placeholder="t('diff.selectDatabase')" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem v-for="database in sourceDatabases" :key="database" :value="database">{{ database }}</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select v-if="sourceSchemas.length" :model-value="sourceSchema" @update:model-value="(v: any) => (sourceSchema = String(v))">
-              <SelectTrigger class="h-8 text-xs"><SelectValue :placeholder="t('diff.selectSchema')" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem v-for="schema in sourceSchemas" :key="schema" :value="schema">{{ schema }}</SelectItem>
-              </SelectContent>
-            </Select>
+              </template>
+            </SearchableSelect>
+            <SearchableSelect
+              v-model="sourceDatabase"
+              :options="sourceDatabases"
+              :placeholder="t('diff.selectDatabase')"
+              :search-placeholder="t('diff.searchDatabase')"
+              :empty-text="t('common.noResults')"
+              :disabled="!sourceDatabases.length"
+              trigger-variant="outline"
+              trigger-class="h-8 w-full justify-between text-xs"
+              content-class="w-[var(--reka-popover-trigger-width)]"
+            />
+            <SearchableSelect
+              v-if="sourceSchemas.length"
+              v-model="sourceSchema"
+              :options="sourceSchemas"
+              :placeholder="t('diff.selectSchema')"
+              :search-placeholder="t('diff.searchSchema')"
+              :empty-text="t('common.noResults')"
+              trigger-variant="outline"
+              trigger-class="h-8 w-full justify-between text-xs"
+              content-class="w-[var(--reka-popover-trigger-width)]"
+            />
 
             <div class="space-y-2 rounded-lg border p-2">
               <div class="flex items-center justify-between gap-2">
@@ -987,42 +989,60 @@ watch(
 
           <div class="space-y-2">
             <Label class="text-xs font-medium">{{ t("diff.target") }}</Label>
-            <Select :model-value="targetConnectionId" @update:model-value="(v: any) => (targetConnectionId = String(v))">
-              <SelectTrigger class="h-8 text-xs">
-                <div class="flex items-center gap-2">
-                  <DatabaseIcon v-if="targetConnectionId" :db-type="connectionIconType(targetConnectionId)" class="w-3.5 h-3.5" />
-                  <SelectValue :placeholder="t('diff.selectConnection')" />
+            <SearchableSelect
+              v-model="targetConnectionId"
+              :options="sqlConnections.map((c) => c.id)"
+              :placeholder="t('diff.selectConnection')"
+              :search-placeholder="t('diff.searchConnection')"
+              :empty-text="t('common.noResults')"
+              :display-name="(id) => sqlConnections.find((c) => c.id === id)?.name ?? id"
+              trigger-variant="outline"
+              trigger-class="h-8 w-full justify-between text-xs"
+              content-class="w-[var(--reka-popover-trigger-width)]"
+            >
+              <template #option-label="{ option, label }">
+                <div class="flex min-w-0 items-center gap-2">
+                  <DatabaseIcon :db-type="connectionIconType(option)" class="h-3.5 w-3.5 shrink-0" />
+                  <ConnectionGroupBadge :connection-id="option" />
+                  <span class="min-w-0 flex-1 truncate">{{ label }}</span>
                 </div>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem v-for="connection in sqlConnections" :key="connection.id" :value="connection.id">
-                  {{ connection.name }}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <Select :model-value="targetDatabase" @update:model-value="(v: any) => (targetDatabase = String(v))">
-              <SelectTrigger class="h-8 text-xs"><SelectValue :placeholder="t('diff.selectDatabase')" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem v-for="database in targetDatabases" :key="database" :value="database">{{ database }}</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select v-if="targetSchemas.length" :model-value="targetSchema" @update:model-value="(v: any) => (targetSchema = String(v))">
-              <SelectTrigger class="h-8 text-xs"><SelectValue :placeholder="t('diff.selectSchema')" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem v-for="schema in targetSchemas" :key="schema" :value="schema">{{ schema }}</SelectItem>
-              </SelectContent>
-            </Select>
+              </template>
+            </SearchableSelect>
+            <SearchableSelect
+              v-model="targetDatabase"
+              :options="targetDatabases"
+              :placeholder="t('diff.selectDatabase')"
+              :search-placeholder="t('diff.searchDatabase')"
+              :empty-text="t('common.noResults')"
+              :disabled="!targetDatabases.length"
+              trigger-variant="outline"
+              trigger-class="h-8 w-full justify-between text-xs"
+              content-class="w-[var(--reka-popover-trigger-width)]"
+            />
+            <SearchableSelect
+              v-if="targetSchemas.length"
+              v-model="targetSchema"
+              :options="targetSchemas"
+              :placeholder="t('diff.selectSchema')"
+              :search-placeholder="t('diff.searchSchema')"
+              :empty-text="t('common.noResults')"
+              trigger-variant="outline"
+              trigger-class="h-8 w-full justify-between text-xs"
+              content-class="w-[var(--reka-popover-trigger-width)]"
+            />
 
             <div v-if="!isBatchCompare" class="space-y-1">
               <Label class="text-xs font-medium">{{ t("dataCompare.targetTable") }}</Label>
-              <Select :model-value="targetTable" @update:model-value="(v: any) => (targetTable = String(v))">
-                <SelectTrigger class="h-8 text-xs">
-                  <SelectValue :placeholder="t('dataCompare.selectTable')" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem v-for="table in targetTables" :key="table" :value="table">{{ table }}</SelectItem>
-                </SelectContent>
-              </Select>
+              <SearchableSelect
+                v-model="targetTable"
+                :options="targetTables"
+                :placeholder="t('dataCompare.selectTable')"
+                :search-placeholder="t('dataCompare.searchTable')"
+                :empty-text="t('common.noResults')"
+                trigger-variant="outline"
+                trigger-class="h-8 w-full justify-between text-xs"
+                content-class="w-[var(--reka-popover-trigger-width)]"
+              />
             </div>
             <div v-else class="space-y-2 rounded-lg border p-3 text-xs">
               <div class="font-medium">{{ t("dataCompare.autoMatchHint") }}</div>
@@ -1051,56 +1071,6 @@ watch(
           <div class="text-[11px] text-muted-foreground">
             {{ t("dataCompare.keyColumnsAutoHint") }}
           </div>
-        </div>
-
-        <!-- Advanced compare options -->
-        <div class="rounded-lg border p-3 space-y-2">
-          <button class="flex items-center gap-2 text-xs font-medium w-full text-left" @click="showDataCompareAdvanced = !showDataCompareAdvanced">
-            <ChevronDown v-if="showDataCompareAdvanced" class="w-3 h-3" />
-            <ChevronRight v-else class="w-3 h-3" />
-            {{ t("diff.options") }}
-          </button>
-          <template v-if="showDataCompareAdvanced">
-            <div class="grid grid-cols-2 gap-x-4 gap-y-2">
-              <div class="space-y-1">
-                <Label class="text-[11px] text-muted-foreground">{{ t("dataCompare.degradationLevel") }}</Label>
-                <Select v-model="degradationLevel">
-                  <SelectTrigger class="h-7 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="full">{{ t("dataCompare.degradationLevelFull") }}</SelectItem>
-                    <SelectItem value="sample">{{ t("dataCompare.degradationLevelSample") }}</SelectItem>
-                    <SelectItem value="skipWithRisk">{{ t("dataCompare.degradationLevelSkipWithRisk") }}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div class="space-y-1">
-                <Label class="text-[11px] text-muted-foreground">{{ t("dataCompare.samplingStrategy") }}</Label>
-                <Select v-model="samplingStrategy">
-                  <SelectTrigger class="h-7 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="random">{{ t("dataCompare.samplingStrategyRandom") }}</SelectItem>
-                    <SelectItem value="firstRows">{{ t("dataCompare.samplingStrategyFirstRows") }}</SelectItem>
-                    <SelectItem value="hybrid">{{ t("dataCompare.samplingStrategyHybrid") }}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div class="space-y-1">
-                <Label class="text-[11px] text-muted-foreground">{{ t("dataCompare.maxRowsThreshold") }}</Label>
-                <Input v-model.number="maxRowsThreshold" type="number" class="h-7 text-xs" min="1000" step="1000" />
-              </div>
-              <div class="space-y-1">
-                <Label class="text-[11px] text-muted-foreground">{{ t("dataCompare.confidenceThreshold") }}</Label>
-                <div class="flex items-center gap-2">
-                  <input type="range" min="0.5" max="1" step="0.05" v-model.number="confidenceThreshold" class="flex-1 h-1.5 accent-primary cursor-pointer" />
-                  <span class="text-xs font-mono w-10 text-right">{{ confidenceThreshold.toFixed(2) }}</span>
-                </div>
-              </div>
-            </div>
-          </template>
         </div>
 
         <div v-if="hasResults" class="space-y-3">

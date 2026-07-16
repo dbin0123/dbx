@@ -109,6 +109,30 @@ class StandardJdbcMetadataTest {
     }
 
     @Test
+    void listsProceduresAndFunctionsFromJdbcRoutineMetadata() {
+        Connection conn = routineConnection(
+            rows(
+                row("PROCEDURE_NAME", "PROCESS_ORDER", "REMARKS", "processes an order"),
+                row("PROCEDURE_NAME", "SHARED_ROUTINE", "REMARKS", null)
+            ),
+            rows(
+                row("FUNCTION_NAME", "CALCULATE_TOTAL", "REMARKS", "calculates a total"),
+                row("FUNCTION_NAME", "SHARED_ROUTINE", "REMARKS", null)
+            )
+        );
+        MetadataListConstraints constraints =
+            new MetadataListConstraints(null, null, null, Collections.singletonList("PROCEDURE"));
+
+        List<ObjectInfo> objects = StandardJdbcMetadata.INSTANCE.listObjects(conn, profile, "", "APP", constraints);
+
+        assertEquals(2, objects.size());
+        assertEquals("PROCESS_ORDER", objects.get(0).getName());
+        assertEquals("PROCEDURE", objects.get(0).getObject_type());
+        assertEquals("SHARED_ROUTINE", objects.get(1).getName());
+        assertEquals("PROCEDURE", objects.get(1).getObject_type());
+    }
+
+    @Test
     void listsDataTypesFromJdbcTypeInfo() {
         Connection conn = connection(
             rows(),
@@ -228,6 +252,64 @@ class StandardJdbcMetadataTest {
         assertFalse(columns.get(0).getIs_nullable());
         assertEquals("NAME", columns.get(1).getName());
         assertEquals(Integer.valueOf(64), columns.get(1).getCharacter_maximum_length());
+    }
+
+    @Test
+    void marksPrimaryKeysFromConfiguredCatalogWhenColumnsAlreadyLoaded() {
+        Connection conn = catalogPrimaryKeyFallbackConnection(
+            "TENANTDB",
+            rows(),
+            rows(row("COLUMN_NAME", "ID")),
+            orderColumns()
+        );
+
+        List<ColumnInfo> columns = StandardJdbcMetadata.INSTANCE.getColumns(conn, profile, "TENANTDB", "APP", "ORDERS");
+
+        assertEquals("ID", columns.get(0).getName());
+        assertTrue(columns.get(0).getIs_primary_key());
+        assertFalse(columns.get(0).getIs_nullable());
+        assertEquals("NAME", columns.get(1).getName());
+        assertFalse(columns.get(1).getIs_primary_key());
+        assertEquals(Integer.valueOf(64), columns.get(1).getCharacter_maximum_length());
+    }
+
+    @Test
+    void doesNotMarkPrimaryKeysFromConfiguredCatalogWhenFallbackUnavailable() {
+        JdbcAgentProfile fallbackDisabledProfile = new JdbcAgentProfile(
+            "example.Driver",
+            "jdbc:example://{host}:{port}/{database}",
+            0,
+            false,
+            Collections.emptySet(),
+            Collections.singletonList("TABLE"),
+            "\"",
+            "SET SCHEMA",
+            false,
+            false,
+            false,
+            false
+        );
+        Connection disabledConn = catalogPrimaryKeyFallbackConnection(
+            "TENANTDB",
+            rows(),
+            rows(row("COLUMN_NAME", "ID")),
+            orderColumns()
+        );
+
+        List<ColumnInfo> disabledColumns = StandardJdbcMetadata.INSTANCE.getColumns(disabledConn, fallbackDisabledProfile, "TENANTDB", "APP", "ORDERS");
+
+        assertFalse(disabledColumns.get(0).getIs_primary_key());
+
+        Connection emptyCatalogConn = catalogPrimaryKeyFallbackConnection(
+            "TENANTDB",
+            rows(),
+            rows(row("COLUMN_NAME", "ID")),
+            orderColumns()
+        );
+
+        List<ColumnInfo> emptyCatalogColumns = StandardJdbcMetadata.INSTANCE.getColumns(emptyCatalogConn, profile, " ", "APP", "ORDERS");
+
+        assertFalse(emptyCatalogColumns.get(0).getIs_primary_key());
     }
 
     @Test
@@ -488,6 +570,87 @@ class StandardJdbcMetadataTest {
                 return defaultValue(method.getReturnType());
             }
         });
+    }
+
+    private static Connection catalogPrimaryKeyFallbackConnection(
+        String fallbackCatalog,
+        ResultSet defaultPrimaryKeys,
+        ResultSet fallbackPrimaryKeys,
+        ResultSet columns
+    ) {
+        DatabaseMetaData meta = proxy(DatabaseMetaData.class, new MethodHandler() {
+            @Override
+            public Object handle(Method method, Object[] args) {
+                String name = method.getName();
+                if ("getPrimaryKeys".equals(name)) {
+                    return fallbackCatalog.equals(args[0]) ? fallbackPrimaryKeys : defaultPrimaryKeys;
+                }
+                if ("getColumns".equals(name)) {
+                    return columns;
+                }
+                if ("getCatalogs".equals(name)) {
+                    return rows();
+                }
+                return defaultValue(method.getReturnType());
+            }
+        });
+        return proxy(Connection.class, new MethodHandler() {
+            @Override
+            public Object handle(Method method, Object[] args) {
+                if ("getMetaData".equals(method.getName())) {
+                    return meta;
+                }
+                return defaultValue(method.getReturnType());
+            }
+        });
+    }
+
+    private static Connection routineConnection(ResultSet procedures, ResultSet functions) {
+        DatabaseMetaData meta = proxy(DatabaseMetaData.class, new MethodHandler() {
+            @Override
+            public Object handle(Method method, Object[] args) {
+                String name = method.getName();
+                if ("getTables".equals(name) || "getTableTypes".equals(name)) {
+                    return rows();
+                }
+                if ("getProcedures".equals(name)) {
+                    return procedures;
+                }
+                if ("getFunctions".equals(name)) {
+                    return functions;
+                }
+                return defaultValue(method.getReturnType());
+            }
+        });
+        return proxy(Connection.class, new MethodHandler() {
+            @Override
+            public Object handle(Method method, Object[] args) {
+                if ("getMetaData".equals(method.getName())) {
+                    return meta;
+                }
+                return defaultValue(method.getReturnType());
+            }
+        });
+    }
+
+    private static ResultSet orderColumns() {
+        return rows(row(
+            "COLUMN_NAME", "ID",
+            "TYPE_NAME", "INTEGER",
+            "NULLABLE", DatabaseMetaData.columnNoNulls,
+            "COLUMN_DEF", null,
+            "REMARKS", "identifier",
+            "COLUMN_SIZE", 10,
+            "DECIMAL_DIGITS", 0
+        ), row(
+            "COLUMN_NAME", "NAME",
+            "TYPE_NAME", "VARCHAR",
+            "NULLABLE", DatabaseMetaData.columnNullable,
+            "COLUMN_DEF", null,
+            "REMARKS", null,
+            "COLUMN_SIZE", 64,
+            "DECIMAL_DIGITS", 0
+        ));
     }
 
     private static ResultSet rows(Map<String, Object>... rows) {

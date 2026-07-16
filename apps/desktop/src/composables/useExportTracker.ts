@@ -1,5 +1,6 @@
 import { reactive, computed } from "vue";
-import * as api from "@/lib/api";
+import * as api from "@/lib/backend/api";
+import { isTerminalTransferProgress } from "@/lib/backend/transferProgress";
 
 export type BackgroundTaskKind = "table-export" | "database-export" | "sql-file" | "data-transfer";
 export type BackgroundTaskStatus = "Running" | "Writing" | "Done" | "Error" | "Cancelled";
@@ -33,6 +34,7 @@ export interface ExportTask {
 
 const taskMap = reactive<Map<string, ExportTask>>(new Map());
 const activeTransferRuns = new Set<string>();
+const taskCancelHandlers = new Map<string, () => void | Promise<void>>();
 
 function normalizeExportStatus(status: string): BackgroundTaskStatus {
   if (status === "Writing" || status === "Done" || status === "Error" || status === "Cancelled") return status;
@@ -46,9 +48,9 @@ function normalizeSqlFileStatus(status: api.SqlFileStatus): BackgroundTaskStatus
   return "Running";
 }
 
-function normalizeTransferStatus(status: api.TransferProgress["status"]): BackgroundTaskStatus {
+function normalizeTransferStatus(status: api.TransferProgress["status"], terminal: boolean): BackgroundTaskStatus {
   if (status === "done") return "Done";
-  if (status === "error") return "Error";
+  if (status === "error") return terminal ? "Error" : "Running";
   if (status === "cancelled") return "Cancelled";
   return "Running";
 }
@@ -200,7 +202,7 @@ export function useExportTracker() {
     void (async () => {
       try {
         await api.startTransfer(request, (progress) => {
-          terminalStatus = progress.status === "done" || progress.status === "error" || progress.status === "cancelled" ? progress.status : terminalStatus;
+          terminalStatus = isTerminalTransferProgress(progress) ? progress.status : terminalStatus;
           updateDataTransferTask(progress.transferId, progress);
         });
 
@@ -217,6 +219,7 @@ export function useExportTracker() {
           totalRows: task.totalRows,
           status: "error",
           error: e?.message || String(e),
+          terminal: true,
         });
       } finally {
         activeTransferRuns.delete(request.transferId);
@@ -266,7 +269,7 @@ export function useExportTracker() {
   function updateDataTransferTask(transferId: string, progress: api.TransferProgress) {
     const task = taskMap.get(transferId);
     if (!task) return;
-    const nextStatus = normalizeTransferStatus(progress.status);
+    const nextStatus = normalizeTransferStatus(progress.status, progress.terminal);
     const hadError = task.status === "Error";
     task.status = hadError && nextStatus === "Done" ? "Error" : nextStatus;
     task.errorMessage = progress.error || task.errorMessage || null;
@@ -281,20 +284,33 @@ export function useExportTracker() {
 
   function removeTask(exportId: string) {
     taskMap.delete(exportId);
+    taskCancelHandlers.delete(exportId);
   }
 
   function clearFinished() {
     for (const [id, task] of taskMap) {
       if (task.status === "Done" || task.status === "Error" || task.status === "Cancelled") {
         taskMap.delete(id);
+        taskCancelHandlers.delete(id);
       }
     }
+  }
+
+  function registerTaskCancelHandler(exportId: string, handler: () => void | Promise<void>) {
+    taskCancelHandlers.set(exportId, handler);
+  }
+
+  function unregisterTaskCancelHandler(exportId: string) {
+    taskCancelHandlers.delete(exportId);
   }
 
   async function cancelTask(exportId: string) {
     const task = taskMap.get(exportId);
     try {
-      if (task?.kind === "database-export") {
+      const customHandler = taskCancelHandlers.get(exportId);
+      if (customHandler) {
+        await customHandler();
+      } else if (task?.kind === "database-export") {
         await api.cancelDatabaseExport(exportId);
       } else if (task?.kind === "sql-file") {
         await api.cancelSqlFileExecution(exportId);
@@ -321,6 +337,8 @@ export function useExportTracker() {
     updateDatabaseExportTask,
     updateSqlFileTask,
     updateDataTransferTask,
+    registerTaskCancelHandler,
+    unregisterTaskCancelHandler,
     removeTask,
     clearFinished,
     cancelTask,

@@ -1,17 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import {
-  activeResultRun,
-  databaseDisplayNameForTab,
-  executionSummaryItems,
-  nextExecutionSummaryView,
-  resultGridCacheKey,
-  resultRunItems,
-  tabDisplayTitle,
-  tabModeLabel,
-  tabularResultItems,
-} from "../../apps/desktop/src/lib/tabPresentation.ts";
+import { activeResultRun, databaseDisplayNameForTab, executionSummaryItems, middleEllipsis, nextExecutionSummaryView, resultGridCacheKey, resultRunItems, resultSourceRange, resultSqlForGrid, tabDisplayTitle, tabModeLabel, tabularResultItems } from "../../apps/desktop/src/lib/tabs/tabPresentation.ts";
 import { useConnectionStore } from "../../apps/desktop/src/stores/connectionStore.ts";
 import type { ConnectionConfig, QueryResult, QueryTab } from "../../apps/desktop/src/types/database.ts";
 
@@ -189,16 +179,69 @@ test("tabular result items hide statement results without returned columns", () 
 });
 
 test("tabular result items expose source labels when available", () => {
-  const results = [result([]), result(["id"], { sourceLabel: "public.users" }), result(["name"])];
+  const results = [result([]), result(["id"], { sourceLabel: "public.users", sourceStatement: "select * from public.users" }), result(["name"], { sourceStatement: "select id, name, email, created_at from users where active = true order by created_at desc" })];
 
   assert.deepEqual(
-    tabularResultItems(results).map((item) => ({ index: item.index, n: item.n, label: item.label })),
+    tabularResultItems(results).map((item) => ({ index: item.index, n: item.n, label: item.label, title: item.title })),
     [
-      { index: 1, n: 1, label: "public.users" },
-      { index: 2, n: 2, label: undefined },
+      { index: 1, n: 1, label: "public.users", title: "public.users" },
+      { index: 2, n: 2, label: undefined, title: "select id, name, email, created_at from users where active = true order by created_at desc" },
     ],
   );
-  assert.deepEqual(tabularResultItems([result(["id"], { sourceLabel: "db.users" })]).map((item) => item.label), ["db.users"]);
+  assert.deepEqual(
+    tabularResultItems([result(["id"], { sourceLabel: "db.users" })]).map((item) => item.label),
+    ["db.users"],
+  );
+});
+
+test("middleEllipsis preserves the beginning and end of long source labels", () => {
+  assert.equal(middleEllipsis("easy_manager_tool.tool_monitor_data_index_item"), "easy_manage...index_item");
+  assert.equal(middleEllipsis("aaa.apis"), "aaa.apis");
+});
+
+test("resultSourceRange uses the result index for repeated SQL", () => {
+  const sql = "select * from users;\nselect * from users;";
+  assert.deepEqual(resultSourceRange(sql, { sourceStatement: "select * from users" }, 1, "mysql"), {
+    from: sql.lastIndexOf("select"),
+    to: sql.length - 1,
+    sql: "select * from users",
+  });
+  assert.equal(resultSourceRange("select * from users;", { sourceStatement: "select * from orders" }, 0, "mysql"), undefined);
+});
+
+test("resultSourceRange resolves newline-separated MongoDB commands", () => {
+  const sql = "db.model_field_group.find({})\n\ndb.model_info.find({})";
+  const sourceStatement = "db.model_info.find({})";
+
+  assert.deepEqual(resultSourceRange(sql, { sourceStatement }, 1, "mongodb"), {
+    from: sql.indexOf(sourceStatement),
+    to: sql.length,
+    sql: sourceStatement,
+  });
+});
+
+test("resultSourceRange resolves newline-separated Redis commands", () => {
+  const sql = "GET first\n\nGET second";
+  const sourceStatement = "GET second";
+
+  assert.deepEqual(resultSourceRange(sql, { sourceStatement }, 1, "redis"), {
+    from: sql.indexOf(sourceStatement),
+    to: sql.length,
+    sql: sourceStatement,
+  });
+});
+
+test("resultSqlForGrid prefers the active result source statement", () => {
+  const tab = queryTab({
+    sql: "select * from users; select * from orders",
+    lastExecutedSql: "select * from users; select * from orders",
+    resultBaseSql: "select * from users; select * from orders",
+    result: result(["id"], { sourceStatement: "select * from orders" }),
+  });
+
+  assert.equal(resultSqlForGrid(tab), "select * from orders");
+  assert.equal(resultSqlForGrid(queryTab({ sql: "select 1", resultBaseSql: "select 2" })), "select 2");
+  assert.equal(resultSqlForGrid(queryTab({ sql: "select 1", lastExecutedSql: "select 3" })), "select 3");
 });
 
 test("result run items expose ordered labels and active state", () => {
@@ -229,7 +272,10 @@ test("result run items expose ordered labels and active state", () => {
     { id: "run-2", title: "Run 2", sequence: 2, active: true },
   ]);
   assert.equal(activeResultRun(tab)?.id, "run-2");
-  assert.deepEqual(resultRunItems(queryTab()).map((item) => item.title), []);
+  assert.deepEqual(
+    resultRunItems(queryTab()).map((item) => item.title),
+    [],
+  );
 });
 
 test("result grid cache key includes result run id and statement result index", () => {

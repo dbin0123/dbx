@@ -56,8 +56,41 @@ public abstract class ConfiguredJdbcAgent extends AbstractJdbcAgent {
     }
 
     @Override
+    public List<TableInfo> listTables(String schema, List<String> objectTypes) {
+        return listTables(schema, new MetadataListConstraints(null, null, null, objectTypes));
+    }
+
+    @Override
+    public List<TableInfo> listTables(String schema, MetadataListConstraints constraints) {
+        return StandardJdbcMetadata.INSTANCE.listTables(
+            requireConnection(),
+            profile,
+            configuredDatabase,
+            schema,
+            constraints
+        );
+    }
+
+    @Override
     public List<ObjectInfo> listObjects(String schema) {
-        return StandardJdbcMetadata.INSTANCE.listObjects(listTables(schema), schema);
+        return StandardJdbcMetadata.INSTANCE.listObjects(
+            requireConnection(),
+            profile,
+            configuredDatabase,
+            schema,
+            MetadataListConstraints.NONE
+        );
+    }
+
+    @Override
+    public List<ObjectInfo> listObjects(String schema, MetadataListConstraints constraints) {
+        return StandardJdbcMetadata.INSTANCE.listObjects(
+            requireConnection(),
+            profile,
+            configuredDatabase,
+            schema,
+            constraints
+        );
     }
 
     @Override
@@ -111,7 +144,14 @@ public abstract class ConfiguredJdbcAgent extends AbstractJdbcAgent {
             foreignKeys = Collections.emptyList();
         }
 
-        return DatabaseAgent.buildTableDdl(schema, table, getColumns(schema, table), indexes, foreignKeys);
+        String tableComment = null;
+        try {
+            tableComment = getTableComment(schema, table);
+        } catch (RuntimeException e) {
+            // Table comment is optional; DDL generation should still succeed without it.
+        }
+
+        return DdlBuilder.buildTableDdl(schema, table, getColumns(schema, table), indexes, foreignKeys, Collections.emptyList(), false, false, tableComment);
     }
 
     @Override

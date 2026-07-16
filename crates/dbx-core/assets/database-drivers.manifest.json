@@ -117,6 +117,35 @@
       }
     },
     {
+      "dbType": "cloudflare-d1",
+      "label": "Cloudflare D1",
+      "runtimeMode": "native",
+      "mcpMode": "bridge",
+      "singleConnectionPool": true,
+      "metadataConnectionScoped": false,
+      "skipTcpProbe": true,
+      "defaultPort": 443,
+      "supportLevel": "operate",
+      "capabilities": {
+        "queryExecution": true,
+        "metadataBrowse": true,
+        "objectBrowser": true,
+        "objectSource": true,
+        "schemaSearch": true,
+        "diagram": true,
+        "tableDataEdit": true,
+        "tableStructureEdit": false,
+        "tableImport": true,
+        "dataTransfer": true,
+        "sqlFileExecution": true,
+        "databaseCreate": false,
+        "fieldLineage": true,
+        "sqlExplain": false,
+        "userAdmin": false,
+        "driverManagement": false
+      }
+    },
+    {
       "dbType": "redis",
       "label": "Redis",
       "runtimeMode": "native",
@@ -212,6 +241,12 @@
       "skipTcpProbe": false,
       "defaultPort": 1433,
       "supportLevel": "operate",
+      "driverProfiles": [
+        {
+          "profile": "sqlserver-legacy",
+          "agentKey": "sqlserver-legacy"
+        }
+      ],
       "capabilities": {
         "queryExecution": true,
         "metadataBrowse": true,
@@ -226,7 +261,7 @@
         "sqlFileExecution": true,
         "databaseCreate": true,
         "fieldLineage": true,
-        "sqlExplain": false,
+        "sqlExplain": true,
         "userAdmin": false,
         "driverManagement": false
       }
@@ -284,9 +319,9 @@
         "tableImport": true,
         "dataTransfer": true,
         "sqlFileExecution": true,
-        "databaseCreate": true,
+        "databaseCreate": false,
         "fieldLineage": true,
-        "sqlExplain": false,
+        "sqlExplain": true,
         "userAdmin": false,
         "driverManagement": true
       }
@@ -490,7 +525,7 @@
         "databaseCreate": true,
         "fieldLineage": false,
         "sqlExplain": false,
-        "userAdmin": false,
+        "userAdmin": true,
         "driverManagement": false
       }
     },
@@ -603,9 +638,9 @@
         "tableDataEdit": true,
         "tableStructureEdit": true,
         "tableImport": true,
-        "dataTransfer": false,
+        "dataTransfer": true,
         "sqlFileExecution": true,
-        "databaseCreate": false,
+        "databaseCreate": true,
         "fieldLineage": false,
         "sqlExplain": false,
         "userAdmin": true,
@@ -635,7 +670,7 @@
         "tableImport": true,
         "dataTransfer": false,
         "sqlFileExecution": true,
-        "databaseCreate": false,
+        "databaseCreate": true,
         "fieldLineage": false,
         "sqlExplain": false,
         "userAdmin": true,
@@ -725,7 +760,7 @@
         "tableImport": false,
         "dataTransfer": false,
         "sqlFileExecution": true,
-        "databaseCreate": false,
+        "databaseCreate": true,
         "fieldLineage": false,
         "sqlExplain": false,
         "userAdmin": false,
@@ -813,7 +848,7 @@
         "tableImport": true,
         "dataTransfer": false,
         "sqlFileExecution": true,
-        "databaseCreate": false,
+        "databaseCreate": true,
         "fieldLineage": false,
         "sqlExplain": false,
         "userAdmin": false,
@@ -1067,7 +1102,7 @@
       "singleConnectionPool": true,
       "metadataConnectionScoped": false,
       "skipTcpProbe": true,
-      "defaultPort": 2881,
+      "defaultPort": 2883,
       "supportLevel": "operate",
       "capabilities": {
         "queryExecution": true,
@@ -1081,7 +1116,7 @@
         "tableImport": false,
         "dataTransfer": true,
         "sqlFileExecution": true,
-        "databaseCreate": true,
+        "databaseCreate": false,
         "fieldLineage": true,
         "sqlExplain": false,
         "userAdmin": false,
@@ -1212,7 +1247,7 @@
         "tableImport": false,
         "dataTransfer": false,
         "sqlFileExecution": true,
-        "databaseCreate": false,
+        "databaseCreate": true,
         "fieldLineage": false,
         "sqlExplain": false,
         "userAdmin": false,
@@ -1570,7 +1605,7 @@
         "tableImport": false,
         "dataTransfer": false,
         "sqlFileExecution": true,
-        "databaseCreate": false,
+        "databaseCreate": true,
         "fieldLineage": false,
         "sqlExplain": false,
         "userAdmin": false,
@@ -1819,6 +1854,36 @@
         "sqlExplain": false,
         "userAdmin": false,
         "driverManagement": false
+      }
+    },
+    {
+      "dbType": "spark",
+      "label": "Apache Spark",
+      "runtimeMode": "agent",
+      "mcpMode": "bridge",
+      "agentKey": "spark",
+      "singleConnectionPool": false,
+      "metadataConnectionScoped": false,
+      "skipTcpProbe": true,
+      "defaultPort": 10015,
+      "supportLevel": "operate",
+      "capabilities": {
+        "queryExecution": true,
+        "metadataBrowse": true,
+        "objectBrowser": true,
+        "objectSource": false,
+        "schemaSearch": true,
+        "diagram": false,
+        "tableDataEdit": true,
+        "tableStructureEdit": false,
+        "tableImport": false,
+        "dataTransfer": true,
+        "sqlFileExecution": true,
+        "databaseCreate": false,
+        "fieldLineage": false,
+        "sqlExplain": false,
+        "userAdmin": false,
+        "driverManagement": true
       }
     }
   ]

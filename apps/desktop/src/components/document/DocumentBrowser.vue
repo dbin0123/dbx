@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount } from "vue";
-import { uuid } from "@/lib/utils";
+import { uuid } from "@/lib/common/utils";
 import { useI18n } from "vue-i18n";
-import { RefreshCw, RefreshCcw, Loader2, Trash2, Plus, Save, ChevronLeft, ChevronRight, Table2, Braces, X, Columns3, Check, Search, Wrench, Filter } from "@lucide/vue";
+import { RefreshCw, Trash2, Plus, Save, ChevronLeft, ChevronRight, Table2, Braces, X, Columns3, Check, Search, Wrench, Filter } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -12,12 +12,13 @@ import DangerConfirmDialog from "@/components/editor/DangerConfirmDialog.vue";
 import ErrorBanner from "@/components/ui/ErrorBanner.vue";
 import DataGrid from "@/components/grid/DataGrid.vue";
 import QueryLoadingState from "@/components/common/QueryLoadingState.vue";
-import * as api from "@/lib/api";
+import * as api from "@/lib/backend/api";
 import { useConnectionStore } from "@/stores/connectionStore";
-import { clampSearchSplitWidth } from "@/lib/dataGridSearchSplit";
-import { documentViewerFontStyle } from "@/lib/documentViewerFontStyle";
+import { clampSearchSplitWidth } from "@/lib/dataGrid/dataGridSearchSplit";
+import { documentViewerFontStyle } from "@/lib/document/documentViewerFontStyle";
 import {
   buildDocumentFilterCondition,
+  buildElasticsearchQueryFromRules,
   combineDocumentFilterConditions,
   currentDocumentFilterJson,
   currentDocumentSortJson,
@@ -25,15 +26,35 @@ import {
   documentFilterModeNeedsValue,
   documentFilterModeOptions,
   documentStoreProviderFor,
+  elasticsearchBoolClauseOptions,
+  elasticsearchQueryTypeNeedsValue,
+  elasticsearchQueryTypeOptions,
+  elasticsearchStructuredFilter,
   type DocumentFilterMode,
   type DocumentFilterRule,
-} from "@/lib/documentStoreProvider";
-import { buildMongoInsertDocument, buildMongoUpdateDocument, formatMongoShellLiteral, parseMongoDocumentInputValue, type MongoInputValue } from "@/lib/mongoDocumentValues";
-import { normalizeResultPageSize } from "@/lib/paginationPageSize";
+  type ElasticsearchBoolClause,
+  type ElasticsearchQueryType,
+} from "@/lib/app/documentStoreProvider";
+import {
+  isDocumentStoreIdentityField,
+  normalizeDocumentStoreRouting,
+  parseDocumentStoreInputValue,
+  parseDocumentStoreJsonDocument,
+  planDocumentStoreIdentityMigration,
+  resolveDocumentStoreWriteRouting,
+  serializeDocumentStoreId,
+  stringifyDocumentStoreValue,
+  documentStoreValueForGrid,
+} from "@/lib/app/documentJsonValues";
+import { applyDocumentStoreIdentityPlan, insertDocumentStoreDocument as insertDocumentStoreDocumentCore } from "@/lib/app/documentStoreSave";
+import RedisJsonEditor from "@/components/redis/RedisJsonEditor.vue";
+import { isLosslessJsonNumber, parseJsonPreservingLargeNumbers } from "@/lib/common/safeJsonFormat";
+import { buildMongoInsertDocument, buildMongoUpdateDocument, formatMongoShellLiteral, mongoDocumentIdForGrid, parseMongoDocumentInputValue, serializeMongoDocumentId, type MongoInputValue } from "@/lib/mongo/mongoDocumentValues";
+import { normalizeResultPageSize } from "@/lib/dataGrid/paginationPageSize";
 import { useSettingsStore } from "@/stores/settingsStore";
 import JsonEditNode from "./JsonEditNode.vue";
 import type { EditNode } from "@/types/editor";
-import type { DatabaseType, QueryResult } from "@/types/database";
+import type { ColumnInfo, DatabaseType, QueryResult } from "@/types/database";
 import type { CustomSaveHandler } from "@/composables/useDataGridEditor";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
@@ -53,6 +74,7 @@ type JsonRecord = Record<string, unknown>;
 type ViewMode = "document" | "table";
 
 const documents = ref<JsonRecord[]>([]);
+const copyDocuments = ref<JsonRecord[]>([]);
 const lastGridColumns = ref<string[]>([]);
 const total = ref(0);
 const loading = ref(false);
@@ -65,6 +87,8 @@ const selectedIdx = ref<number | null>(null);
 const editJson = ref("");
 const isEditing = ref(false);
 const isNew = ref(false);
+const documentEditMode = ref<"fields" | "json">("json");
+const isSavingDocument = ref(false);
 const error = ref("");
 const editFields = ref<EditNode[]>([]);
 const showDeleteConfirm = ref(false);
@@ -111,6 +135,7 @@ type DocumentGridChanges = {
 const documentFilterBuilderOpen = ref(false);
 const documentFilterRules = ref<DocumentFilterRule[]>([]);
 const appliedDocumentFilter = ref<Record<string, unknown> | null>(null);
+const elasticsearchMappingFields = ref<ColumnInfo[]>([]);
 
 const pendingDelete = ref<PendingDelete | null>(null);
 
@@ -131,8 +156,9 @@ const deleteDetails = computed(() => {
   if (!pending) return "";
   if (pending.kind === "document") {
     const id = documents.value[pending.index]?._id ?? "";
-    if (props.databaseType === "elasticsearch") return `Elasticsearch index: ${props.collection}\nDocument _id: ${String(id)}`;
-    return t("dangerDialog.mongoDocumentDetails", { collection: props.collection, id: String(id) });
+    const displayId = mongoDocumentIdForGrid(id);
+    if (props.databaseType === "elasticsearch") return `Elasticsearch index: ${props.collection}\nDocument _id: ${String(displayId)}`;
+    return t("dangerDialog.mongoDocumentDetails", { collection: props.collection, id: String(displayId) });
   }
   return t("dangerDialog.mongoFieldDetails", { field: pending.name || t("mongo.field") });
 });
@@ -162,21 +188,43 @@ const gridResult = computed<QueryResult>(() => {
     columns.map((col) => {
       const val = doc[col];
       if (val === undefined || val === null) return null;
-      if (typeof val === "object") return JSON.stringify(val);
+      if (col === "_id") return documentStoreProvider.value.kind === "elasticsearch" ? documentStoreValueForGrid(val, "elasticsearch") : mongoDocumentIdForGrid(val);
+      if (typeof val === "object") return documentStoreValueForGrid(val, documentStoreProvider.value.kind);
       if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") return val;
       return String(val);
     }),
   );
 
-  return { columns, rows, affected_rows: 0, execution_time_ms: 0, truncated: false };
+  return { columns, rows, mongo_documents: docs, mongo_copy_documents: copyDocuments.value, affected_rows: 0, execution_time_ms: 0, truncated: false };
 });
-const documentFilterFieldOptions = computed(() => gridResult.value.columns);
-const documentStructuredFilterCount = computed(() => (appliedDocumentFilter.value ? 1 : 0));
+const documentFilterFieldOptions = computed(() => {
+  if (documentStoreProvider.value.kind !== "elasticsearch") return gridResult.value.columns;
+  const names = [...elasticsearchMappingFields.value.map((field) => field.name), ...gridResult.value.columns, "_id", "_routing"];
+  return [...new Set(names.filter(Boolean))];
+});
+const elasticsearchFieldTypes = computed(() => new Map(elasticsearchMappingFields.value.map((field) => [field.name, field.data_type])));
+const documentStructuredFilterCount = computed(() => {
+  if (!appliedDocumentFilter.value) return 0;
+  if (documentStoreProvider.value.kind !== "elasticsearch") return 1;
+  const query = appliedDocumentFilter.value.$esQuery;
+  if (!query || typeof query !== "object" || Array.isArray(query)) return 0;
+  const bool = (query as Record<string, unknown>).bool;
+  if (!bool || typeof bool !== "object" || Array.isArray(bool)) return 0;
+  return elasticsearchBoolClauseOptions.reduce((count, clause) => {
+    const rules = (bool as Record<string, unknown>)[clause];
+    return count + (Array.isArray(rules) ? rules.length : 0);
+  }, 0);
+});
 const documentLoadingLabelKey = computed(() => (documentLoadCancelling.value ? "common.stopping" : "common.loading"));
 let documentLoadingTimer: ReturnType<typeof setInterval> | undefined;
 
 function createDocumentFilterRule(): DocumentFilterRule {
-  return defaultDocumentFilterRule(uuid(), documentFilterFieldOptions.value[0] ?? "");
+  const fieldName = documentFilterFieldOptions.value[0] ?? "";
+  const rule = defaultDocumentFilterRule(uuid(), fieldName);
+  if (documentStoreProvider.value.kind === "elasticsearch") {
+    rule.elasticsearchQueryType = elasticsearchQueryTypeOptions(elasticsearchFieldTypes.value.get(fieldName))[0];
+  }
+  return rule;
 }
 
 function ensureDocumentFilterRule() {
@@ -199,9 +247,31 @@ function updateDocumentFilterRule(ruleId: string, patch: Partial<DocumentFilterR
   documentFilterRules.value = documentFilterRules.value.map((rule) => {
     if (rule.id !== ruleId) return rule;
     const next = { ...rule, ...patch };
-    if (!documentFilterModeNeedsValue(next.mode)) next.rawValue = "";
+    if (documentStoreProvider.value.kind === "elasticsearch") {
+      const queryTypes = elasticsearchQueryTypeOptions(elasticsearchFieldTypes.value.get(next.fieldName));
+      if (!next.elasticsearchQueryType || !queryTypes.includes(next.elasticsearchQueryType)) {
+        next.elasticsearchQueryType = queryTypes[0];
+      }
+      if (!elasticsearchQueryTypeNeedsValue(next.elasticsearchQueryType)) next.rawValue = "";
+    } else if (!documentFilterModeNeedsValue(next.mode)) {
+      next.rawValue = "";
+    }
     return next;
   });
+}
+
+function elasticsearchRuleQueryTypes(rule: DocumentFilterRule): ElasticsearchQueryType[] {
+  return elasticsearchQueryTypeOptions(elasticsearchFieldTypes.value.get(rule.fieldName));
+}
+
+function elasticsearchQueryTypeLabel(queryType: ElasticsearchQueryType): string {
+  const rangeOperator: Partial<Record<ElasticsearchQueryType, string>> = {
+    range_gt: "range >",
+    range_gte: "range >=",
+    range_lt: "range <",
+    range_lte: "range <=",
+  };
+  return rangeOperator[queryType] ?? queryType;
 }
 
 function resetDocumentFilterBuilder() {
@@ -230,6 +300,12 @@ const documentQueryPreview = computed(() => {
 });
 
 async function applyDocumentStructuredFilters() {
+  if (documentStoreProvider.value.kind === "elasticsearch") {
+    appliedDocumentFilter.value = elasticsearchStructuredFilter(buildElasticsearchQueryFromRules(documentFilterRules.value));
+    documentFilterBuilderOpen.value = false;
+    applyFilter();
+    return;
+  }
   const items = documentFilterRules.value
     .map((rule) => ({
       rule,
@@ -245,6 +321,15 @@ async function applyDocumentStructuredFilters() {
   applyFilter();
 }
 
+async function loadElasticsearchMappingFields() {
+  if (documentStoreProvider.value.kind !== "elasticsearch") return;
+  try {
+    elasticsearchMappingFields.value = await api.getColumns(props.connectionId, props.database, "", props.collection);
+  } catch {
+    elasticsearchMappingFields.value = [];
+  }
+}
+
 function clearDocumentFilters(clearLocalFilter?: (columnIndex?: number) => void) {
   appliedDocumentFilter.value = null;
   resetDocumentFilterBuilder();
@@ -254,26 +339,40 @@ function clearDocumentFilters(clearLocalFilter?: (columnIndex?: number) => void)
 
 function documentIdFromGridValue(value: MongoInputValue | undefined): string | null {
   if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('"')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        return typeof parsed === "string" && parsed.trim() ? parsed : trimmed;
+      } catch {
+        return trimmed;
+      }
+    }
+    return trimmed;
+  }
   const parsed = parseMongoDocumentInputValue(value);
   if (parsed === null || parsed === undefined) return null;
   const id = typeof parsed === "object" ? JSON.stringify(parsed) : String(parsed);
   return id.trim() ? id : null;
 }
 
-function documentRoutingValue(value: unknown): string | undefined {
-  if (value === null || value === undefined) return undefined;
-  const routing = typeof value === "string" ? value : String(value);
-  const trimmed = routing.trim();
-  return trimmed ? trimmed : undefined;
-}
-
 function documentRoutingFromDocument(doc: JsonRecord | undefined): string | undefined {
-  return documentRoutingValue(doc?._routing);
+  return normalizeDocumentStoreRouting(doc?._routing);
 }
 
 function documentRoutingFromGridRow(row: MongoInputValue[] | undefined, columns: string[]): string | undefined {
   const routingColIdx = columns.indexOf("_routing");
-  return routingColIdx >= 0 ? documentRoutingValue(row?.[routingColIdx]) : undefined;
+  return routingColIdx >= 0 ? normalizeDocumentStoreRouting(row?.[routingColIdx]) : undefined;
+}
+
+function documentStoreWriteApis() {
+  return {
+    insert: (docJson: string, routing?: string) => api.documentInsertDocument(props.connectionId, props.database, props.collection, docJson, routing),
+    update: (id: string, docJson: string, routing?: string) => api.documentUpdateDocument(props.connectionId, props.database, props.collection, id, docJson, routing),
+    delete: (id: string, routing?: string) => api.documentDeleteDocument(props.connectionId, props.database, props.collection, id, routing),
+  };
 }
 
 async function gridSave(changes: DocumentGridChanges) {
@@ -298,34 +397,38 @@ async function gridSave(changes: DocumentGridChanges) {
         if (newVal === null) {
           delete updated[col];
         } else {
-          updated[col] = parseMongoDocumentInputValue(newVal);
+          updated[col] = parseDocumentStoreInputValue(newVal, "elasticsearch");
         }
       }
-      await api.documentUpdateDocument(props.connectionId, props.database, props.collection, String(id), JSON.stringify(updated), routing);
+      await api.documentUpdateDocument(props.connectionId, props.database, props.collection, String(id), stringifyDocumentStoreValue(updated, "elasticsearch"), routing);
       continue;
     }
 
-    const updateDoc = buildMongoUpdateDocument(dirtyCols, cols);
+    const updateDoc = buildMongoUpdateDocument(dirtyCols, cols, documents.value[rowIdx]);
     if (Object.keys(updateDoc).length === 0) continue;
-    await api.documentUpdateDocument(props.connectionId, props.database, props.collection, String(id), JSON.stringify(updateDoc));
+    const documentId = documents.value[rowIdx]?._id ?? id;
+    await api.documentUpdateDocument(props.connectionId, props.database, props.collection, serializeMongoDocumentId(documentId), JSON.stringify(updateDoc));
   }
 
   for (const rowIdx of changes.deletedRows) {
     const row = changes.rows[rowIdx];
     const id = row?.[idColIdx];
     if (id == null) continue;
-    const routing = isEs ? documentRoutingFromDocument(documents.value[rowIdx]) : undefined;
-    await api.documentDeleteDocument(props.connectionId, props.database, props.collection, String(id), routing);
+    const document = documents.value[rowIdx];
+    const routing = isEs ? documentRoutingFromDocument(document) : undefined;
+    const documentId = isEs ? id : (document?._id ?? id);
+    await api.documentDeleteDocument(props.connectionId, props.database, props.collection, isEs ? String(documentId) : serializeMongoDocumentId(documentId), routing);
   }
 
   for (const newRow of changes.newRows) {
-    const doc = buildMongoInsertDocument(newRow, cols);
+    const doc = isEs ? buildElasticsearchInsertDocument(newRow, cols) : buildMongoInsertDocument(newRow, cols);
     if (isEs) {
       const id = documentIdFromGridValue(newRow[idColIdx]);
+      const routing = documentRoutingFromGridRow(newRow, cols);
       if (id) {
-        await api.documentUpdateDocument(props.connectionId, props.database, props.collection, id, JSON.stringify(doc), documentRoutingFromGridRow(newRow, cols));
+        await api.documentUpdateDocument(props.connectionId, props.database, props.collection, id, stringifyDocumentStoreValue(doc, "elasticsearch"), routing);
       } else {
-        await api.documentInsertDocument(props.connectionId, props.database, props.collection, JSON.stringify(doc));
+        await api.documentInsertDocument(props.connectionId, props.database, props.collection, stringifyDocumentStoreValue(doc, "elasticsearch"), routing);
       }
       continue;
     }
@@ -335,17 +438,15 @@ async function gridSave(changes: DocumentGridChanges) {
   await load();
 }
 
-function formatMongoValue(val: unknown): string {
-  if (val === null || val === undefined) return "null";
-  if (typeof val === "number" || typeof val === "boolean") return String(val);
-  if (typeof val === "string") return JSON.stringify(val);
-  return JSON.stringify(val);
-}
-
-function mongoIdPreview(val: unknown): string {
-  if (val === null || val === undefined) return "null";
-  if (typeof val === "string" && /^[a-fA-F0-9]{24}$/.test(val)) return `ObjectId("${val}")`;
-  return formatMongoValue(val);
+function buildElasticsearchInsertDocument(row: MongoInputValue[], columns: string[]): JsonRecord {
+  const doc: JsonRecord = {};
+  for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
+    const column = columns[columnIndex];
+    if (!column || column === "_id" || column === "_routing") continue;
+    const value = row[columnIndex];
+    if (value !== null) doc[column] = parseDocumentStoreInputValue(value, "elasticsearch");
+  }
+  return doc;
 }
 
 function elasticsearchPathIdPreview(id: string): string {
@@ -357,13 +458,13 @@ function elasticsearchRoutingPreview(routing: string | undefined): string {
 }
 
 function buildElasticsearchPartialUpdateDocument(changes: Map<number, MongoInputValue>, columns: string[]): Record<string, unknown> {
-  const filtered = new Map<number, MongoInputValue>();
+  const document: Record<string, unknown> = {};
   for (const [colIdx, newVal] of changes) {
     const col = columns[colIdx];
     if (col === "_id" || col === "_routing") continue;
-    filtered.set(colIdx, newVal);
+    if (col && newVal !== null) document[col] = parseDocumentStoreInputValue(newVal, "elasticsearch");
   }
-  return buildMongoUpdateDocument(filtered, columns);
+  return document;
 }
 
 async function previewDocumentChanges(changes: DocumentGridChanges): Promise<string[]> {
@@ -380,10 +481,10 @@ async function previewDocumentChanges(changes: DocumentGridChanges): Promise<str
     if (isEs) {
       const updateDoc = buildElasticsearchPartialUpdateDocument(dirtyCols, columns);
       const routing = documentRoutingFromGridRow(row, columns);
-      stmts.push(`POST /${coll}/_update/${elasticsearchPathIdPreview(String(id))}${elasticsearchRoutingPreview(routing)}\n${JSON.stringify({ doc: updateDoc.$set ?? updateDoc }, null, 2)}`);
+      stmts.push(`POST /${coll}/_update/${elasticsearchPathIdPreview(String(id))}${elasticsearchRoutingPreview(routing)}\n${stringifyDocumentStoreValue({ doc: updateDoc.$set ?? updateDoc }, "elasticsearch", 2)}`);
     } else {
-      const updateDoc = buildMongoUpdateDocument(dirtyCols, columns);
-      stmts.push(`db.${coll}.updateOne({_id: ${mongoIdPreview(id)}}, ${formatMongoShellLiteral(updateDoc)})`);
+      const updateDoc = buildMongoUpdateDocument(dirtyCols, columns, documents.value[rowIdx]);
+      stmts.push(`db.${coll}.updateOne({_id: ${formatMongoShellLiteral(documents.value[rowIdx]?._id ?? id)}}, ${formatMongoShellLiteral(updateDoc)})`);
     }
   }
 
@@ -395,18 +496,18 @@ async function previewDocumentChanges(changes: DocumentGridChanges): Promise<str
       const routing = documentRoutingFromGridRow(row, columns);
       stmts.push(`DELETE /${coll}/_doc/${elasticsearchPathIdPreview(String(id))}${elasticsearchRoutingPreview(routing)}`);
     } else {
-      stmts.push(`db.${coll}.deleteOne({_id: ${mongoIdPreview(id)}})`);
+      stmts.push(`db.${coll}.deleteOne({_id: ${formatMongoShellLiteral(documents.value[rowIdx]?._id ?? id)}})`);
     }
   }
 
   for (const newRow of newRows) {
-    const doc = buildMongoInsertDocument(newRow, columns);
+    const doc = isEs ? buildElasticsearchInsertDocument(newRow, columns) : buildMongoInsertDocument(newRow, columns);
     if (isEs) {
       const id = idColIdx >= 0 ? documentIdFromGridValue(newRow[idColIdx]) : null;
       if (id) {
-        stmts.push(`PUT /${coll}/_doc/${elasticsearchPathIdPreview(id)}\n${JSON.stringify(doc, null, 2)}`);
+        stmts.push(`PUT /${coll}/_doc/${elasticsearchPathIdPreview(id)}\n${stringifyDocumentStoreValue(doc, "elasticsearch", 2)}`);
       } else {
-        stmts.push(`POST /${coll}/_doc\n${JSON.stringify(doc, null, 2)}`);
+        stmts.push(`POST /${coll}/_doc\n${stringifyDocumentStoreValue(doc, "elasticsearch", 2)}`);
       }
     } else {
       stmts.push(`db.${coll}.insertOne(${formatMongoShellLiteral(doc)})`);
@@ -421,6 +522,7 @@ const customSaveHandler = computed<CustomSaveHandler>(() => ({
   preview: previewDocumentChanges,
   supportsInsert: true,
   readonlyColumns: documentStoreProvider.value.kind === "elasticsearch" ? ["_routing"] : undefined,
+  targetLabel: props.collection,
 }));
 
 function stopDocumentLoadingTimer() {
@@ -452,8 +554,19 @@ async function load() {
     const sort = currentDocumentSortJson(sortInput.value);
     const result = await api.documentFindDocuments(props.connectionId, props.database, props.collection, page.value * pageSize.value, pageSize.value, filter, undefined, sort, executionId);
     if (documentLoadExecutionId.value !== executionId) return;
-    const nextDocuments = result.documents.map(asRecord);
+    const nextDocuments =
+      documentStoreProvider.value.kind === "elasticsearch" && result.raw_documents?.length === result.documents.length
+        ? result.raw_documents.map((raw, index) => {
+            try {
+              return asRecord(parseJsonPreservingLargeNumbers(raw));
+            } catch {
+              return asRecord(result.documents[index]);
+            }
+          })
+        : result.documents.map(asRecord);
+    const nextCopyDocuments = result.extended_documents?.length === nextDocuments.length ? result.extended_documents.map(asRecord) : nextDocuments;
     documents.value = nextDocuments;
+    copyDocuments.value = nextCopyDocuments;
     if (nextDocuments.length > 0) {
       const keySet = new Set<string>();
       keySet.add("_id");
@@ -542,52 +655,146 @@ function syncSelectedDocumentAfterLoad(previousSelectedIdx: number | null, previ
 
   selectedIdx.value = nextIdx;
   if (!isEditing.value) {
-    editJson.value = JSON.stringify(documents.value[nextIdx], null, 2);
+    editJson.value = stringifyDocumentStoreValue(documents.value[nextIdx], documentStoreProvider.value.kind, 2);
   }
+}
+
+function emptyDocumentJson(): string {
+  return stringifyDocumentStoreValue({}, documentStoreProvider.value.kind, 2);
+}
+
+function documentEditErrorMessage(result: { error: "empty" | "invalid" | "not-object" | "unsupported-number" } | { error: "duplicate-key"; field: string }): string {
+  if (result.error === "not-object") return t("mongo.documentMustBeObject");
+  if (result.error === "unsupported-number") return t("mongo.unsupportedJsonNumber");
+  if (result.error === "duplicate-key") return t("mongo.duplicateJsonKey", { field: result.field });
+  return t("mongo.invalidJson");
+}
+
+function buildEditFieldsFromDocument(doc: JsonRecord): EditNode[] {
+  return Object.entries(doc).map(([name, value]) => {
+    const isMetadata = isDocumentStoreIdentityField(documentStoreProvider.value.kind, name);
+    // Metadata field names stay fixed; values are editable so _id / routing rekey is possible.
+    return createEditNode(name, value, isMetadata, false);
+  });
+}
+
+function metadataFieldsFromDocument(doc: JsonRecord | undefined): JsonRecord {
+  const metadata: JsonRecord = {};
+  if (!doc) return metadata;
+  if (Object.prototype.hasOwnProperty.call(doc, "_id")) metadata._id = doc._id;
+  if (documentStoreProvider.value.kind === "elasticsearch" && Object.prototype.hasOwnProperty.call(doc, "_routing")) {
+    metadata._routing = doc._routing;
+  }
+  return metadata;
+}
+
+function currentDocumentMetadata(): JsonRecord {
+  if (selectedDoc.value) return metadataFieldsFromDocument(selectedDoc.value);
+  // New documents keep metadata that already exists in either editor mode.
+  if (documentEditMode.value === "json") {
+    const parsed = parseDocumentStoreJsonDocument(editJson.value, documentStoreProvider.value.kind);
+    return parsed.ok ? metadataFieldsFromDocument(parsed.document) : {};
+  }
+  const metadata: JsonRecord = {};
+  for (const field of editFields.value) {
+    const name = field.keyName.trim();
+    if (isDocumentStoreIdentityField(documentStoreProvider.value.kind, name)) {
+      metadata[name] = buildValueFromNode(field, name);
+    }
+  }
+  return metadata;
+}
+
+function syncEditJsonFromFields() {
+  const doc = buildDocumentFromFields();
+  // Field mode omits root metadata keys; restore them for JSON round-trips (new + existing).
+  Object.assign(doc, currentDocumentMetadata());
+  editJson.value = stringifyDocumentStoreValue(doc, documentStoreProvider.value.kind, 2);
+}
+
+function setDocumentEditMode(mode: "fields" | "json") {
+  if (!isEditing.value || documentEditMode.value === mode) return;
+  error.value = "";
+  if (mode === "json") {
+    try {
+      syncEditJsonFromFields();
+      documentEditMode.value = "json";
+    } catch (e: unknown) {
+      error.value = e instanceof Error ? e.message : String(e);
+    }
+    return;
+  }
+
+  const parsed = parseDocumentStoreJsonDocument(editJson.value, documentStoreProvider.value.kind);
+  if (!parsed.ok) {
+    error.value = documentEditErrorMessage(parsed);
+    return;
+  }
+  editFields.value = buildEditFieldsFromDocument(parsed.document);
+  documentEditMode.value = "fields";
 }
 
 function selectDoc(idx: number) {
   selectedIdx.value = idx;
-  editJson.value = JSON.stringify(documents.value[idx], null, 2);
+  editJson.value = stringifyDocumentStoreValue(documents.value[idx], documentStoreProvider.value.kind, 2);
   isEditing.value = false;
   isNew.value = false;
+  documentEditMode.value = "fields";
   editFields.value = [];
+  error.value = "";
 }
 
 function startNew() {
   selectedIdx.value = null;
-  editJson.value = "";
+  editJson.value = emptyDocumentJson();
   editFields.value = [createEditNode("", "", false, false)];
+  documentEditMode.value = "json";
   isEditing.value = true;
   isNew.value = true;
+  error.value = "";
 }
 
 function startEdit() {
   const doc = selectedDoc.value;
   if (!doc) return;
-  editFields.value = Object.entries(doc).map(([name, value]) => {
-    const readonlyMetadata = name === "_id" || (documentStoreProvider.value.kind === "elasticsearch" && name === "_routing");
-    return createEditNode(name, value, readonlyMetadata, readonlyMetadata);
-  });
+  // Issue #2952: open whole-document JSON editing by default (DBeaver-style), not field tree.
+  editJson.value = stringifyDocumentStoreValue(doc, documentStoreProvider.value.kind, 2);
+  editFields.value = buildEditFieldsFromDocument(doc);
+  documentEditMode.value = "json";
   isEditing.value = true;
   isNew.value = false;
+  error.value = "";
 }
 
 function cancelEdit() {
   isEditing.value = false;
+  documentEditMode.value = "fields";
   if (isNew.value) {
     isNew.value = false;
     editFields.value = [];
+    editJson.value = "";
+    error.value = "";
     return;
   }
   if (selectedDoc.value) {
-    editJson.value = JSON.stringify(selectedDoc.value, null, 2);
+    editJson.value = stringifyDocumentStoreValue(selectedDoc.value, documentStoreProvider.value.kind, 2);
   }
   editFields.value = [];
   error.value = "";
 }
 
 function createEditNode(keyName: string, value: unknown, readonlyKey: boolean, readonlyValue: boolean): EditNode {
+  if (isLosslessJsonNumber(value)) {
+    return {
+      key: uuid(),
+      keyName,
+      kind: "value",
+      valueText: value.raw,
+      readonlyKey,
+      readonlyValue,
+      children: [],
+    };
+  }
   if (Array.isArray(value)) {
     return {
       key: uuid(),
@@ -643,12 +850,12 @@ function formatForEdit(value: unknown): string {
   if (value === undefined) return "";
   if (value === null) return "null";
   if (typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "object") return JSON.stringify(value, null, 2);
+  if (typeof value === "object") return stringifyDocumentStoreValue(value, documentStoreProvider.value.kind, 2);
   return String(value);
 }
 
 function parseFieldValue(raw: string): unknown {
-  return parseMongoDocumentInputValue(raw);
+  return parseDocumentStoreInputValue(raw, documentStoreProvider.value.kind);
 }
 
 function buildObjectFromNodes(nodes: EditNode[], path: string): JsonRecord {
@@ -657,7 +864,7 @@ function buildObjectFromNodes(nodes: EditNode[], path: string): JsonRecord {
 
   for (const field of nodes) {
     const name = field.keyName.trim();
-    if (!name || (!path && (name === "_id" || (documentStoreProvider.value.kind === "elasticsearch" && name === "_routing")))) continue;
+    if (!name || (!path && isDocumentStoreIdentityField(documentStoreProvider.value.kind, name))) continue;
     if (seen.has(name)) throw new Error(t("mongo.duplicateField", { field: name }));
     seen.add(name);
     doc[name] = buildValueFromNode(field, path ? `${path}.${name}` : name);
@@ -678,30 +885,111 @@ function buildDocumentFromFields(): JsonRecord {
   return buildObjectFromNodes(editFields.value, "");
 }
 
-async function saveDoc() {
-  error.value = "";
+function buildDocumentFromEditor(): JsonRecord | null {
+  if (documentEditMode.value === "json") {
+    const parsed = parseDocumentStoreJsonDocument(editJson.value, documentStoreProvider.value.kind);
+    if (!parsed.ok) {
+      error.value = documentEditErrorMessage(parsed);
+      return null;
+    }
+    return parsed.document;
+  }
+
+  // Field mode skips root metadata in buildDocumentFromFields(); reattach identity field values.
+  const doc = buildDocumentFromFields();
+  for (const field of editFields.value) {
+    const name = field.keyName.trim();
+    if (isDocumentStoreIdentityField(documentStoreProvider.value.kind, name)) {
+      doc[name] = buildValueFromNode(field, name);
+    }
+  }
+  return doc;
+}
+
+function resolveDocumentStorePathId(id: unknown): string | null {
+  if (documentStoreProvider.value.kind === "elasticsearch") {
+    return documentIdFromGridValue(documentStoreValueForGrid(id, "elasticsearch"));
+  }
+  if (id === undefined || id === null || id === "") return null;
   try {
-    const doc = buildDocumentFromFields();
+    const serialized = serializeDocumentStoreId(id, documentStoreProvider.value.kind);
+    return serialized.trim() ? serialized : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveWriteIdentityFromEditor(doc: JsonRecord, currentId: unknown, currentRouting: string | undefined): { writeId: string; writeRouting?: string } | null {
+  const kind = documentStoreProvider.value.kind;
+  const hasPayloadId = Object.prototype.hasOwnProperty.call(doc, "_id");
+  const writeId = hasPayloadId ? resolveDocumentStorePathId(doc._id) : resolveDocumentStorePathId(currentId);
+  if (!writeId) return null;
+  const writeRouting = kind === "elasticsearch" ? resolveDocumentStoreWriteRouting(doc, currentRouting) : undefined;
+  return { writeId, writeRouting };
+}
+
+async function saveDoc() {
+  if (isSavingDocument.value) return;
+  error.value = "";
+  isSavingDocument.value = true;
+  try {
+    const doc = buildDocumentFromEditor();
+    if (!doc) return;
+
+    const apis = documentStoreWriteApis();
+    const kind = documentStoreProvider.value.kind;
+
     if (isNew.value) {
-      await api.documentInsertDocument(props.connectionId, props.database, props.collection, JSON.stringify(doc));
+      const explicitId = kind === "elasticsearch" ? documentIdFromGridValue(documentStoreValueForGrid(doc._id, "elasticsearch")) : null;
+      await insertDocumentStoreDocumentCore({
+        kind,
+        document: doc,
+        explicitId,
+        routing: normalizeDocumentStoreRouting(doc._routing),
+        apis,
+      });
     } else if (selectedIdx.value !== null) {
       const current = documents.value[selectedIdx.value];
-      const id = current?._id;
-      if (!id) {
+      const currentId = current?._id;
+      if (currentId === undefined || currentId === null) {
         error.value = "No _id field";
         return;
       }
-      await api.documentUpdateDocument(props.connectionId, props.database, props.collection, String(id), JSON.stringify(doc), documentRoutingFromDocument(current));
+
+      const deleteId = resolveDocumentStorePathId(currentId);
+      if (!deleteId) {
+        error.value = "No _id field";
+        return;
+      }
+      const currentRouting = documentRoutingFromDocument(current);
+      const write = resolveWriteIdentityFromEditor(doc, currentId, currentRouting);
+      if (!write) {
+        error.value = t("mongo.jsonIdRequired");
+        return;
+      }
+
+      const plan = planDocumentStoreIdentityMigration({
+        write: { id: write.writeId, routing: write.writeRouting },
+        current: { id: deleteId, routing: kind === "elasticsearch" ? currentRouting : undefined },
+      });
+      // Rekey writes first then deletes; write failure leaves the old document intact.
+      await applyDocumentStoreIdentityPlan({ kind, plan, document: doc, apis });
+    } else {
+      return;
     }
+
     isEditing.value = false;
     isNew.value = false;
+    documentEditMode.value = "fields";
     editFields.value = [];
     await load();
     if (selectedIdx.value !== null && documents.value[selectedIdx.value]) {
-      editJson.value = JSON.stringify(documents.value[selectedIdx.value], null, 2);
+      editJson.value = stringifyDocumentStoreValue(documents.value[selectedIdx.value], documentStoreProvider.value.kind, 2);
     }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    isSavingDocument.value = false;
   }
 }
 
@@ -711,7 +999,7 @@ async function applyDeleteDoc(idx: number) {
   if (!id) return;
   error.value = "";
   try {
-    await api.documentDeleteDocument(props.connectionId, props.database, props.collection, String(id), documentRoutingFromDocument(doc));
+    await api.documentDeleteDocument(props.connectionId, props.database, props.collection, serializeDocumentStoreId(id, documentStoreProvider.value.kind), documentRoutingFromDocument(doc));
     if (selectedIdx.value === idx) {
       selectedIdx.value = null;
       editJson.value = "";
@@ -755,7 +1043,7 @@ function docPreview(doc: JsonRecord): string {
   const keys = Object.keys(doc)
     .filter((k) => k !== "_id")
     .slice(0, 3);
-  const preview = keys.map((k) => `${k}: ${JSON.stringify(doc[k]).substring(0, 30)}`).join(", ");
+  const preview = keys.map((k) => `${k}: ${stringifyDocumentStoreValue(doc[k], documentStoreProvider.value.kind).substring(0, 30)}`).join(", ");
   return `${id} - ${preview}`;
 }
 
@@ -777,7 +1065,10 @@ onMounted(async () => {
   } catch (e) {
     console.warn("[DBX] ensureConnected failed for", props.connectionId, e);
   }
-  load();
+  // Mapping metadata enriches the filter builder, but it must not delay the
+  // first page of documents when the mapping endpoint is slow.
+  void loadElasticsearchMappingFields();
+  void load();
 });
 onBeforeUnmount(() => {
   if (documentLoadExecutionId.value) void api.cancelQuery(documentLoadExecutionId.value);
@@ -943,6 +1234,7 @@ function resetTableSearchSplitWidth() {
       class="flex-1 min-h-0"
       :result="gridResult"
       context="results"
+      :database-type="props.databaseType"
       editable
       :custom-save-handler="customSaveHandler"
       :loading="loading"
@@ -971,7 +1263,7 @@ function resetTableSearchSplitWidth() {
                   </span>
                 </button>
               </PopoverTrigger>
-              <PopoverContent align="start" class="w-[360px] max-w-[calc(100vw-24px)] gap-3 p-3">
+              <PopoverContent align="start" class="max-w-[calc(100vw-32px)] gap-3 p-3" :class="documentStoreProvider.kind === 'elasticsearch' ? 'w-[680px]' : 'w-[360px]'">
                 <div class="flex items-center justify-between gap-3">
                   <div class="text-xs font-medium text-foreground">{{ t("grid.filter") }}</div>
                   <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" @click="addDocumentFilterRule">
@@ -1013,7 +1305,7 @@ function resetTableSearchSplitWidth() {
 
                 <div v-if="documentFilterRules.length" class="space-y-2">
                   <template v-for="(rule, index) in documentFilterRules" :key="rule.id">
-                    <div v-if="index > 0" class="flex justify-center">
+                    <div v-if="index > 0 && documentStoreProvider.kind !== 'elasticsearch'" class="flex justify-center">
                       <Button
                         variant="ghost"
                         size="sm"
@@ -1027,19 +1319,44 @@ function resetTableSearchSplitWidth() {
                         {{ rule.conjunction }}
                       </Button>
                     </div>
-                    <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,0.95fr)_minmax(0,1fr)_auto] items-center gap-1.5">
-                      <Select :model-value="rule.fieldName" @update:model-value="(value: any) => updateDocumentFilterRule(rule.id, { fieldName: String(value) })">
+                    <div class="grid items-center gap-1.5" :class="documentStoreProvider.kind === 'elasticsearch' ? 'grid-cols-[minmax(0,0.75fr)_minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]' : 'grid-cols-[minmax(0,1fr)_minmax(0,0.95fr)_minmax(0,1fr)_auto]'">
+                      <Select v-if="documentStoreProvider.kind === 'elasticsearch'" :model-value="rule.elasticsearchClause || 'filter'" @update:model-value="(value: any) => updateDocumentFilterRule(rule.id, { elasticsearchClause: value as ElasticsearchBoolClause })">
                         <SelectTrigger class="h-8 w-full min-w-0 overflow-hidden text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate">
-                          <SelectValue :placeholder="t('grid.filterBuilderColumn')" />
+                          <SelectValue />
                         </SelectTrigger>
                         <SelectContent position="popper">
-                          <SelectItem v-for="fieldName in documentFilterFieldOptions" :key="fieldName" :value="fieldName">
-                            {{ fieldName }}
+                          <SelectItem v-for="clause in elasticsearchBoolClauseOptions" :key="clause" :value="clause">
+                            {{ clause }}
                           </SelectItem>
                         </SelectContent>
                       </Select>
 
-                      <Select :model-value="rule.mode" @update:model-value="(value: any) => updateDocumentFilterRule(rule.id, { mode: value as DocumentFilterMode })">
+                      <Select :model-value="rule.fieldName" @update:model-value="(value: any) => updateDocumentFilterRule(rule.id, { fieldName: String(value) })">
+                        <SelectTrigger class="h-8 w-full min-w-0 overflow-hidden text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate">
+                          <SelectValue :placeholder="t('grid.filterBuilderColumn')"> {{ rule.fieldName }}{{ elasticsearchFieldTypes.get(rule.fieldName) ? ` (${elasticsearchFieldTypes.get(rule.fieldName)})` : "" }} </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent position="popper">
+                          <SelectItem v-for="fieldName in documentFilterFieldOptions" :key="fieldName" :value="fieldName">
+                            <span class="flex min-w-0 items-center gap-2">
+                              <span class="truncate">{{ fieldName }}</span>
+                              <span v-if="elasticsearchFieldTypes.get(fieldName)" class="shrink-0 text-[10px] text-muted-foreground">({{ elasticsearchFieldTypes.get(fieldName) }})</span>
+                            </span>
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+
+                      <Select v-if="documentStoreProvider.kind === 'elasticsearch'" :model-value="rule.elasticsearchQueryType || elasticsearchRuleQueryTypes(rule)[0]" @update:model-value="(value: any) => updateDocumentFilterRule(rule.id, { elasticsearchQueryType: value as ElasticsearchQueryType })">
+                        <SelectTrigger class="h-8 w-full min-w-0 overflow-hidden text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent position="popper">
+                          <SelectItem v-for="queryType in elasticsearchRuleQueryTypes(rule)" :key="queryType" :value="queryType">
+                            {{ elasticsearchQueryTypeLabel(queryType) }}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+
+                      <Select v-else :model-value="rule.mode" @update:model-value="(value: any) => updateDocumentFilterRule(rule.id, { mode: value as DocumentFilterMode })">
                         <SelectTrigger class="h-8 w-full min-w-0 overflow-hidden text-xs [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate">
                           <SelectValue />
                         </SelectTrigger>
@@ -1051,7 +1368,7 @@ function resetTableSearchSplitWidth() {
                       </Select>
 
                       <Input
-                        v-if="documentFilterModeNeedsValue(rule.mode)"
+                        v-if="documentStoreProvider.kind === 'elasticsearch' ? elasticsearchQueryTypeNeedsValue(rule.elasticsearchQueryType) : documentFilterModeNeedsValue(rule.mode)"
                         :model-value="rule.rawValue"
                         class="h-8 min-w-0 text-xs"
                         :placeholder="t('grid.filterBuilderValue')"
@@ -1124,13 +1441,6 @@ function resetTableSearchSplitWidth() {
             </button>
           </div>
         </div>
-        <div class="flex shrink-0 items-center gap-1 border-l px-1">
-          <Button variant="ghost" size="sm" class="h-5 shrink-0 gap-1 px-1.5 text-xs" :disabled="loading" @click="load">
-            <Loader2 v-if="loading" class="h-3 w-3 animate-spin" />
-            <RefreshCcw v-else class="h-3 w-3" />
-            {{ t("grid.refresh") }}
-          </Button>
-        </div>
       </template>
     </DataGrid>
 
@@ -1162,21 +1472,34 @@ function resetTableSearchSplitWidth() {
               <span class="flex-1" />
               <Button v-if="!isEditing" variant="ghost" size="sm" class="h-6 text-xs" @click="startEdit">{{ t("mongo.edit") }}</Button>
               <template v-if="isEditing">
-                <Button variant="ghost" size="sm" class="h-6 text-xs" @click="addField"> <Plus class="w-3 h-3 mr-1" /> {{ t("mongo.addField") }} </Button>
-                <Button variant="ghost" size="sm" class="h-6 text-xs" @click="cancelEdit">{{ t("grid.discard") }}</Button>
-                <Button size="sm" class="h-6 text-xs" @click="saveDoc"><Save class="w-3 h-3 mr-1" />{{ t("grid.save") }}</Button>
+                <div class="flex items-center border rounded-md overflow-hidden mr-1">
+                  <Button variant="ghost" size="sm" class="h-6 rounded-none px-2 text-xs" :class="{ 'bg-accent': documentEditMode === 'json' }" :disabled="isSavingDocument" @click="setDocumentEditMode('json')">{{ t("mongo.editModeJson") }}</Button>
+                  <Button variant="ghost" size="sm" class="h-6 rounded-none px-2 text-xs" :class="{ 'bg-accent': documentEditMode === 'fields' }" :disabled="isSavingDocument" @click="setDocumentEditMode('fields')">{{ t("mongo.editModeFields") }}</Button>
+                </div>
+                <Button v-if="documentEditMode === 'fields'" variant="ghost" size="sm" class="h-6 text-xs" :disabled="isSavingDocument" @click="addField"> <Plus class="w-3 h-3 mr-1" /> {{ t("mongo.addField") }} </Button>
+                <Button variant="ghost" size="sm" class="h-6 text-xs" :disabled="isSavingDocument" @click="cancelEdit">{{ t("grid.discard") }}</Button>
+                <Button size="sm" class="h-6 text-xs" :disabled="isSavingDocument" @click="saveDoc"><Save class="w-3 h-3 mr-1" />{{ t("grid.save") }}</Button>
               </template>
             </div>
 
-            <div v-if="isEditing" class="flex-1 overflow-auto bg-muted/10">
-              <div class="json-edit min-w-fit p-5" :style="{ ...documentFontStyle, '--mongo-key-width': editKeyWidth }">
-                <div class="json-edit-brace">{</div>
+            <div v-if="isEditing && documentEditMode === 'json' && !isNew" class="px-4 py-1.5 text-[11px] text-muted-foreground border-b bg-muted/20 shrink-0">
+              {{ t("mongo.jsonReplaceHint") }}
+            </div>
 
-                <JsonEditNode v-for="(field, idx) in editFields" :key="field.key" :node="field" parent-kind="root" :removable="!field.readonlyValue" @remove="requestRemoveField(idx)" />
+            <div v-if="isEditing" class="flex-1 min-h-0 overflow-hidden bg-muted/10">
+              <div v-if="documentEditMode === 'json'" class="h-full min-h-0 p-2">
+                <RedisJsonEditor v-model="editJson" class="h-full rounded border bg-background" :save-disabled="isSavingDocument" :read-only="isSavingDocument" @save="saveDoc" />
+              </div>
+              <div v-else class="h-full overflow-auto">
+                <div class="json-edit min-w-fit p-5" :class="{ 'pointer-events-none opacity-60': isSavingDocument }" :style="{ ...documentFontStyle, '--mongo-key-width': editKeyWidth }" :aria-disabled="isSavingDocument ? 'true' : undefined">
+                  <div class="json-edit-brace">{</div>
 
-                <Button variant="ghost" size="sm" class="json-edit-add" @click="addField"> <Plus class="w-3 h-3 mr-1" /> {{ t("mongo.addField") }} </Button>
+                  <JsonEditNode v-for="(field, idx) in editFields" :key="field.key" :node="field" parent-kind="root" :removable="!isSavingDocument && !field.readonlyValue" @remove="requestRemoveField(idx)" />
 
-                <div class="json-edit-brace">}</div>
+                  <Button variant="ghost" size="sm" class="json-edit-add" :disabled="isSavingDocument" @click="addField"> <Plus class="w-3 h-3 mr-1" /> {{ t("mongo.addField") }} </Button>
+
+                  <div class="json-edit-brace">}</div>
+                </div>
               </div>
             </div>
 

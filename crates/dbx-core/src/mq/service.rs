@@ -553,6 +553,7 @@ mod tests {
             driver_profile: Some("pulsar".to_string()),
             driver_label: Some("Apache Pulsar".to_string()),
             url_params: None,
+            agent_java_options: Vec::new(),
             host: "127.0.0.1".to_string(),
             port: 8080,
             username: String::new(),
@@ -561,6 +562,7 @@ mod tests {
             visible_databases: None,
             visible_schemas: None,
             attached_databases: Vec::new(),
+            init_script: None,
             color: None,
             transport_layers: Vec::new(),
             connect_timeout_secs: 5,
@@ -595,6 +597,9 @@ mod tests {
             jdbc_driver_paths: Vec::new(),
             one_time: false,
             read_only,
+            is_production: false,
+            production_databases: Vec::new(),
+            database_info: None,
         }
     }
 

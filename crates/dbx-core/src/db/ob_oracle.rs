@@ -154,6 +154,8 @@ pub async fn get_columns(pool: &mysql_async::Pool, schema: &str, table: &str) ->
                 numeric_precision: precision,
                 numeric_scale: scale,
                 character_maximum_length: length,
+                enum_values: None,
+                ..Default::default()
             }
         })
         .collect())

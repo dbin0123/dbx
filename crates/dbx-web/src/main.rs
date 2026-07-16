@@ -17,10 +17,8 @@ use axum::routing::{delete, get, post};
 use axum::Router;
 use dbx_core::connection::AppState;
 use dbx_core::storage::Storage;
-use tokio::sync::RwLock;
-use tower_http::cors::{Any, CorsLayer};
-
 use state::WebState;
+use tokio::sync::RwLock;
 
 fn web_body_limit_bytes() -> usize {
     const DEFAULT_MB: usize = 1024;
@@ -210,9 +208,6 @@ async fn main() {
         export_files: RwLock::new(HashMap::new()),
     });
 
-    // CORS
-    let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
-
     // API routes
     let api = Router::new()
         // Auth
@@ -223,10 +218,14 @@ async fn main() {
         .route("/auth/logout", post(auth::logout))
         // Connection
         .route("/connection/test", post(routes::connection::test_connection))
+        .route("/connection/test-info", post(routes::connection::test_connection_with_info))
         .route("/connection/connect", post(routes::connection::connect_db))
+        .route("/connection/database-info", post(routes::connection::connected_database_info))
+        .route("/connection/database-info/save", post(routes::connection::save_connection_database_info))
         .route("/connection/final-proxy-port", post(routes::connection::connection_final_proxy_port))
         .route("/connection/disconnect", post(routes::connection::disconnect_db))
         .route("/connection/check-health", post(routes::connection::check_connection_health))
+        .route("/connection/identifier-quote", post(routes::connection::connection_identifier_quote))
         .route("/connection/close-database", post(routes::connection::close_database_connection))
         .route("/connection/save", post(routes::connection::save_connections))
         .route("/connection/list", get(routes::connection::load_connections))
@@ -237,8 +236,10 @@ async fn main() {
             "/jdbc/drivers/maven",
             get(routes::jdbc::list_jdbc_maven_bundles).post(routes::jdbc::install_jdbc_driver_from_maven),
         )
+        .route("/jdbc/drivers/local", get(routes::jdbc::list_jdbc_local_bundles))
         .route("/jdbc/drivers/prestosql", post(routes::jdbc::install_prestosql_jdbc_driver))
         .route("/jdbc/drivers/maven/{bundle_id}", delete(routes::jdbc::delete_jdbc_maven_bundle))
+        .route("/jdbc/drivers/local/{bundle_id}", delete(routes::jdbc::delete_jdbc_local_bundle))
         .route("/jdbc/drivers/{name}", delete(routes::jdbc::delete_jdbc_driver))
         .route("/jdbc/plugin/status", get(routes::jdbc::get_jdbc_plugin_status))
         .route("/jdbc/plugin/install", post(routes::jdbc::install_jdbc_plugin))
@@ -246,10 +247,17 @@ async fn main() {
         .route("/jdbc/plugin/uninstall", post(routes::jdbc::uninstall_jdbc_plugin))
         // System
         .route("/system/fonts", get(routes::jdbc::list_system_fonts))
+        .route("/ssh/config-hosts", get(routes::ssh_config::list_ssh_config_hosts))
+        // Tunnel profiles
+        .route("/tunnel-profiles/list", get(routes::tunnel_profiles::load_tunnel_profiles))
+        .route("/tunnel-profiles/save", post(routes::tunnel_profiles::save_tunnel_profiles))
+        .route("/tunnel-profiles/test", post(routes::tunnel_profiles::test_tunnel_profile))
         // Agent drivers
         .route("/agents/installed-local", get(routes::agents::list_installed_agents_local))
         .route("/agents/installed", get(routes::agents::list_installed_agents))
+        .route("/agents/installed/{dbType}", get(routes::agents::is_agent_installed))
         .route("/agents/storage-usage", get(routes::agents::get_driver_store_usage))
+        .route("/agents/download-cache", delete(routes::agents::clear_driver_download_cache))
         .route("/agents/runtime", get(routes::agents::get_driver_runtime_summary))
         .route("/agents/runtime/stop", post(routes::agents::stop_driver_runtime))
         .route("/agents/runtime/restart", post(routes::agents::restart_driver_runtime))
@@ -268,6 +276,8 @@ async fn main() {
         .route("/agents/progress/{operationId}", get(routes::agents::agent_progress))
         // Schema
         .route("/schema/databases", get(routes::schema::list_databases))
+        .route("/schema/doris/catalogs", get(routes::schema::list_doris_catalogs))
+        .route("/schema/doris/catalog-databases", get(routes::schema::list_doris_catalog_databases))
         .route("/schema/sqlserver/linked-servers", get(routes::schema::list_sqlserver_linked_servers))
         .route("/schema/sqlserver/linked-server-catalogs", get(routes::schema::list_sqlserver_linked_server_catalogs))
         .route("/schema/sqlserver/linked-server-schemas", get(routes::schema::list_sqlserver_linked_server_schemas))
@@ -288,6 +298,8 @@ async fn main() {
         .route("/schema/sequences", get(routes::schema::list_sequences))
         .route("/schema/rules", get(routes::schema::list_rules))
         .route("/schema/owners", get(routes::schema::list_owners))
+        .route("/schema/extensions", get(routes::schema::list_extensions))
+        .route("/schema/available-extensions", get(routes::schema::list_available_extensions))
         .route("/schema/ddl", get(routes::schema::get_ddl))
         .route("/schema-diff/prepare", post(routes::schema_diff::prepare_schema_diff))
         .route("/schema-diff/generate-sync-sql", post(routes::schema_diff::generate_schema_sync_sql))
@@ -302,6 +314,9 @@ async fn main() {
                 .get(routes::tab_runtime_cache::load_tab_runtime_cache)
                 .delete(routes::tab_runtime_cache::delete_tab_runtime_cache),
         )
+        .route("/tab-runtime-cache/metadata", get(routes::tab_runtime_cache::list_tab_runtime_cache_metadata))
+        .route("/tab-runtime-cache/prune", post(routes::tab_runtime_cache::prune_tab_runtime_cache))
+        .route("/tab-runtime-cache/owner", delete(routes::tab_runtime_cache::delete_tab_runtime_cache_owner))
         // Query
         .route("/query/execute", post(routes::query::execute_query))
         .route("/query/execute-multi", post(routes::query::execute_multi))
@@ -329,6 +344,7 @@ async fn main() {
         .route("/query/build-truncate-table-sql", post(routes::query::build_truncate_table_sql))
         .route("/query/build-drop-database-sql", post(routes::query::build_drop_database_sql))
         .route("/query/build-create-schema-sql", post(routes::query::build_create_schema_sql))
+        .route("/query/build-update-database-properties-sql", post(routes::query::build_update_database_properties_sql))
         .route("/query/build-drop-schema-sql", post(routes::query::build_drop_schema_sql))
         .route("/query/build-duplicate-table-structure-sql", post(routes::query::build_duplicate_table_structure_sql))
         .route("/query/build-copy-table-data-sql", post(routes::query::build_copy_table_data_sql))
@@ -344,6 +360,11 @@ async fn main() {
         )
         .route("/query/build-view-ddl-sql", post(routes::query::build_view_ddl_sql))
         .route("/query/build-table-structure-change-sql", post(routes::query::build_table_structure_change_sql))
+        .route(
+            "/query/preview-sqlite-table-structure-change",
+            post(routes::query::preview_sqlite_table_structure_change),
+        )
+        .route("/query/apply-sqlite-table-structure-change", post(routes::query::apply_sqlite_table_structure_change))
         .route("/query/build-create-table-sql", post(routes::query::build_create_table_sql))
         .route("/query/build-single-column-alter-sql", post(routes::query::build_single_column_alter_sql))
         .route("/query/analyze-editability", post(routes::query::analyze_editable_query_editability))
@@ -392,6 +413,7 @@ async fn main() {
         .route("/redis/scan-keys-batch", post(routes::redis::scan_keys_batch))
         .route("/redis/scan-values", post(routes::redis::scan_values))
         .route("/redis/get-value", post(routes::redis::get_value))
+        .route("/redis/load-more", post(routes::redis::load_more))
         .route("/redis/set-string", post(routes::redis::set_string))
         .route("/redis/delete-key", post(routes::redis::delete_key))
         .route("/redis/hash-set", post(routes::redis::hash_set))
@@ -460,9 +482,12 @@ async fn main() {
         .route("/document-store/update-document", post(routes::document_store::update_document))
         .route("/document-store/delete-document", post(routes::document_store::delete_document))
         .route("/mongo/find-documents", post(routes::mongo::find_documents))
+        .route("/mongo/find-one", post(routes::mongo::find_one))
+        .route("/mongo/count-documents", post(routes::mongo::count_documents))
         .route("/mongo/server-version", post(routes::mongo::server_version))
         .route("/mongo/collection-stats", post(routes::mongo::collection_stats))
         .route("/mongo/aggregate-documents", post(routes::mongo::aggregate_documents))
+        .route("/mongo/distinct", post(routes::mongo::distinct))
         .route("/mongo/create-index", post(routes::mongo::create_index))
         .route("/mongo/drop-indexes", post(routes::mongo::drop_indexes))
         .route("/mongo/insert-document", post(routes::mongo::insert_document))
@@ -471,6 +496,9 @@ async fn main() {
         .route("/mongo/update-documents", post(routes::mongo::update_documents))
         .route("/mongo/delete-document", post(routes::mongo::delete_document))
         .route("/mongo/delete-documents", post(routes::mongo::delete_documents))
+        .route("/mongo/find-one-and-update", post(routes::mongo::find_one_and_update))
+        .route("/mongo/find-one-and-replace", post(routes::mongo::find_one_and_replace))
+        .route("/mongo/find-one-and-delete", post(routes::mongo::find_one_and_delete))
         // History
         .route("/history", get(routes::history::load_history).delete(routes::history::clear_history))
         .route("/history/save", post(routes::history::save_history))
@@ -490,6 +518,10 @@ async fn main() {
         .route("/ai/config", post(routes::ai::save_ai_config).get(routes::ai::load_ai_config))
         .route("/ai/provider-config", post(routes::ai::save_ai_provider_config))
         .route("/ai/provider-configs", get(routes::ai::load_ai_provider_configs))
+        .route("/ai/configs", post(routes::ai::save_ai_configs).get(routes::ai::load_ai_configs))
+        .route("/ai/default-config", post(routes::ai::set_default_ai_config))
+        .route("/ai/config-item", post(routes::ai::save_ai_config_item))
+        .route("/ai/config/{config_id}", delete(routes::ai::delete_ai_config))
         .route("/ai/conversation", post(routes::ai::save_ai_conversation))
         .route("/ai/conversations", get(routes::ai::load_ai_conversations))
         .route("/ai/conversation/{id}", delete(routes::ai::delete_ai_conversation))
@@ -501,6 +533,7 @@ async fn main() {
         .route("/ai/models", post(routes::ai::ai_list_models))
         // Transfer
         .route("/transfer/start", post(routes::transfer::start_transfer))
+        .route("/transfer/ownership-preview", post(routes::transfer::preview_transfer_ownership))
         .route("/transfer/progress/{transferId}", get(routes::transfer::transfer_progress))
         .route("/transfer/cancel", post(routes::transfer::cancel_transfer))
         .route("/transfer/sort-tables-by-fk", post(routes::transfer::sort_tables_by_fk_dependency))
@@ -538,6 +571,7 @@ async fn main() {
         // Update
         .route("/version", get(routes::update::get_version))
         .route("/update/check", get(routes::update::check_for_updates))
+        .route("/changelog", get(routes::update::fetch_changelog))
         // Layout
         .route("/layout/sidebar", post(routes::layout::save_sidebar_layout).get(routes::layout::load_sidebar_layout))
         // App settings
@@ -551,8 +585,23 @@ async fn main() {
         .route("/cloud-sync/webdav/password-status", post(routes::cloud_sync::webdav_password_status))
         .route("/cloud-sync/webdav/save-password", post(routes::cloud_sync::save_webdav_saved_password))
         .route("/cloud-sync/webdav/forget-password", post(routes::cloud_sync::forget_webdav_saved_password))
+        .route("/cloud-sync/webdav/sync-secrets-status", post(routes::cloud_sync::webdav_sync_secrets_status))
+        .route(
+            "/cloud-sync/webdav/save-sync-secrets-preference",
+            post(routes::cloud_sync::save_webdav_sync_secrets_preference),
+        )
+        .route(
+            "/cloud-sync/webdav/forget-sync-secrets-passphrase",
+            post(routes::cloud_sync::forget_webdav_sync_secrets_passphrase),
+        )
         .route("/cloud-sync/webdav/upload", post(routes::cloud_sync::webdav_sync_upload))
-        .route("/cloud-sync/webdav/download", post(routes::cloud_sync::webdav_sync_download));
+        .route("/cloud-sync/webdav/download", post(routes::cloud_sync::webdav_sync_download))
+        .route("/cloud-sync/snippet/test", post(routes::cloud_sync::snippet_sync_test))
+        .route("/cloud-sync/snippet/token-status", post(routes::cloud_sync::snippet_token_status))
+        .route("/cloud-sync/snippet/save-token", post(routes::cloud_sync::save_snippet_saved_token))
+        .route("/cloud-sync/snippet/forget-token", post(routes::cloud_sync::forget_snippet_saved_token))
+        .route("/cloud-sync/snippet/upload", post(routes::cloud_sync::snippet_sync_upload))
+        .route("/cloud-sync/snippet/download", post(routes::cloud_sync::snippet_sync_download));
 
     let api = add_mq_routes(api)
         .layer(middleware::from_fn_with_state(web_state.clone(), auth::auth_middleware))
@@ -562,8 +611,7 @@ async fn main() {
     let mut app = Router::new()
         .nest("/api", api)
         .layer(DefaultBodyLimit::max(web_body_limit_bytes()))
-        .layer(tower_http::trace::TraceLayer::new_for_http())
-        .layer(cors);
+        .layer(tower_http::trace::TraceLayer::new_for_http());
 
     // Static file serving
     if let Ok(static_dir) = std::env::var("DBX_STATIC_DIR") {
@@ -592,5 +640,14 @@ async fn main() {
     }
 
     let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind address");
-    axum::serve(listener, app).await.expect("Server error");
+    let shutdown_state = web_state.app.clone();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            if let Err(error) = tokio::signal::ctrl_c().await {
+                tracing::warn!("Failed to listen for shutdown signal: {error}");
+            }
+        })
+        .await
+        .expect("Server error");
+    shutdown_state.shutdown_background_tasks(std::time::Duration::from_secs(3)).await;
 }
