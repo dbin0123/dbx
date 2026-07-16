@@ -11,7 +11,6 @@ import * as api from "@/lib/api";
 import { isSchemaAware } from "@/lib/databaseCapabilities";
 import { ArrowLeftRight, GitCompareArrows, Save, FolderOpen, Settings, X } from "@lucide/vue";
 import type { SchemaDiffConfig, SchemaDiffCompareOptions, FieldMappingEntry } from "@/types/schemaDiff";
-import FieldMappingPanel from "@/components/diff/FieldMappingPanel.vue";
 
 const { t } = useI18n();
 const store = useConnectionStore();
@@ -426,9 +425,6 @@ async function fetchDbVersion(connectionId: string, database: string, schema: st
       </Label>
     </div>
 
-    <!-- Field Type Mapping (shown only when source/target db types differ) -->
-    <FieldMappingPanel v-if="showFieldMapping" :mappings="activeFieldMappings" :source-db-type="sourceDbType" :target-db-type="targetDbType" @update:mappings="(v: FieldMappingEntry[]) => $emit('update:fieldMappings', v)" />
-
     <!-- Recent Configs Dropdown -->
     <div v-if="recentConfigs.length > 0" class="flex items-center gap-2">
       <Label class="text-xs text-muted-foreground">{{ t("diff.recentConfigs") }}</Label>
@@ -484,6 +480,7 @@ async function fetchDbVersion(connectionId: string, database: string, schema: st
         <Button v-if="showFieldMapping" variant="outline" size="sm" @click="$emit('open-field-mapping')">
           <ArrowLeftRight class="w-3.5 h-3.5 mr-1" />
           {{ t("diff.openFieldMapping") }}
+          <span v-if="activeFieldMappings.length > 0" class="ml-1 inline-flex items-center justify-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">{{ activeFieldMappings.length }}</span>
         </Button>
       </div>
       <Button size="sm" :disabled="!canCompare || loading" @click="$emit('compare')">

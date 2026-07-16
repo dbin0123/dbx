@@ -72,6 +72,13 @@ const showOptionsPanel = ref(false);
 const showFieldMappingDialog = ref(false);
 const sourceDbType = computed(() => store.getConfig(sourceConnectionId.value)?.db_type ?? "");
 const targetDbType = computed(() => store.getConfig(targetConnectionId.value)?.db_type ?? "");
+
+// Clear stale field mappings when source and target are the same type
+watch([sourceDbType, targetDbType], ([src, tgt]) => {
+  if (src && src === tgt && activeConfig.value?.options.fieldMappings?.length) {
+    handleFieldMappingsUpdate([]);
+  }
+});
 const optionTree = computed(() => {
   const targetConfig = store.getConfig(targetConnectionId.value);
   const dbType = targetConfig?.db_type || "postgres";
