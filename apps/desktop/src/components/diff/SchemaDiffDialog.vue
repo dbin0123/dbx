@@ -9,6 +9,7 @@ import { GitCompareArrows, ArrowLeft, Play, Loader2, Maximize2, Minimize2, Alert
 import * as api from "@/lib/api";
 import { useSchemaDiffConfig } from "@/composables/useSchemaDiffConfig";
 import SchemaDiffConfigStep from "@/components/diff/SchemaDiffConfigStep.vue";
+import FieldMappingDialog from "@/components/diff/FieldMappingDialog.vue";
 import SchemaDiffObjectTree from "@/components/diff/SchemaDiffObjectTree.vue";
 import SchemaDiffDdlPanel from "@/components/diff/SchemaDiffDdlPanel.vue";
 import SchemaDiffDeployStep from "@/components/diff/SchemaDiffDeployStep.vue";
@@ -68,6 +69,7 @@ const ignoreComments = ref(false);
 
 // Options panel
 const showOptionsPanel = ref(false);
+const showFieldMappingDialog = ref(false);
 const optionTree = computed(() => {
   const targetConfig = store.getConfig(targetConnectionId.value);
   const dbType = targetConfig?.db_type || "postgres";
@@ -828,6 +830,7 @@ const targetConnectionInfo = computed(() => {
           @load-history-config="handleLoadHistoryConfig"
           @delete-history-config="handleDeleteHistoryConfig"
           @update:field-mappings="handleFieldMappingsUpdate"
+          @open-field-mapping="showFieldMappingDialog = true"
         />
 
         <!-- Compare Loading -->
@@ -1052,6 +1055,9 @@ const targetConnectionInfo = computed(() => {
           <SchemaDiffOptionsPanel :options="schemaDiffPanelOptions" :option-tree="optionTree" @update:options="handleOptionsUpdate" @close="showOptionsPanel = false" />
         </div>
       </div>
+
+      <!-- Field Mapping Dialog Overlay -->
+      <FieldMappingDialog :open="showFieldMappingDialog" :mappings="activeConfig?.options.fieldMappings ?? []" :source-db-type="sourceDbType" :target-db-type="targetConfig?.db_type || ''" @update:open="showFieldMappingDialog = $event" @save="handleFieldMappingsUpdate" />
     </DialogContent>
   </Dialog>
 </template>
