@@ -1180,10 +1180,10 @@ const mcpEnvEntries = computed<McpEnvEntry[]>(() => {
 });
 
 const mcpLaunchConfig = computed<McpLaunchConfig | undefined>(() => {
-  if (!isWindows() || !mcpStatus.value?.script_path) return undefined;
+  if (!isWindows() || !mcpStatus.value?.bin_path) return undefined;
   return {
-    command: mcpStatus.value.node_path || "node",
-    args: [mcpStatus.value.script_path],
+    command: mcpStatus.value.bin_path || "node",
+    args: [mcpStatus.value.bin_path],
   };
 });
 

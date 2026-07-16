@@ -31,7 +31,7 @@ import type {
   SavedSqlLibrary,
 } from "@/types/database";
 import type { CollectionInfo } from "@/types/database";
-import type { SchemaDiffPreparation, SchemaDiffPreparationOptions, TableDiff, FunctionDiff, SequenceDiff, RuleDiff, OwnerDiff } from "@/lib/schemaDiff";
+import type { SchemaDiffPreparation, SchemaDiffPreparationOptions, FieldMappingEntry, TableDiff, FunctionDiff, SequenceDiff, RuleDiff, OwnerDiff } from "@/lib/schemaDiff";
 import type { SidebarObjectKind } from "@/lib/databaseObjectCapabilities";
 import type { AiConfig, AiTestConnectionResult } from "@/stores/settingsStore";
 import type {
@@ -575,7 +575,18 @@ export async function prepareSchemaDiff(options: SchemaDiffPreparationOptions): 
   return post("/api/schema-diff/prepare", options);
 }
 
-export async function generateSchemaSyncSql(diffs: TableDiff[], databaseType: DatabaseType, targetSchema?: string, functionDiffs?: FunctionDiff[], sequenceDiffs?: SequenceDiff[], ruleDiffs?: RuleDiff[], ownerDiffs?: OwnerDiff[], cascadeDelete?: boolean): Promise<string> {
+export async function generateSchemaSyncSql(
+  diffs: TableDiff[],
+  databaseType: DatabaseType,
+  targetSchema?: string,
+  functionDiffs?: FunctionDiff[],
+  sequenceDiffs?: SequenceDiff[],
+  ruleDiffs?: RuleDiff[],
+  ownerDiffs?: OwnerDiff[],
+  cascadeDelete?: boolean,
+  sourceDialect?: string,
+  fieldMappings?: FieldMappingEntry[],
+): Promise<string> {
   return post("/api/schema-diff/generate-sync-sql", {
     diffs,
     databaseType,
@@ -585,6 +596,8 @@ export async function generateSchemaSyncSql(diffs: TableDiff[], databaseType: Da
     ruleDiffs: ruleDiffs ?? [],
     ownerDiffs: ownerDiffs ?? [],
     cascadeDelete: cascadeDelete ?? false,
+    sourceDialect: sourceDialect as any,
+    fieldMappings: fieldMappings as any,
   });
 }
 
@@ -1953,13 +1966,11 @@ export async function checkMcpServerStatus(): Promise<import("./tauri").McpServe
   return {
     installed: false,
     npm_available: false,
-    node_path: null,
+    bin_path: null,
     node_version: null,
     current_version: null,
     latest_version: null,
     update_available: false,
-    bin_path: null,
-    script_path: null,
     install_command: "npm install -g @dbx-app/mcp-server@latest --registry=https://registry.npmjs.org",
     update_command: "npm install -g @dbx-app/mcp-server@latest --registry=https://registry.npmjs.org",
     error: "MCP Server status is only available in the desktop app.",

@@ -56,6 +56,19 @@ impl DialectRegistry {
         self.descriptors.read().ok().and_then(|d| d.values().find(|ld| ld.kind == kind).cloned())
     }
 
+    /// Return all loaded dialects that map to the given kind.
+    /// Unlike `get_by_kind` (which returns only the first match), this is
+    /// order-independent and is used when a type's capabilities must be
+    /// resolved across an entire dialect family (e.g. PostgreSQL, HighGo,
+    /// KingBase all share `DialectKind::Postgres`).
+    pub fn get_all_by_kind(&self, kind: DialectKind) -> Vec<LoadedDialect> {
+        self.descriptors
+            .read()
+            .ok()
+            .map(|d| d.values().filter(|ld| ld.kind == kind).cloned().collect())
+            .unwrap_or_default()
+    }
+
     pub fn get_descriptor(&self, name: &str) -> Option<DialectCapabilityDescriptor> {
         self.get(name).map(|ld| ld.descriptor)
     }

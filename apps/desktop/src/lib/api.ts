@@ -12,8 +12,8 @@ let _backend: Backend | null = null;
 
 async function getBackend(): Promise<Backend> {
   if (_backend) return _backend;
-  _backend = isTauriRuntime(globalThis) ? await import("./tauri") : await import("./http");
-  return _backend;
+  _backend = (await (isTauriRuntime(globalThis) ? import("./tauri") : import("./http"))) as Backend;
+  return _backend as Backend;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +193,7 @@ export const buildDropDatabaseSql = forward("buildDropDatabaseSql");
 export const buildCreateSchemaSql = forward("buildCreateSchemaSql");
 export const buildDropSchemaSql = forward("buildDropSchemaSql");
 export const buildDuplicateTableStructureSql = forward("buildDuplicateTableStructureSql");
+export const buildCopyTableDataSql = forward("buildCopyTableDataSql");
 export const buildExecutableObjectSourceStatements = forward("buildExecutableObjectSourceStatements");
 export const buildExecutableObjectSourceSql = forward("buildExecutableObjectSourceSql");
 export const buildEditableObjectSource = forward("buildEditableObjectSource");
@@ -413,6 +414,8 @@ export const mongoCollectionStats = forward("mongoCollectionStats");
 export const mongoCreateIndex = forward("mongoCreateIndex");
 export const mongoDropIndexes = forward("mongoDropIndexes");
 export const documentInsertDocument = forward("documentInsertDocument");
+export const documentUpdateDocument = forward("documentUpdateDocument");
+export const documentDeleteDocument = forward("documentDeleteDocument");
 export const mongoInsertDocument = forward("mongoInsertDocument");
 export const mongoInsertDocuments = forward("mongoInsertDocuments");
 export const mongoUpdateDocument = forward("mongoUpdateDocument");

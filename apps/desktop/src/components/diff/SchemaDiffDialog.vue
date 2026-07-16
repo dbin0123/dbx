@@ -70,6 +70,8 @@ const ignoreComments = ref(false);
 // Options panel
 const showOptionsPanel = ref(false);
 const showFieldMappingDialog = ref(false);
+const sourceDbType = computed(() => store.getConfig(sourceConnectionId.value)?.db_type ?? "");
+const targetDbType = computed(() => store.getConfig(targetConnectionId.value)?.db_type ?? "");
 const optionTree = computed(() => {
   const targetConfig = store.getConfig(targetConnectionId.value);
   const dbType = targetConfig?.db_type || "postgres";
@@ -1057,7 +1059,7 @@ const targetConnectionInfo = computed(() => {
       </div>
 
       <!-- Field Mapping Dialog Overlay -->
-      <FieldMappingDialog :open="showFieldMappingDialog" :mappings="activeConfig?.options.fieldMappings ?? []" :source-db-type="sourceDbType" :target-db-type="targetConfig?.db_type || ''" @update:open="showFieldMappingDialog = $event" @save="handleFieldMappingsUpdate" />
+      <FieldMappingDialog :open="showFieldMappingDialog" :mappings="activeConfig?.options.fieldMappings ?? []" :source-db-type="sourceDbType" :target-db-type="targetDbType" @update:open="showFieldMappingDialog = $event" @save="handleFieldMappingsUpdate" />
     </DialogContent>
   </Dialog>
 </template>

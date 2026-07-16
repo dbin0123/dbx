@@ -208,7 +208,13 @@ impl FieldMapping {
         let result = match matched.param_strategy {
             ParamStrategy::Strip => Some(matched.target_type.clone()),
             ParamStrategy::Custom => match &matched.custom_params {
-                Some(params) if !params.is_empty() => Some(format!("{}{}", matched.target_type, params)),
+                Some(params) if !params.is_empty() => {
+                    let p = params.trim();
+                    // Normalize: wrap bare params (e.g. "100") in parentheses so the
+                    // generated type becomes e.g. `character(100)` rather than `character100`.
+                    let formatted = if p.starts_with('(') { p.to_string() } else { format!("({})", p) };
+                    Some(format!("{}{}", matched.target_type, formatted))
+                }
                 _ => Some(matched.target_type.clone()),
             },
             ParamStrategy::Preserve => {
@@ -238,28 +244,17 @@ impl FieldMapping {
 
 fn type_supports_params(kind: DialectKind, type_name: &str) -> bool {
     crate::sql_dialect::dialect_loader::register_core_dialects();
-    crate::sql_dialect::dialect_loader::DialectRegistry::global()
-        .get_by_kind(kind)
-        .map(|loaded| {
-            loaded.yaml.types.iter().any(|t| {
-                (t.name.eq_ignore_ascii_case(type_name) || t.aliases.iter().any(|a| a.eq_ignore_ascii_case(type_name)))
-                    && (t.has_length || t.has_precision || t.max_precision.is_some())
-            })
-        })
-        .unwrap_or(true)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FieldMapping {
-    pub source_type: String,
-    pub target_type: String,
-}
-
-impl FieldMapping {
-    pub fn apply<'a>(mappings: &'a [FieldMapping], source_type: &str) -> Option<&'a str> {
-        mappings.iter().find(|m| m.source_type.eq_ignore_ascii_case(source_type)).map(|m| m.target_type.as_str())
+    let registry = crate::sql_dialect::dialect_loader::DialectRegistry::global();
+    let all = registry.get_all_by_kind(kind);
+    if all.is_empty() {
+        return true;
     }
+    all.iter().any(|loaded| {
+        loaded.yaml.types.iter().any(|t| {
+            (t.name.eq_ignore_ascii_case(type_name) || t.aliases.iter().any(|a| a.eq_ignore_ascii_case(type_name)))
+                && (t.has_length || t.has_precision || t.max_precision.is_some())
+        })
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3048,7 +3043,7 @@ pub fn generate_schema_sync_sql(
         schema,
         cascade_delete,
         source_dialect,
-        &[],
+        field_mappings,
     )
 }
 
@@ -7505,6 +7500,55 @@ mod tests {
             result,
             Some("CHAR(200)".to_string()),
             "Preserve should keep params for CHAR which has has_length in Oracle YAML"
+        );
+    }
+
+    #[test]
+    fn field_mapping_mysql_varchar_to_postgres_character_keeps_params() {
+        crate::sql_dialect::dialect_loader::register_core_dialects();
+        let mappings = vec![FieldMapping {
+            source_type: "VARCHAR".into(),
+            target_type: "character".into(),
+            param_strategy: ParamStrategy::Preserve,
+            custom_params: None,
+        }];
+        let result = FieldMapping::apply_with_params(&mappings, "varchar(120)", DialectKind::Postgres);
+        assert_eq!(
+            result,
+            Some("character(120)".to_string()),
+            "Preserve should keep (120) for PostgreSQL CHARACTER which has has_length in YAML"
+        );
+    }
+
+    #[test]
+    fn field_mapping_custom_params_without_parens_is_normalized() {
+        let mappings = vec![FieldMapping {
+            source_type: "VARCHAR".into(),
+            target_type: "character".into(),
+            param_strategy: ParamStrategy::Custom,
+            custom_params: Some("100".to_string()),
+        }];
+        let result = FieldMapping::apply_with_params(&mappings, "VARCHAR(120)", DialectKind::Postgres);
+        assert_eq!(
+            result,
+            Some("character(100)".to_string()),
+            "Custom params without parentheses should be wrapped as (100)"
+        );
+    }
+
+    #[test]
+    fn field_mapping_custom_params_with_parens_preserved() {
+        let mappings = vec![FieldMapping {
+            source_type: "VARCHAR".into(),
+            target_type: "character".into(),
+            param_strategy: ParamStrategy::Custom,
+            custom_params: Some("(100)".to_string()),
+        }];
+        let result = FieldMapping::apply_with_params(&mappings, "VARCHAR(120)", DialectKind::Postgres);
+        assert_eq!(
+            result,
+            Some("character(100)".to_string()),
+            "Custom params already wrapped in parentheses should be kept as-is"
         );
     }
 }

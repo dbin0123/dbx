@@ -1,10 +1,5 @@
 export type SchemaDiffTableFilterPriority = "include" | "exclude";
 
-export interface FieldMappingEntry {
-  sourceType: string;
-  targetType: string;
-}
-
 export interface SchemaDiffCompareOptions {
   tables: boolean;
   primaryKeys: boolean;

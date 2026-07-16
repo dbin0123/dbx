@@ -41,9 +41,32 @@ function handleUpdateMappings(v: FieldMappingEntry[]) {
 }
 
 function handleExport() {
-  const blob = new Blob([JSON.stringify(editingMappings.value, null, 2)], {
-    type: "application/json",
-  });
+  const content = JSON.stringify(editingMappings.value, null, 2);
+  // Use File System Access API (modern Chromium) for a native Save As dialog,
+  // fallback to Blob download for other browsers.
+  if ("showSaveFilePicker" in window) {
+    (window as any)
+      .showSaveFilePicker({
+        suggestedName: "field-mappings.json",
+        types: [{ description: "JSON", accept: { "application/json": [".json"] } }],
+      })
+      .then((handle: FileSystemFileHandle) => {
+        return handle.createWritable().then((writable: FileSystemWritableFileStream) => {
+          writable.write(content);
+          return writable.close();
+        });
+      })
+      .catch(() => {
+        // User cancelled or API failed — fallback to Blob download
+        fallbackDownload(content);
+      });
+  } else {
+    fallbackDownload(content);
+  }
+}
+
+function fallbackDownload(content: string) {
+  const blob = new Blob([content], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

@@ -17,6 +17,9 @@ fn main() {
         .collect();
     entries.sort_by_key(|e| e.file_name());
 
+    // Watch the directory itself so additions/removals of dialect files trigger a rebuild.
+    println!("cargo::rerun-if-changed={}", dialects_dir.to_str().unwrap());
+
     let mut code = String::from("{\n");
 
     for entry in &entries {
@@ -24,6 +27,11 @@ fn main() {
         let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         let file_name = path.file_stem().unwrap().to_str().unwrap();
         let path_str = canonical.to_str().unwrap();
+
+        // Watch each dialect file individually. Editing a single YAML must invalidate
+        // the embedded `core_dialects.rs`, otherwise the compiled binary keeps a stale
+        // type catalog (e.g. old type names) and silently misbehaves (see field mapping).
+        println!("cargo::rerun-if-changed={}", path_str);
 
         code.push_str(&format!("match crate::sql_dialect::dialect_loader::DialectPluginLoader::load_from_string(\n"));
         code.push_str(&format!("    include_str!(\"{}\"),\n", path_str.replace('\\', "\\\\")));
@@ -40,5 +48,4 @@ fn main() {
     code.push_str("}\n");
 
     std::fs::write(&dest_path, code).expect("Failed to write core_dialects.rs");
-    println!("cargo::rerun-if-changed={}", dialects_dir.to_str().unwrap());
 }

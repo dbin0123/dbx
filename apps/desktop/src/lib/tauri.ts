@@ -47,7 +47,7 @@ import type {
   HiveTablePropertiesSqlOptions,
 } from "@/lib/dataGridSql";
 import type { DataCompareFromTablesOptions, DataCompareFromTablesPreparation, DataCompareSyncPlan, DataCompareSyncPlanOptions, DataComparePreparation, DataComparePreparationOptions } from "@/lib/dataCompare";
-import type { SchemaDiffPreparation, SchemaDiffPreparationOptions, TableDiff, FunctionDiff, SequenceDiff, RuleDiff, OwnerDiff } from "@/lib/schemaDiff";
+import type { SchemaDiffPreparation, SchemaDiffPreparationOptions, FieldMappingEntry, TableDiff, FunctionDiff, SequenceDiff, RuleDiff, OwnerDiff } from "@/lib/schemaDiff";
 import type { BuildTableStructureChangeSqlOptions, BuildSingleColumnAlterSqlOptions, TableStructureChangeSql } from "@/lib/tableStructureEditorSql";
 import type { BuildTableSelectSqlOptions } from "@/lib/tableSelectSql";
 import type { DatabaseSearchSql, DatabaseSearchSqlOptions, SearchResultWhereOptions } from "@/lib/databaseSearch";
@@ -55,7 +55,7 @@ import type { BuildEditableObjectSourceSqlInput, BuildRoutineRenameObjectSourceI
 import type { BuildViewDdlInput } from "@/lib/viewDdl";
 import type { BuildRenameObjectSqlOptions } from "@/lib/objectRenameSql";
 import type { CreateDatabaseSqlOptions } from "@/lib/createDatabaseSql";
-import type { DatabaseNameSqlOptions, DropTableChildObjectSqlOptions, DropObjectSqlOptions, DuplicateTableStructureSqlOptions, SchemaNameSqlOptions, TableAdminSqlOptions } from "@/lib/dbAdminSql";
+import type { DatabaseNameSqlOptions, DropTableChildObjectSqlOptions, DropObjectSqlOptions, DuplicateTableStructureSqlOptions, CopyTableDataSqlOptions, SchemaNameSqlOptions, TableAdminSqlOptions } from "@/lib/dbAdminSql";
 import type { BuildDatabaseSqlExportOptions, BuildExportInsertStatementsOptions } from "@/lib/databaseExport";
 
 export interface AgentDriverInfo {
@@ -783,6 +783,10 @@ export async function buildDuplicateTableStructureSql(options: DuplicateTableStr
   return invoke("build_duplicate_table_structure_sql", { options });
 }
 
+export async function buildCopyTableDataSql(options: CopyTableDataSqlOptions): Promise<string> {
+  return invoke("build_copy_table_data_sql", { options });
+}
+
 export async function buildExecutableObjectSourceStatements(input: BuildEditableObjectSourceSqlInput): Promise<string[]> {
   return invoke("build_executable_object_source_statements", { input });
 }
@@ -914,7 +918,18 @@ export async function prepareSchemaDiff(options: SchemaDiffPreparationOptions): 
   return invoke("prepare_schema_diff", { options });
 }
 
-export async function generateSchemaSyncSql(diffs: TableDiff[], databaseType: DatabaseType, targetSchema?: string, functionDiffs?: FunctionDiff[], sequenceDiffs?: SequenceDiff[], ruleDiffs?: RuleDiff[], ownerDiffs?: OwnerDiff[], cascadeDelete?: boolean): Promise<string> {
+export async function generateSchemaSyncSql(
+  diffs: TableDiff[],
+  databaseType: DatabaseType,
+  targetSchema?: string,
+  functionDiffs?: FunctionDiff[],
+  sequenceDiffs?: SequenceDiff[],
+  ruleDiffs?: RuleDiff[],
+  ownerDiffs?: OwnerDiff[],
+  cascadeDelete?: boolean,
+  sourceDialect?: string,
+  fieldMappings?: FieldMappingEntry[],
+): Promise<string> {
   return invoke("generate_schema_sync_sql", {
     diffs,
     databaseType,
@@ -924,6 +939,8 @@ export async function generateSchemaSyncSql(diffs: TableDiff[], databaseType: Da
     ruleDiffs: ruleDiffs ?? [],
     ownerDiffs: ownerDiffs ?? [],
     cascadeDelete: cascadeDelete ?? false,
+    sourceDialect: sourceDialect as any,
+    fieldMappings: fieldMappings as any,
   });
 }
 
@@ -1612,6 +1629,18 @@ export async function mongoDropIndexes(connectionId: string, database: string, c
 
 export async function mongoInsertDocument(connectionId: string, database: string, collection: string, docJson: string): Promise<string> {
   return invoke("mongo_insert_document", { connectionId, database, collection, docJson });
+}
+
+export async function documentInsertDocument(connectionId: string, database: string, collection: string, docJson: string): Promise<string> {
+  return invoke("document_insert_document", { connectionId, database, collection, docJson });
+}
+
+export async function documentUpdateDocument(connectionId: string, database: string, collection: string, id: string, docJson: string, routing?: string): Promise<number> {
+  return invoke("document_update_document", { connectionId, database, collection, id, docJson, routing });
+}
+
+export async function documentDeleteDocument(connectionId: string, database: string, collection: string, id: string, routing?: string): Promise<number> {
+  return invoke("document_delete_document", { connectionId, database, collection, id, routing });
 }
 
 export async function mongoInsertDocuments(connectionId: string, database: string, collection: string, docsJson: string): Promise<{ affected_rows: number }> {
