@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { calculateDataGridColumnWidth, DATA_GRID_AUTO_FIT_VALUE_TEXT_LIMIT, DATA_GRID_COL_AUTO_FIT_MAX_WIDTH, DATA_GRID_COL_MAX_WIDTH } from "../../apps/desktop/src/lib/dataGrid/dataGridColumnWidth.ts";
+import { calculateDataGridColumnWidth, DATA_GRID_AUTO_FIT_VALUE_TEXT_LIMIT, DATA_GRID_COL_AUTO_FIT_MAX_WIDTH, DATA_GRID_COL_MAX_WIDTH, DATA_GRID_HEADER_MAX_WIDTH } from "../../apps/desktop/src/lib/dataGrid/dataGridColumnWidth.ts";
 
 test("default data grid column width remains compact for long values", () => {
   const width = calculateDataGridColumnWidth({
@@ -33,7 +33,7 @@ test("auto-fit data grid column width stays bounded for very long values", () =>
   expect(width).toBe(DATA_GRID_COL_AUTO_FIT_MAX_WIDTH);
 });
 
-test("data grid column width uses measured header text as an uncapped minimum", () => {
+test("data grid column width uses measured header text as the normal minimum", () => {
   const width = calculateDataGridColumnWidth({
     columnName: "AMOUNT",
     sampleValues: ["1"],
@@ -45,7 +45,7 @@ test("data grid column width uses measured header text as an uncapped minimum", 
   expect(width).toBe(113);
 });
 
-test("compact data grid columns keep long field names complete", () => {
+test("data grid caps pathological field names independently of density", () => {
   const width = calculateDataGridColumnWidth({
     columnName: "x".repeat(100),
     sampleValues: ["1"],
@@ -54,5 +54,5 @@ test("compact data grid columns keep long field names complete", () => {
     headerTextWidth: 700,
   });
 
-  expect(width).toBe(745);
+  expect(width).toBe(DATA_GRID_HEADER_MAX_WIDTH);
 });

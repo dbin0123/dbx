@@ -135,7 +135,7 @@ describe("useDataGridColumnResize", () => {
     expect(state.columnWidths.value[0]).toBe(129);
   });
 
-  it("compact mode bases width on field name without truncating long names", () => {
+  it("compact mode keeps normal field names complete and caps pathological names", () => {
     // 短字段名：列宽=字段名宽度，值不参与撑宽
     const short = createResizeState({
       columns: ["id"],
@@ -158,16 +158,16 @@ describe("useDataGridColumnResize", () => {
     // 9×7+45=108
     expect(mid.columnWidths.value[0]).toBe(108);
 
-    // 过长字段名：字段名仍完整展示，不受内容宽度上限影响
+    // 异常超长字段名：使用独立表头上限，避免单列撑爆表格
     const longName = createResizeState({
-      columns: ["x".repeat(70)],
+      columns: ["x".repeat(100)],
       rows: [["a"]],
       density: "compact",
       compactColumnHeaderActions: true,
     });
     longName.initColumnWidths();
-    // 70×7+45=535，紧凑模式只限制内容，不限制字段名
-    expect(longName.columnWidths.value[0]).toBe(535);
+    // 100×7+45=745，表头自动宽度限制为 500
+    expect(longName.columnWidths.value[0]).toBe(500);
   });
 
   it("comfortable mode uses percentile to ignore outlier values", () => {

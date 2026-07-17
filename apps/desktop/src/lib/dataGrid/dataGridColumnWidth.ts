@@ -5,6 +5,7 @@ type CellValue = string | number | boolean | null;
 export const DATA_GRID_COL_MIN_WIDTH = 60;
 export const DATA_GRID_COL_MAX_WIDTH = 400;
 export const DATA_GRID_COL_AUTO_FIT_MAX_WIDTH = 1200;
+export const DATA_GRID_HEADER_MAX_WIDTH = 500;
 export const DATA_GRID_CHAR_WIDTH = 8;
 export const DATA_GRID_HEADER_CONTROL_WIDTH = 80;
 export const DATA_GRID_CELL_PADDING = 28;
@@ -98,7 +99,8 @@ export function calculateDataGridColumnWidth(options: { columnName: string; samp
   const valueTextLimit = options.valueTextLimit ?? preset.valueTextLimit;
   const headerControl = options.compactColumnHeaderActions ? preset.headerControlWidthCompact : preset.headerControlWidth;
   const headerTextWidth = options.headerTextWidth ?? estimateTextWidth(options.columnName, 0, preset.charWidth);
-  const headerWidth = headerTextWidth + headerControl;
+  // Protect the grid from pathological identifiers while keeping normal names density-independent.
+  const headerWidth = Math.min(DATA_GRID_HEADER_MAX_WIDTH, headerTextWidth + headerControl);
 
   // Density limits cell content, never the column name and its header controls.
   if (density === "compact" && !options.includeValues) {
