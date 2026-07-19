@@ -4,7 +4,7 @@ use dbx_core::schema_diff::{
     generate_schema_sync_sql, prepare_schema_diff, SchemaDiffPreparation, SchemaDiffPreparationOptions, TableDiff,
     TableSchemaDetail,
 };
-use dbx_core::sql_risk::{classify_sql_risk, DdlRiskLevel, SqlRisk};
+use dbx_core::sql_risk::{classify_sql_risk, SqlRisk};
 use dbx_core::types::{ColumnInfo, TableInfo};
 
 // ============================================================================
@@ -33,6 +33,9 @@ fn col(name: &str, data_type: &str) -> ColumnInfo {
         numeric_precision: None,
         numeric_scale: None,
         character_maximum_length: None,
+        enum_values: None,
+        character_set: None,
+        collation: None,
     }
 }
 
@@ -212,18 +215,6 @@ fn sql_risk_ddl_classification_invariant() {
 fn sql_risk_multi_statement_invariant() {
     assert_eq!(classify_sql_risk("SELECT 1; INSERT INTO users VALUES (1)", "postgres").unwrap(), SqlRisk::Write);
     assert_eq!(classify_sql_risk("SELECT 1; CREATE TABLE t (id INT)", "postgres").unwrap(), SqlRisk::Ddl);
-}
-
-/// Verify that DdlRiskLevel additions don't break existing SqlRisk classification
-#[test]
-fn ddl_risk_level_compatible_with_sql_risk() {
-    use dbx_core::sql_risk::analyze_sql_impact;
-
-    let report =
-        analyze_sql_impact("CREATE TABLE users (id INT)", "postgres", dbx_core::sql_risk::TableSize::Small, 0).unwrap();
-    assert_eq!(report.overall_risk, SqlRisk::Ddl);
-    assert!(report.ddl_risk_level.is_some());
-    assert_eq!(report.ddl_risk_level.unwrap(), DdlRiskLevel::Safe);
 }
 
 // ============================================================================

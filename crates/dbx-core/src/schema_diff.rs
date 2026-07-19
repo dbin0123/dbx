@@ -5096,7 +5096,7 @@ mod tests {
             description: "all log tables".to_string(),
         }];
 
-        let (added, removed, common, matches) = diff_names_with_patterns(&source, &target, &patterns);
+        let (_added, removed, common, _matches) = diff_names_with_patterns(&source, &target, &patterns);
         assert_eq!(removed, vec!["log_2024_03"]);
         assert_eq!(common.len(), 0);
         assert_eq!(matches.len(), 1);
@@ -6688,7 +6688,7 @@ mod tests {
     //  Cross-dialect CREATE TABLE tests (all 11×11 pairs)
     // ═══════════════════════════════════════════════════════════════
 
-    fn dialect_from_db(db: DatabaseType) -> DialectKind {
+    fn _dialect_from_db(db: DatabaseType) -> DialectKind {
         DialectKind::from_database_type(db)
     }
 
@@ -6729,7 +6729,7 @@ mod tests {
         ColumnInfo { is_primary_key: true, ..column(name, data_type, None) }
     }
 
-    fn make_added_table_detail(
+    fn _make_added_table_detail(
         name: &str,
         columns: Vec<ColumnInfo>,
         indexes: Vec<IndexInfo>,
@@ -6746,7 +6746,7 @@ mod tests {
         }
     }
 
-    fn prepare_create_table(
+    fn _prepare_create_table(
         columns: Vec<ColumnInfo>,
         indexes: Vec<IndexInfo>,
         fks: Vec<ForeignKeyInfo>,
@@ -7154,7 +7154,7 @@ mod tests {
     }
 
     // -- source_dialect=None: verify original DDL preservation --
-    fn prepare_create_table_no_dialect(
+    fn _prepare_create_table_no_dialect(
         columns: Vec<ColumnInfo>,
         indexes: Vec<IndexInfo>,
         target_kind: DialectKind,
