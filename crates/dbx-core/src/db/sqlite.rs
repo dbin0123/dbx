@@ -1971,10 +1971,13 @@ pub async fn list_indexes(pool: &SqliteHandle, _schema: &str, table: &str) -> Re
                 let mut col_stmt =
                     conn.prepare(&format!("PRAGMA index_info(\"{safe_name}\")")).map_err(|e| e.to_string())?;
                 let columns = col_stmt
-                    .query_map([], |row| row.get::<_, String>("name"))
+                    .query_map([], |row| row.get::<_, Option<String>>("name"))
                     .map_err(|e| e.to_string())?
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
 
                 indexes.push(IndexInfo {
                     name,

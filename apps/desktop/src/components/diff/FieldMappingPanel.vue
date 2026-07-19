@@ -3,9 +3,10 @@ import { computed, ref, watch, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Trash2, ArrowRight } from "@lucide/vue";
+import { Plus, Trash2, ArrowRight, Wand2 } from "@lucide/vue";
 import SearchableSelect from "@/components/ui/searchable-select/SearchableSelect.vue";
 import { getDataTypeOptions } from "@/lib/table/tableStructureEditorState";
+import { listDialectDataTypes } from "@/lib/backend/api";
 import { findPreset } from "@/lib/fieldMappingPresets";
 import type { FieldMappingEntry, FieldMappingParamStrategy } from "@/types/schemaDiff";
 
@@ -32,12 +33,72 @@ const availablePresets = computed(() => {
   return preset ? [preset] : [];
 });
 
-function loadSourceTypes() {
-  sourceTypeOptions.value = getDataTypeOptions(props.sourceDbType as any);
+function levenshtein(a: string, b: string): number {
+  const m = a.length,
+    n = b.length;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) {
+    const curr = [i];
+    for (let j = 1; j <= n; j++) {
+      curr[j] = a[i - 1].toLowerCase() === b[j - 1].toLowerCase() ? prev[j - 1] : Math.min(prev[j], curr[j - 1], prev[j - 1]) + 1;
+    }
+    prev = curr;
+  }
+  return prev[n];
 }
 
-function loadTargetTypes() {
-  targetTypeOptions.value = getDataTypeOptions(props.targetDbType as any);
+function nameSimilarity(a: string, b: string): number {
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+  return 1 - levenshtein(a, b) / maxLen;
+}
+
+function autoGenerateMappings() {
+  const srcTypes = sourceTypeOptions.value;
+  const tgtTypes = targetTypeOptions.value;
+  if (srcTypes.length === 0 || tgtTypes.length === 0) return;
+
+  const used = new Set<string>();
+  const result: FieldMappingEntry[] = [];
+
+  for (const src of srcTypes) {
+    let bestTarget = "";
+    let bestSim = 0;
+    for (const tgt of tgtTypes) {
+      if (used.has(tgt)) continue;
+      const sim = nameSimilarity(src, tgt);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestTarget = tgt;
+      }
+    }
+    if (bestTarget && bestSim >= 0.3) {
+      result.push({ sourceType: src, targetType: bestTarget, paramStrategy: "preserve" });
+      used.add(bestTarget);
+    }
+  }
+
+  if (result.length > 0) {
+    emit("update:mappings", result);
+  }
+}
+
+async function loadSourceTypes() {
+  try {
+    const types = await listDialectDataTypes(props.sourceDbType);
+    sourceTypeOptions.value = types.length > 0 ? types : getDataTypeOptions(props.sourceDbType as any);
+  } catch {
+    sourceTypeOptions.value = getDataTypeOptions(props.sourceDbType as any);
+  }
+}
+
+async function loadTargetTypes() {
+  try {
+    const types = await listDialectDataTypes(props.targetDbType);
+    targetTypeOptions.value = types.length > 0 ? types : getDataTypeOptions(props.targetDbType as any);
+  } catch {
+    targetTypeOptions.value = getDataTypeOptions(props.targetDbType as any);
+  }
 }
 
 function addMapping() {
@@ -62,8 +123,25 @@ function applyPreset(presetId: string) {
   }
 }
 
-watch(() => props.sourceDbType, loadSourceTypes);
-watch(() => props.targetDbType, loadTargetTypes);
+watch(
+  () => props.sourceDbType,
+  () => {
+    loadSourceTypes();
+  },
+);
+watch(
+  () => props.targetDbType,
+  () => {
+    loadTargetTypes();
+  },
+);
+
+// Auto-generate mappings when both type lists are ready, no preset exists, and no mappings yet
+watch([sourceTypeOptions, targetTypeOptions, availablePresets], ([src, tgt, presets]) => {
+  if (src.length > 0 && tgt.length > 0 && props.mappings.length === 0 && presets.length === 0 && !sameType.value) {
+    autoGenerateMappings();
+  }
+});
 
 onMounted(() => {
   loadSourceTypes();
@@ -101,8 +179,12 @@ onMounted(() => {
         </Select>
       </div>
 
-      <div v-if="mappings.length === 0" class="flex flex-col items-center justify-center py-6 gap-2">
+      <div v-if="mappings.length === 0" class="flex flex-col items-center justify-center py-6 gap-3">
         <p class="text-xs text-muted-foreground">{{ t("diff.fieldMapping.noMappings") }}</p>
+        <Button v-if="availablePresets.length === 0" variant="outline" size="sm" class="h-7 text-xs gap-1" @click="autoGenerateMappings" :disabled="sameType || sourceTypeOptions.length === 0 || targetTypeOptions.length === 0">
+          <Wand2 class="w-3.5 h-3.5" />
+          {{ t("diff.fieldMapping.autoGenerate") }}
+        </Button>
       </div>
 
       <div v-else class="space-y-3">

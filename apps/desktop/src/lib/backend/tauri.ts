@@ -1118,6 +1118,10 @@ export async function prepareSchemaDiff(options: SchemaDiffPreparationOptions): 
   return invoke("prepare_schema_diff", { options });
 }
 
+export async function listDialectDataTypes(dialectName: string): Promise<string[]> {
+  return invoke("list_dialect_data_types", { dialectName });
+}
+
 export async function generateSchemaSyncSql(diffs: TableDiff[], databaseType: DatabaseType, targetSchema?: string, functionDiffs?: FunctionDiff[], sequenceDiffs?: SequenceDiff[], ruleDiffs?: RuleDiff[], ownerDiffs?: OwnerDiff[], cascadeDelete?: boolean): Promise<string> {
   return invoke("generate_schema_sync_sql", {
     diffs,

@@ -1,6 +1,7 @@
 use crate::sql_dialect::dialect_loader::DialectRegistry;
 
 pub fn list_dialect_type_names(dialect_name: &str) -> Vec<String> {
+    super::lazy_init();
     list_dialect_type_names_in(dialect_name, DialectRegistry::global())
 }
 

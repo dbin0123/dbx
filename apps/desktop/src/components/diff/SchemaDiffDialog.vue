@@ -26,6 +26,8 @@ import {
   groupDiffObjects,
   injectColumnRenameSql,
   schemaDiffDeployTargetSchema,
+  databaseTypeToDialectKind,
+  normalizeDialectKind,
   type OperationGroup,
   type SchemaDiffObject,
   type DiffOperationType,
@@ -457,8 +459,8 @@ async function handleCompare() {
             .map((s: string) => s.trim())
             .filter(Boolean)
         : undefined,
-      sourceDialect: opts?.sourceDialect || sourceConfig?.db_type || undefined,
-      targetDialect: opts?.targetDialect || targetConfig?.db_type || undefined,
+      sourceDialect: opts?.sourceDialect ? normalizeDialectKind(opts.sourceDialect) : sourceConfig?.db_type ? databaseTypeToDialectKind(sourceConfig.db_type) : undefined,
+      targetDialect: opts?.targetDialect ? normalizeDialectKind(opts.targetDialect) : targetConfig?.db_type ? databaseTypeToDialectKind(targetConfig.db_type) : undefined,
       compatibilityThreshold: opts?.compatibilityThreshold ?? 0.5,
       fieldMappings:
         opts?.fieldMappings?.map((m: FieldMappingEntry) => ({

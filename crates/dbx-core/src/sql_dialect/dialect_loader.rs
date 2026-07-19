@@ -213,10 +213,6 @@ impl DialectPluginLoader {
                     continue;
                 }
 
-                if !file_name.starts_with("dialect_") && !file_name.contains("dialect") {
-                    continue;
-                }
-
                 match Self::load_file(&path) {
                     Ok((kind, yaml, descriptor)) => {
                         registry.register(file_name, kind, descriptor, yaml, Some(path.clone()));

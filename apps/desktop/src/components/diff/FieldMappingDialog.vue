@@ -2,7 +2,7 @@
 import { ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
-import { Download, Upload, Check, X } from "@lucide/vue";
+import { Download, Upload, Check, X, Trash2 } from "@lucide/vue";
 import FieldMappingPanel from "@/components/diff/FieldMappingPanel.vue";
 import type { FieldMappingEntry } from "@/types/schemaDiff";
 import { useToast } from "@/composables/useToast";
@@ -68,6 +68,10 @@ function handleExport() {
   } else {
     fallbackDownload(content);
   }
+}
+
+function handleClear() {
+  editingMappings.value = [];
 }
 
 function fallbackDownload(content: string) {
@@ -163,6 +167,10 @@ function handleClose() {
 
       <div class="flex items-center justify-between mt-4 pt-3 border-t">
         <div class="flex items-center gap-2">
+          <Button variant="outline" size="sm" @click="handleClear" :disabled="editingMappings.length === 0">
+            <Trash2 class="w-3.5 h-3.5 mr-1" />
+            {{ t("diff.fieldMapping.clearMappings") }}
+          </Button>
           <Button variant="outline" size="sm" @click="handleImportClick">
             <Upload class="w-3.5 h-3.5 mr-1" />
             {{ t("diff.fieldMapping.import") }}

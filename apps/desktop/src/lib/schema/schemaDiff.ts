@@ -1,5 +1,89 @@
 import type { ColumnInfo, IndexInfo, ForeignKeyInfo, TriggerInfo, FunctionInfo, SequenceInfo, RuleInfo, OwnerInfo, DatabaseType, TableInfo } from "@/types/database";
 
+const DIALECT_KIND_MAP: Record<string, string> = {
+  mysql: "mysql",
+  doris: "mysql",
+  starrocks: "mysql",
+  goldendb: "mysql",
+  sundb: "mysql",
+  databend: "mysql",
+  gbase: "mysql",
+  postgres: "postgres",
+  gaussdb: "postgres",
+  kwdb: "postgres",
+  opengauss: "postgres",
+  highgo: "postgres",
+  vastbase: "postgres",
+  kingbase: "postgres",
+  firebird: "postgres",
+  redshift: "postgres",
+  vertica: "postgres",
+  exasol: "postgres",
+  sqlite: "sqlite",
+  rqlite: "sqlite",
+  turso: "sqlite",
+  duckdb: "duckdb",
+  sqlserver: "sql_server",
+  access: "sql_server",
+  oracle: "oracle",
+  dameng: "oracle",
+  "oceanbase-oracle": "oracle",
+  iris: "oracle",
+  yashandb: "oracle",
+  xugu: "oracle",
+  h2: "h2",
+  clickhouse: "click_house",
+  manticoresearch: "manticore_search",
+  informix: "informix",
+  questdb: "questdb",
+};
+
+export function databaseTypeToDialectKind(dbType: DatabaseType): string {
+  return DIALECT_KIND_MAP[dbType] ?? "unsupported";
+}
+
+const DIALECT_ALIAS_MAP: Record<string, string> = {
+  access: "sql_server",
+  mssql: "sql_server",
+  "sql server": "sql_server",
+  postgresql: "postgres",
+  sqlite3: "sqlite",
+  "oceanbase-oracle": "oracle",
+  oceanbase: "oracle",
+  dameng: "oracle",
+  iris: "oracle",
+  yashandb: "oracle",
+  xugu: "oracle",
+  gaussdb: "postgres",
+  kwdb: "postgres",
+  opengauss: "postgres",
+  highgo: "postgres",
+  vastbase: "postgres",
+  kingbase: "postgres",
+  firebird: "postgres",
+  redshift: "postgres",
+  vertica: "postgres",
+  exasol: "postgres",
+  doris: "mysql",
+  starrocks: "mysql",
+  goldendb: "mysql",
+  sundb: "mysql",
+  databend: "mysql",
+  gbase: "mysql",
+  rqlite: "sqlite",
+  turso: "sqlite",
+  manticore: "manticore_search",
+  questdb: "questdb",
+  clickhouse: "click_house",
+};
+
+export function normalizeDialectKind(input: string): string {
+  const lower = input.trim().toLowerCase();
+  if (DIALECT_KIND_MAP[lower]) return DIALECT_KIND_MAP[lower];
+  if (DIALECT_ALIAS_MAP[lower]) return DIALECT_ALIAS_MAP[lower];
+  return lower;
+}
+
 function levenshteinDistance(a: string, b: string): number {
   const m = a.length;
   const n = b.length;

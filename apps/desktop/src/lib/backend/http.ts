@@ -701,6 +701,10 @@ export async function listAvailableExtensions(connectionId: string, database: st
   return get(`/api/schema/available-extensions?${qs({ connection_id: connectionId, database })}`);
 }
 
+export async function listDialectDataTypes(dialectName: string): Promise<string[]> {
+  return get(`/api/dialect/data-types?${qs({ dialect_name: dialectName })}`);
+}
+
 // ---------------------------------------------------------------------------
 // Query
 // ---------------------------------------------------------------------------

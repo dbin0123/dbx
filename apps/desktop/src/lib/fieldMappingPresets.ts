@@ -88,5 +88,25 @@ export const FIELD_MAPPING_PRESETS: FieldMappingPreset[] = [
 ];
 
 export function findPreset(sourceDialect: string, targetDialect: string): FieldMappingPreset | undefined {
-  return FIELD_MAPPING_PRESETS.find((p) => p.sourceDialect === sourceDialect && p.targetDialect === targetDialect);
+  // Look for exact forward match
+  const forward = FIELD_MAPPING_PRESETS.find((p) => p.sourceDialect === sourceDialect && p.targetDialect === targetDialect);
+  if (forward) return forward;
+
+  // Look for reverse match and auto-generate bidirectional preset
+  const reverse = FIELD_MAPPING_PRESETS.find((p) => p.sourceDialect === targetDialect && p.targetDialect === sourceDialect);
+  if (reverse) {
+    return {
+      id: `${reverse.id}-reverse`,
+      label: `${reverse.label.split(" → ").reverse().join(" → ")}`,
+      sourceDialect,
+      targetDialect,
+      mappings: reverse.mappings.map((m) => ({
+        sourceType: m.targetType,
+        targetType: m.sourceType,
+        paramStrategy: m.paramStrategy === "custom" ? "strip" : m.paramStrategy,
+      })),
+    };
+  }
+
+  return undefined;
 }
