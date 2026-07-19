@@ -13,6 +13,7 @@ pub enum TransactionStatus {
     Committed,
     RollingBack,
     RolledBack,
+    Mixed,
     Unknown,
 }
 
@@ -25,6 +26,7 @@ impl TransactionStatus {
             Self::Committed => "committed",
             Self::RollingBack => "rolling_back",
             Self::RolledBack => "rolled_back",
+            Self::Mixed => "mixed",
             Self::Unknown => "unknown",
         }
     }
@@ -37,6 +39,7 @@ impl TransactionStatus {
             "committed" => Self::Committed,
             "rolling_back" => Self::RollingBack,
             "rolled_back" => Self::RolledBack,
+            "mixed" => Self::Mixed,
             _ => Self::Unknown,
         }
     }
@@ -47,6 +50,13 @@ pub struct VoteResult {
     pub participant_id: String,
     pub vote: bool,
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParticipantCommitResult {
+    pub participant_id: String,
+    pub committed: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,8 +164,8 @@ impl TwoPhaseCommit {
 
         if all_agreed {
             self.update_status(transaction_id, TransactionStatus::Committing).await?;
-            match self.commit_phase(transaction_id, participants).await {
-                Ok(()) => {
+            match self.commit_phase(transaction_id, participants, 2).await {
+                Ok(results) => {
                     let log = self.update_status(transaction_id, TransactionStatus::Committed).await?;
                     let _ = self
                         .state_machine
@@ -169,12 +179,20 @@ impl TwoPhaseCommit {
                 Err(e) => {
                     let _ = self.update_status(transaction_id, TransactionStatus::RollingBack).await?;
                     let _ = self.rollback_phase(transaction_id, participants).await;
-                    let log = self.update_status(transaction_id, TransactionStatus::RolledBack).await?;
+
+                    let has_committed = self.has_committed_participants(transaction_id, participants).await;
+                    let final_status =
+                        if has_committed { TransactionStatus::Mixed } else { TransactionStatus::RolledBack };
+
+                    let log = self.update_status(transaction_id, final_status).await?;
                     let _ = self
                         .state_machine
                         .transition(&format!("2pc_{transaction_id}"), crate::state_persistence::StateTransition::Failed)
                         .await;
-                    return Err(format!("Commit phase failed: {e}. Transaction rolled back. Status: {}", log.status));
+                    return Err(format!(
+                        "Commit phase failed: {e}. Some participants committed. Status: {}",
+                        log.status
+                    ));
                 }
             }
         } else {
@@ -237,17 +255,62 @@ impl TwoPhaseCommit {
         Ok(results)
     }
 
-    async fn commit_phase(&self, transaction_id: &str, participants: &[Arc<dyn Participant>]) -> Result<(), String> {
-        let mut errors = Vec::new();
-        for p in participants {
-            if let Err(e) = p.commit(transaction_id).await {
-                errors.push(format!("{}: {}", p.id(), e));
+    async fn commit_phase(
+        &self,
+        transaction_id: &str,
+        participants: &[Arc<dyn Participant>],
+        max_retries: u32,
+    ) -> Result<Vec<ParticipantCommitResult>, String> {
+        let mut results: Vec<ParticipantCommitResult> = Vec::new();
+        let mut pending: Vec<&Arc<dyn Participant>> = participants.iter().collect();
+
+        for attempt in 0..=max_retries {
+            let mut next_pending = Vec::new();
+            for p in pending {
+                match p.commit(transaction_id).await {
+                    Ok(()) => {
+                        results.push(ParticipantCommitResult {
+                            participant_id: p.id().to_string(),
+                            committed: true,
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        if attempt < max_retries {
+                            log::warn!(
+                                "2PC commit retry {}/{} for participant {}: {}",
+                                attempt + 1,
+                                max_retries,
+                                p.id(),
+                                e
+                            );
+                            next_pending.push(p);
+                        } else {
+                            results.push(ParticipantCommitResult {
+                                participant_id: p.id().to_string(),
+                                committed: false,
+                                error: Some(e),
+                            });
+                        }
+                    }
+                }
+            }
+            pending = next_pending;
+            if pending.is_empty() {
+                break;
             }
         }
-        if errors.is_empty() {
-            Ok(())
+
+        let all_committed = results.iter().all(|r| r.committed);
+        if all_committed {
+            Ok(results)
         } else {
-            Err(errors.join("; "))
+            let failures: Vec<String> = results
+                .iter()
+                .filter(|r| !r.committed)
+                .map(|r| format!("{}: {}", r.participant_id, r.error.as_deref().unwrap_or("unknown")))
+                .collect();
+            Err(failures.join("; "))
         }
     }
 
@@ -263,6 +326,16 @@ impl TwoPhaseCommit {
         } else {
             Err(errors.join("; "))
         }
+    }
+
+    async fn has_committed_participants(&self, transaction_id: &str, participants: &[Arc<dyn Participant>]) -> bool {
+        for p in participants {
+            match p.commit(transaction_id).await {
+                Ok(()) => return true,
+                Err(_) => continue,
+            }
+        }
+        false
     }
 
     pub async fn recover(
@@ -281,11 +354,14 @@ impl TwoPhaseCommit {
                 self.rollback_phase(transaction_id, participants).await?;
                 self.update_status(transaction_id, TransactionStatus::RolledBack).await
             }
-            TransactionStatus::Committing => match self.commit_phase(transaction_id, participants).await {
-                Ok(()) => self.update_status(transaction_id, TransactionStatus::Committed).await,
+            TransactionStatus::Committing => match self.commit_phase(transaction_id, participants, 2).await {
+                Ok(_) => self.update_status(transaction_id, TransactionStatus::Committed).await,
                 Err(e) => {
                     self.rollback_phase(transaction_id, participants).await?;
-                    self.update_status(transaction_id, TransactionStatus::RolledBack).await.map_err(|_| e.clone())?;
+                    let has_committed = self.has_committed_participants(transaction_id, participants).await;
+                    let final_status =
+                        if has_committed { TransactionStatus::Mixed } else { TransactionStatus::RolledBack };
+                    self.update_status(transaction_id, final_status).await.map_err(|_| e.clone())?;
                     Err(format!("Recovery failed during commit: {e}"))
                 }
             },
@@ -293,7 +369,7 @@ impl TwoPhaseCommit {
                 self.rollback_phase(transaction_id, participants).await?;
                 self.update_status(transaction_id, TransactionStatus::RolledBack).await
             }
-            TransactionStatus::Committed | TransactionStatus::RolledBack => Ok(log),
+            TransactionStatus::Committed | TransactionStatus::RolledBack | TransactionStatus::Mixed => Ok(log),
             TransactionStatus::Unknown => {
                 Err(format!("Unknown transaction status for {transaction_id}: cannot recover"))
             }
