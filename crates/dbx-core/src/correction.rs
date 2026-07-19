@@ -218,7 +218,7 @@ fn append_table_schema_step(
     table_diff: &crate::schema_diff::TableDiff,
     tbl_name: &str,
     steps: &mut Vec<CorrectionStep>,
-    _rollback_steps: &mut Vec<CorrectionStep>,
+    rollback_steps: &mut Vec<CorrectionStep>,
     options: &JointCorrectionOptions,
     mut step_index: usize,
 ) -> usize {
@@ -235,7 +235,21 @@ fn append_table_schema_step(
     };
 
     let rollback_sql = if options.include_rollback {
-        table_diff.sync_sql.as_ref().map(|s| format!("-- Rollback: {}", s))
+        match table_diff.diff_type.as_str() {
+            "added" => Some(format!("DROP TABLE IF EXISTS {};", tbl_name)),
+            "removed" => {
+                // For dropped tables, the rollback would recreate the table
+                // Use native DDL if available, otherwise mark as requiring manual intervention
+                table_diff.target_ddl.as_ref().map(|ddl| ddl.clone()).or_else(|| {
+                    Some(format!(
+                        "-- Manual rollback required: recreate table {} with original DDL",
+                        tbl_name
+                    ))
+                })
+            }
+            "modified" => table_diff.sync_sql.as_ref().map(|s| format!("-- Rollback: {}", s)),
+            _ => None,
+        }
     } else {
         None
     };
@@ -246,11 +260,29 @@ fn append_table_schema_step(
         step_type,
         table_name: Some(tbl_name.to_string()),
         sql,
-        rollback_sql,
+        rollback_sql: rollback_sql.clone(),
         description: format!("Schema {} for table: {tbl_name}", table_diff.diff_type),
         risk_level,
         depends_on: Vec::new(),
     });
+
+    // Also add to rollback_steps if rollback SQL is available
+    if let Some(rollback) = rollback_sql {
+        rollback_steps.push(CorrectionStep {
+            step_type: match table_diff.diff_type.as_str() {
+                "added" => CorrectionStepType::SchemaDrop,
+                "removed" => CorrectionStepType::SchemaCreate,
+                _ => CorrectionStepType::SchemaAlter,
+            },
+            table_name: Some(tbl_name.to_string()),
+            sql: rollback,
+            rollback_sql: None,
+            description: format!("Rollback for schema {} on table: {tbl_name}", table_diff.diff_type),
+            risk_level,
+            depends_on: Vec::new(),
+        });
+    }
+
     step_index += 1;
 
     step_index
@@ -259,7 +291,7 @@ fn append_table_schema_step(
 fn append_data_steps(
     data_compare: Option<&DataCompareFromTablesPreparation>,
     steps: &mut Vec<CorrectionStep>,
-    _rollback_steps: &mut Vec<CorrectionStep>,
+    rollback_steps: &mut Vec<CorrectionStep>,
     options: &JointCorrectionOptions,
     mut step_index: usize,
 ) -> usize {
@@ -295,11 +327,25 @@ fn append_data_steps(
             (CorrectionStepType::SchemaPostSync, format!("Pre-sync: {}", summary(statement, 80)))
         };
 
+        let rollback_sql = if options.include_rollback {
+            if statement.to_uppercase().starts_with("INSERT") {
+                Some(format!("-- Rollback: DELETE matching rows; manual review needed: {}", summary(statement, 60)))
+            } else if statement.to_uppercase().starts_with("DELETE") {
+                Some(format!("-- Rollback: INSERT deleted rows; manual review needed: {}", summary(statement, 60)))
+            } else if statement.to_uppercase().starts_with("UPDATE") {
+                Some(format!("-- Rollback: reverse UPDATE; manual review needed: {}", summary(statement, 60)))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         steps.push(CorrectionStep {
             step_type,
             table_name: None,
             sql: statement.clone(),
-            rollback_sql: None,
+            rollback_sql,
             description,
             risk_level: CorrectionRiskLevel::Caution,
             depends_on: Vec::new(),
@@ -314,7 +360,7 @@ fn append_table_data_step(
     data_prep: &DataCompareResult,
     tbl_name: &str,
     steps: &mut Vec<CorrectionStep>,
-    _rollback_steps: &mut Vec<CorrectionStep>,
+    rollback_steps: &mut Vec<CorrectionStep>,
     _options: &JointCorrectionOptions,
     mut step_index: usize,
 ) -> usize {

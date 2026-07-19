@@ -2910,6 +2910,7 @@ fn generate_create_table_sql(
     schema: Option<&str>,
     source_dialect: Option<DialectKind>,
     field_mappings: &[FieldMapping],
+    triggers: &[TriggerInfo],
 ) -> String {
     let mut lines = Vec::new();
     let target_dialect = DialectKind::from_database_type(db_type);
@@ -3089,6 +3090,29 @@ fn generate_create_table_sql(
         }
     }
 
+    // Trigger recreation (requires manual review of trigger bodies)
+    if !triggers.is_empty() {
+        lines.push(String::new());
+        lines.push(format!("-- Triggers for table: {} (review trigger definitions before executing)", name));
+        for trigger in triggers {
+            lines.push(format!(
+                "-- Trigger {} {} on {}: {}",
+                trigger.name,
+                if trigger.event_type.to_uppercase().contains("INSERT") {
+                    "INSERT"
+                } else if trigger.event_type.to_uppercase().contains("UPDATE") {
+                    "UPDATE"
+                } else if trigger.event_type.to_uppercase().contains("DELETE") {
+                    "DELETE"
+                } else {
+                    &trigger.event_type
+                },
+                name,
+                trigger.definition
+            ));
+        }
+    }
+
     lines.join("\n")
 }
 
@@ -3157,6 +3181,10 @@ fn generate_schema_sync_sql_inner(
                 source_dialect.map(|src| DialectKind::from_database_type(db_type) == src).unwrap_or(false);
             if is_rollback_recreation {
                 if has_structured_snapshot {
+                    let trigger_infos: Vec<TriggerInfo> = diff
+                        .triggers
+                        .as_ref()
+                        .map_or_else(Vec::new, |triggers| triggers.iter().filter_map(|t| t.source.clone()).collect());
                     let generated = generate_create_table_sql(
                         &diff.name,
                         diff.columns.as_ref().map_or(&[] as &[ColumnDiff], |columns| columns.as_slice()),
@@ -3169,6 +3197,7 @@ fn generate_schema_sync_sql_inner(
                         schema,
                         None,
                         field_mappings,
+                        &trigger_infos,
                     );
                     if !generated.is_empty() {
                         lines.push(generated);
@@ -3188,6 +3217,10 @@ fn generate_schema_sync_sql_inner(
                     lines.push(format!("{};", ddl));
                     lines.push(String::new());
                 } else if let Some(cols) = &diff.columns {
+                    let trigger_infos: Vec<TriggerInfo> = diff
+                        .triggers
+                        .as_ref()
+                        .map_or_else(Vec::new, |triggers| triggers.iter().filter_map(|t| t.source.clone()).collect());
                     let gen = generate_create_table_sql(
                         &diff.name,
                         cols,
@@ -3198,6 +3231,7 @@ fn generate_schema_sync_sql_inner(
                         schema,
                         source_dialect,
                         field_mappings,
+                        &trigger_infos,
                     );
                     if !gen.is_empty() {
                         lines.push(gen);
@@ -3209,6 +3243,10 @@ fn generate_schema_sync_sql_inner(
                 let _idxs: &[IndexDiff] = diff.indexes.as_ref().map_or(&[] as &[IndexDiff], |v| v.as_slice());
                 let _fks: &[ForeignKeyDiff] =
                     diff.foreign_keys.as_ref().map_or(&[] as &[ForeignKeyDiff], |v| v.as_slice());
+                let trigger_infos: Vec<TriggerInfo> = diff
+                    .triggers
+                    .as_ref()
+                    .map_or_else(Vec::new, |triggers| triggers.iter().filter_map(|t| t.source.clone()).collect());
                 let gen = generate_create_table_sql(
                     &diff.name,
                     diff.columns.as_ref().map_or(&[] as &[ColumnDiff], |v| v.as_slice()),
@@ -3219,6 +3257,7 @@ fn generate_schema_sync_sql_inner(
                     schema,
                     source_dialect,
                     field_mappings,
+                    &trigger_infos,
                 );
                 if !gen.is_empty() {
                     lines.push(gen);
