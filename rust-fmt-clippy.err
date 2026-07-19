@@ -1,0 +1,1343 @@
+ Checking duckdb v1.10503.1
+warning: unused import: `YamlValidationError`
+ --> crates/dbx-core/src/sql_dialect/dialect_loader.rs:7:40
+  |
+7 | use super::dialect_yaml::{DialectYaml, YamlValidationError};
+  |                                        ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `TypeConversionRule`
+ --> crates/dbx-core/src/sql_dialect/dialect_yaml.rs:4:47
+  |
+4 |     DialectCapabilityDescriptor, DialectKind, TypeConversionRule, CAP_ADD_COLUMN, CAP_ALTER_EXISTING_COLUMN,
+  |                                               ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Path`
+ --> crates/dbx-core/src/sql_dialect/hot_reload.rs:1:17
+  |
+1 | use std::path::{Path, PathBuf};
+  |                 ^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> crates/dbx-core/src/sql_dialect/hot_reload.rs:2:5
+  |
+2 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `super::dialect_loader::LoadError`
+ --> crates/dbx-core/src/sql_dialect/hot_reload.rs:9:5
+  |
+9 | use super::dialect_loader::LoadError;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `DialectCapabilityDescriptor`
+ --> crates/dbx-core/src/sql_dialect/inference.rs:1:25
+  |
+1 | use super::descriptor::{DialectCapabilityDescriptor, DialectKind, TypeMappingMatrix};
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0063]: missing fields `character_set`, `collation` and `enum_values` in initializer of `types::ColumnInfo`
+    --> crates/dbx-core/src/schema_diff.rs:3518:9
+     |
+3518 |         ColumnInfo {
+     |         ^^^^^^^^^^ missing `character_set`, `collation` and `enum_values`
+
+error[E0063]: missing fields `character_set`, `collation` and `enum_values` in initializer of `types::ColumnInfo`
+    --> crates/dbx-core/src/schema_diff.rs:4638:30
+     |
+4638 |                 source: Some(ColumnInfo {
+     |                              ^^^^^^^^^^ missing `character_set`, `collation` and `enum_values`
+
+error[E0063]: missing fields `character_set`, `collation` and `enum_values` in initializer of `types::ColumnInfo`
+    --> crates/dbx-core/src/schema_diff.rs:6564:22
+     |
+6564 |         let s = vec![ColumnInfo {
+     |                      ^^^^^^^^^^ missing `character_set`, `collation` and `enum_values`
+
+error[E0063]: missing fields `character_set`, `collation` and `enum_values` in initializer of `types::ColumnInfo`
+    --> crates/dbx-core/src/schema_diff.rs:6576:22
+     |
+6576 |         let t = vec![ColumnInfo {
+     |                      ^^^^^^^^^^ missing `character_set`, `collation` and `enum_values`
+
+warning: unused variable: `cols`
+    --> crates/dbx-core/src/schema_diff.rs:3108:21
+     |
+3108 |                 let cols: &[ColumnDiff] = diff.columns.as_ref().map_or(&[] as &[ColumnDiff], |v| v.as_slice());
+     |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_cols`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `idxs`
+    --> crates/dbx-core/src/schema_diff.rs:3109:21
+     |
+3109 |                 let idxs: &[IndexDiff] = diff.indexes.as_ref().map_or(&[] as &[IndexDiff], |v| v.as_slice());
+     |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_idxs`
+
+warning: unused variable: `fks`
+    --> crates/dbx-core/src/schema_diff.rs:3110:21
+     |
+3110 |                 let fks: &[ForeignKeyDiff] =
+     |                     ^^^ help: if this is intentional, prefix it with an underscore: `_fks`
+
+warning: unused variable: `debounce`
+  --> crates/dbx-core/src/sql_dialect/hot_reload.rs:55:13
+   |
+55 |         let debounce = Duration::from_millis(self.config.debounce_ms);
+   |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_debounce`
+
+warning: function `strip_mysql_ddl` is never used
+    --> crates/dbx-core/src/schema_diff.rs:2819:4
+     |
+2819 | fn strip_mysql_ddl(ddl: &str) -> String {
+     |    ^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/agent_loop.rs:881:1
+    |
+881 | / async fn maybe_compact(
+882 | |     config: &AiConfig,
+883 | |     system_prompt: &str,
+884 | |     tools: &[ToolDefinition],
+...   |
+889 | |     force: bool,
+890 | | ) -> CompactResult {
+    | |__________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: unused variable: `registry`
+   --> crates/dbx-core/src/dml_binding.rs:345:13
+    |
+345 |         let registry = DmlCleanRuleRegistry::new();
+    |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_registry`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/agent_service.rs:600:1
+    |
+600 | / async fn ensure_jre_from_registry(
+601 | |     am: &AgentManager,
+602 | |     registry: &AgentRegistry,
+603 | |     source: DownloadSource,
+...   |
+608 | |     total_drivers: Option<u32>,
+609 | | ) -> Result<(), String> {
+    | |_______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/agent_service.rs:648:1
+    |
+648 | / async fn install_local_agent_with_registry_jre(
+649 | |     am: &AgentManager,
+650 | |     registry: &AgentRegistry,
+651 | |     source: DownloadSource,
+...   |
+656 | |     total_drivers: Option<u32>,
+657 | | ) -> Result<(), String> {
+    | |_______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/agent_service.rs:926:1
+    |
+926 | / async fn open_agent_download_response(
+927 | |     client: &reqwest::Client,
+928 | |     source: DownloadSource,
+929 | |     github_url: &str,
+...   |
+934 | |     resume_source: Option<&str>,
+935 | | ) -> Result<(reqwest::Response, bool, String), String> {
+    | |______________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this `impl` can be derived
+  --> crates/dbx-core/src/config/tag.rs:20:1
+   |
+20 | / impl Default for TagPolicy {
+21 | |     fn default() -> Self {
+22 | |         TagPolicy::Allow
+23 | |     }
+24 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#derivable_impls
+   = note: `#[warn(clippy::derivable_impls)]` on by default
+help: replace the manual implementation with a derive attribute and mark the default variant
+   |
+14 + #[derive(Default)]
+15 | pub enum TagPolicy {
+16 ~     #[default]
+17 ~     Allow,
+   |
+
+warning: this `impl` can be derived
+  --> crates/dbx-core/src/config/tag.rs:84:1
+   |
+84 | / impl Default for TagValidator {
+85 | |     fn default() -> Self {
+86 | |         Self { whitelist: TagInheritanceWhitelist::default(), strict_mode: false }
+87 | |     }
+88 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#derivable_impls
+help: replace the manual implementation with a derive attribute
+   |
+79 + #[derive(Default)]
+80 | pub struct TagValidator {
+   |
+
+warning: clamp-like pattern without using clamp function
+    --> crates/dbx-core/src/data_compare.rs:1293:24
+     |
+1293 |                 (rate, conf.max(0.5).min(0.95))
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^ help: replace with clamp: `conf.clamp(0.5, 0.95)`
+     |
+     = note: clamp will panic if max < min, min.is_nan(), or max.is_nan()
+     = note: clamp returns NaN if the input is NaN
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_clamp
+     = note: `#[warn(clippy::manual_clamp)]` on by default
+
+warning: match expression looks like `matches!` macro
+    --> crates/dbx-core/src/data_compare.rs:1300:36
+     |
+1300 |                   let auto_upgrade = match (last.decided_level.as_str(), &new_level) {
+     |  ____________________________________^
+1301 | |                     ("skip_with_risk", DegradationLevel::Sample) => true,
+1302 | |                     ("sample", DegradationLevel::Full) => true,
+1303 | |                     _ => false,
+1304 | |                 };
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_like_matches_macro
+     = note: `#[warn(clippy::match_like_matches_macro)]` on by default
+help: use `matches!` directly
+     |
+1300 -                 let auto_upgrade = match (last.decided_level.as_str(), &new_level) {
+1301 -                     ("skip_with_risk", DegradationLevel::Sample) => true,
+1302 -                     ("sample", DegradationLevel::Full) => true,
+1303 -                     _ => false,
+1304 -                 };
+1300 +                 let auto_upgrade = matches!((last.decided_level.as_str(), &new_level), ("skip_with_risk", DegradationLevel::Sample) | ("sample", DegradationLevel::Full));
+     |
+
+warning: match expression looks like `matches!` macro
+    --> crates/dbx-core/src/data_compare.rs:1315:38
+     |
+1315 |                   let auto_downgrade = match (last.decided_level.as_str(), &new_level) {
+     |  ______________________________________^
+1316 | |                     ("full", DegradationLevel::Sample | DegradationLevel::SkipWithRisk) => true,
+1317 | |                     ("sample", DegradationLevel::SkipWithRisk) => true,
+1318 | |                     _ => false,
+1319 | |                 };
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_like_matches_macro
+help: use `matches!` directly
+     |
+1315 -                 let auto_downgrade = match (last.decided_level.as_str(), &new_level) {
+1316 -                     ("full", DegradationLevel::Sample | DegradationLevel::SkipWithRisk) => true,
+1317 -                     ("sample", DegradationLevel::SkipWithRisk) => true,
+1318 -                     _ => false,
+1319 -                 };
+1315 +                 let auto_downgrade = matches!((last.decided_level.as_str(), &new_level), ("full", DegradationLevel::Sample | DegradationLevel::SkipWithRisk) | ("sample", DegradationLevel::SkipWithRisk));
+     |
+
+warning: clamp-like pattern without using clamp function
+    --> crates/dbx-core/src/data_compare.rs:1596:13
+     |
+1596 |             adjusted.max(0.5).min(0.95)
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with clamp: `adjusted.clamp(0.5, 0.95)`
+     |
+     = note: clamp will panic if max < min, min.is_nan(), or max.is_nan()
+     = note: clamp returns NaN if the input is NaN
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_clamp
+
+warning: this function has too many arguments (8/7)
+    --> crates/dbx-core/src/database_export.rs:1091:1
+     |
+1091 | / fn write_database_export_rows(
+1092 | |     file: &mut std::fs::File,
+1093 | |     rows: &[Vec<Value>],
+1094 | |     columns: &[String],
+...    |
+1099 | |     db_type: &DatabaseType,
+1100 | | ) -> Result<(), String> {
+     | |_______________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+    --> crates/dbx-core/src/db/agent_driver.rs:1015:5
+     |
+1015 | /     pub async fn list_tables_constrained<T: DeserializeOwned + Send + 'static>(
+1016 | |         &mut self,
+1017 | |         database: &str,
+1018 | |         schema: &str,
+...    |
+1023 | |         timeout_duration: Option<Duration>,
+1024 | |     ) -> Result<T, String> {
+     | |__________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+    --> crates/dbx-core/src/db/agent_driver.rs:1050:5
+     |
+1050 | /     pub async fn list_objects_constrained<T: DeserializeOwned + Send + 'static>(
+1051 | |         &mut self,
+1052 | |         database: &str,
+1053 | |         schema: &str,
+...    |
+1058 | |         timeout_duration: Option<Duration>,
+1059 | |     ) -> Result<T, String> {
+     | |__________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: the `Err`-variant returned from this function is very large
+  --> crates/dbx-core/src/db/duckdb_driver.rs:41:28
+   |
+41 |     fn into_inner(self) -> std::sync::LockResult<duckdb::Connection> {
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 128 bytes
+   |
+   = help: try reducing the size of `std::sync::PoisonError<duckdb::Connection>`, for example by boxing large elements or replacing it with `Box<std::sync::PoisonError<duckdb::Connection>>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#result_large_err
+   = note: `#[warn(clippy::result_large_err)]` on by default
+
+warning: this `if` can be collapsed into the outer `match`
+   --> crates/dbx-core/src/db/duckdb_sql.rs:187:17
+    |
+187 | /                 if (bytes[i + 1] == b's' || bytes[i + 1] == b'S')
+188 | |                     && is_sql_word_boundary(bytes.get(i.wrapping_sub(1)).copied())
+189 | |                     && is_sql_word_boundary(bytes.get(i + 2).copied())
+...   |
+192 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_match
+    = note: `#[warn(clippy::collapsible_match)]` on by default
+help: collapse nested if block
+    |
+186 ~             b'a' | b'A' if !in_single && !in_double && i + 1 < bytes.len()
+187 ~                 && (bytes[i + 1] == b's' || bytes[i + 1] == b'S')
+188 |                     && is_sql_word_boundary(bytes.get(i.wrapping_sub(1)).copied())
+189 |                     && is_sql_word_boundary(bytes.get(i + 2).copied())
+190 ~                 => {
+191 |                     return Some(i);
+192 ~                 }
+    |
+
+warning: usage of `bool::then` in `filter_map`
+   --> crates/dbx-core/src/db/duckdb_worker_process.rs:516:18
+    |
+516 |                 .filter_map(|(id, request)| (request.generation == generation).then(|| id.clone()))
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use `filter` then `map` instead: `filter(|&(id, request)| (request.generation == generation)).map(|(id, request)| id.clone())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#filter_map_bool_then
+    = note: `#[warn(clippy::filter_map_bool_then)]` on by default
+
+warning: usage of `bool::then` in `filter_map`
+   --> crates/dbx-core/src/db/duckdb_worker_process.rs:634:18
+    |
+634 |                 .filter_map(|(id, request)| (request.generation == generation).then(|| id.clone()))
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use `filter` then `map` instead: `filter(|&(id, request)| (request.generation == generation)).map(|(id, request)| id.clone())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#filter_map_bool_then
+
+warning: redundant reference in `format!` argument
+   --> crates/dbx-core/src/db/influxdb_driver.rs:225:28
+    |
+225 |     format!("{}/query?{}", &client.base_url, params.join("&").as_str())
+    |                            ^^^^^^^^^^^^^^^^ help: remove the redundant `&`: `client.base_url`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+    = note: `#[warn(clippy::useless_borrows_in_formatting)]` on by default
+
+warning: redundant reference in `format!` argument
+   --> crates/dbx-core/src/db/influxdb_driver.rs:234:70
+    |
+234 |     Ok(format!("{}/api/v2/buckets?org={}&limit=100&offset={offset}", &client.base_url, encode_url_param(org)))
+    |                                                                      ^^^^^^^^^^^^^^^^ help: remove the redundant `&`: `client.base_url`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+
+warning: redundant reference in `format!` argument
+   --> crates/dbx-core/src/db/influxdb_driver.rs:239:42
+    |
+239 |     Ok(format!("{}/api/v2/query?org={}", &client.base_url, encode_url_param(org)))
+    |                                          ^^^^^^^^^^^^^^^^ help: remove the redundant `&`: `client.base_url`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/db/mongo_driver.rs:545:1
+    |
+545 | / pub async fn find_documents(
+546 | |     client: &Client,
+547 | |     database: &str,
+548 | |     collection: &str,
+...   |
+553 | |     sort: Option<&str>,
+554 | | ) -> Result<MongoDocumentResult, String> {
+    | |________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: `format!` in `format!` args
+    --> crates/dbx-core/src/db/mongo_driver.rs:1695:33
+     |
+1695 |     DateTime::parse_rfc3339_str(format!("{date}T{seconds}.{}Z", format!("{millis:0<3}"))).ok()
+     |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: combine the `format!(..)` arguments with the outer `format!(..)` call
+     = help: or consider changing `format!` to `format_args!`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#format_in_format_args
+     = note: `#[warn(clippy::format_in_format_args)]` on by default
+
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/db/mysql.rs:628:1
+    |
+628 | / async fn connect_with_ca_cert_pool_limit_idle_setup_database_with_mode(
+629 | |     url: &str,
+630 | |     ca_cert_path: Option<&str>,
+631 | |     fallback_timeout: Duration,
+...   |
+636 | |     setup_mode: MySqlSetupMode,
+637 | | ) -> Result<MySqlPool, String> {
+    | |______________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (9/7)
+   --> crates/dbx-core/src/db/mysql.rs:716:1
+    |
+716 | / async fn verify_pool_connection_with_setup_fallback(
+717 | |     pool: MySqlPool,
+718 | |     timeout: Duration,
+719 | |     url: &str,
+...   |
+725 | |     setup_mode: MySqlSetupMode,
+726 | | ) -> Result<MySqlPool, String> {
+    | |______________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+    --> crates/dbx-core/src/db/postgres.rs:2463:1
+     |
+2463 | / pub async fn stream_select_query_with_cancel(
+2464 | |     pool: &Pool,
+2465 | |     schema: Option<&str>,
+2466 | |     sql: &str,
+...    |
+2471 | |     on_item: impl FnMut(PostgresQueryStreamItem) -> Result<(), String>,
+2472 | | ) -> Result<u64, String> {
+     | |________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this `repeat().take()` can be written more concisely
+    --> crates/dbx-core/src/db/sqlite.rs:1262:24
+     |
+1262 |     let placeholders = std::iter::repeat("?").take(type_filters.len()).collect::<Vec<_>>().join(", ");
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `repeat_n()` instead: `std::iter::repeat_n("?", type_filters.len())`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_repeat_n
+     = note: `#[warn(clippy::manual_repeat_n)]` on by default
+
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/db/sqlserver.rs:141:1
+    |
+141 | / async fn try_connect(
+142 | |     host: &str,
+143 | |     port: u16,
+144 | |     port_explicit: bool,
+...   |
+149 | |     timeout: Duration,
+150 | | ) -> Result<SqlServerClient, String> {
+    | |____________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: unused variable: `cols`
+    --> crates/dbx-core/src/schema_diff.rs:3108:21
+     |
+3108 |                 let cols: &[ColumnDiff] = diff.columns.as_ref().map_or(&[] as &[ColumnDiff], |v| v.as_slice());
+     |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_cols`
+
+warning: useless use of `format!`
+    --> crates/dbx-core/src/db/sqlserver.rs:1203:9
+     |
+1203 | ...   format!("SELECT TOP (0) CAST('' AS NVARCHAR(..., CAST(NULL AS NVARCHAR(128)) AS data_type")
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.to_string()`: `"SELECT TOP (0) CAST('' AS NVARCHAR(128)) AS name, CAST('' AS NVARCHAR(128)) AS schema_name, CAST('' AS NVARCHAR(60)) AS object_type, CAST(NULL AS NVARCHAR(128)) AS parent_schema, CAST(NULL AS NVARCHAR(128)) AS parent_name, CAST(NULL AS NVARCHAR(MAX)) AS object_comment, CAST(NULL AS NVARCHAR(128)) AS data_type".to_string()`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_format
+     = note: `#[warn(clippy::useless_format)]` on by default
+
+warning: unused variable: `added`
+    --> crates/dbx-core/src/schema_diff.rs:5093:14
+     |
+5093 |         let (added, removed, common, matches) = diff_names_with_patterns(&source, &target, &patterns);
+     |              ^^^^^ help: if this is intentional, prefix it with an underscore: `_added`
+
+warning: unused variable: `n`
+    --> crates/dbx-core/src/schema_diff.rs:5525:17
+     |
+5525 |             let n = if matches!(db, DatabaseType::Mysql) { 2 } else { 2 };
+     |                 ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `diffs`
+    --> crates/dbx-core/src/schema_diff.rs:5956:13
+     |
+5956 |         let diffs: Vec<ColumnDiff> = vec![];
+     |             ^^^^^ help: if this is intentional, prefix it with an underscore: `_diffs`
+
+warning: unused variable: `diffs`
+    --> crates/dbx-core/src/schema_diff.rs:6092:13
+     |
+6092 |         let diffs: Vec<ColumnDiff> = vec![];
+     |             ^^^^^ help: if this is intentional, prefix it with an underscore: `_diffs`
+
+warning: unused variable: `src_db`
+    --> crates/dbx-core/src/schema_diff.rs:6746:13
+     |
+6746 |         let src_db = kind_to_db(source_kind).unwrap_or(DatabaseType::Mysql);
+     |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_src_db`
+
+warning: unused variable: `db`
+    --> crates/dbx-core/src/schema_diff.rs:6895:18
+     |
+6895 |         let Some(db) = kind_to_db(tgt_kind) else { panic!("no db for {tgt_kind:?}") };
+     |                  ^^ help: if this is intentional, prefix it with an underscore: `_db`
+
+warning: consider using `sort`
+   --> crates/dbx-core/src/db/vector_driver.rs:201:5
+    |
+201 |     names.sort_by(|a, b| a.cmp(b));
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_sort_by
+    = note: `#[warn(clippy::unnecessary_sort_by)]` on by default
+help: try
+    |
+201 -     names.sort_by(|a, b| a.cmp(b));
+201 +     names.sort();
+    |
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+  --> crates/dbx-core/src/document_ops.rs:56:69
+   |
+56 |         PoolKind::VectorDb(client) => vector_driver::list_databases(&client).await,
+   |                                                                     ^^^^^^^ help: change this to: `client`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+   = note: `#[warn(clippy::needless_borrow)]` on by default
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/dbx-core/src/document_ops.rs:219:79
+    |
+219 |         PoolKind::VectorDb(client) => vector_driver::list_collections_with_db(&client, database).await,
+    |                                                                               ^^^^^^^ help: change this to: `client`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/mongo_ops.rs:394:1
+    |
+394 | / pub async fn mongo_update_documents_core(
+395 | |     state: &AppState,
+396 | |     connection_id: &str,
+397 | |     database: &str,
+...   |
+402 | |     options_json: Option<&str>,
+403 | | ) -> Result<u64, String> {
+    | |________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: explicit call to `.into_iter()` in function argument accepting `IntoIterator`
+   --> crates/dbx-core/src/mq/adapters/pulsar.rs:164:22
+    |
+164 |         stream::iter(names.into_iter())
+    |                      ^^^^^^^^^^^^^^^^^
+    |
+note: this parameter accepts any `IntoIterator`, so you don't need to call `.into_iter()`
+   --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.32/src/stream/iter.rs:48:8
+    |
+ 48 |     I: IntoIterator,
+    |        ^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_conversion
+    = note: `#[warn(clippy::useless_conversion)]` on by default
+help: consider removing the `.into_iter()`
+    |
+164 -         stream::iter(names.into_iter())
+164 +         stream::iter(names)
+    |
+
+warning: explicit call to `.into_iter()` in function argument accepting `IntoIterator`
+   --> crates/dbx-core/src/mq/adapters/pulsar.rs:217:22
+    |
+217 |         stream::iter(names.into_iter())
+    |                      ^^^^^^^^^^^^^^^^^
+    |
+note: this parameter accepts any `IntoIterator`, so you don't need to call `.into_iter()`
+   --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.32/src/stream/iter.rs:48:8
+    |
+ 48 |     I: IntoIterator,
+    |        ^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_conversion
+help: consider removing the `.into_iter()`
+    |
+217 -         stream::iter(names.into_iter())
+217 +         stream::iter(names)
+    |
+
+warning: explicit call to `.into_iter()` in function argument accepting `IntoIterator`
+   --> crates/dbx-core/src/mq/adapters/pulsar.rs:285:51
+    |
+285 |             let partitioned_topics = stream::iter(partitioned.into_iter())
+    |                                                   ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: this parameter accepts any `IntoIterator`, so you don't need to call `.into_iter()`
+   --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.32/src/stream/iter.rs:48:8
+    |
+ 48 |     I: IntoIterator,
+    |        ^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_conversion
+help: consider removing the `.into_iter()`
+    |
+285 -             let partitioned_topics = stream::iter(partitioned.into_iter())
+285 +             let partitioned_topics = stream::iter(partitioned)
+    |
+
+warning: this `impl` can be derived
+  --> crates/dbx-core/src/mq/auth.rs:47:1
+   |
+47 | / impl Default for MqAuth {
+48 | |     fn default() -> Self {
+49 | |         MqAuth::None
+50 | |     }
+51 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#derivable_impls
+help: replace the manual implementation with a derive attribute and mark the default variant
+   |
+19 + #[derive(Default)]
+20 | pub enum MqAuth {
+21 ~     #[default]
+22 ~     None,
+   |
+
+warning: this `impl` can be derived
+  --> crates/dbx-core/src/mq/types.rs:57:1
+   |
+57 | / impl Default for MqCapabilities {
+58 | |     fn default() -> Self {
+59 | |         Self {
+60 | |             supports_tenants: false,
+...  |
+80 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#derivable_impls
+help: replace the manual implementation with a derive attribute
+   |
+34 + #[derive(Default)]
+35 | pub struct MqCapabilities {
+   |
+
+warning: this `impl` can be derived
+  --> crates/dbx-core/src/nacos/config.rs:12:1
+   |
+12 | / impl Default for NacosAuthConfig {
+13 | |     fn default() -> Self {
+14 | |         Self::None
+15 | |     }
+16 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#derivable_impls
+help: replace the manual implementation with a derive attribute and mark the default variant
+   |
+ 7 + #[derive(Default)]
+ 8 | pub enum NacosAuthConfig {
+ 9 ~     #[default]
+10 ~     None,
+   |
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+    --> crates/dbx-core/src/nacos/http.rs:1066:70
+     |
+1066 | fn build_publish_forms(req: NacosConfigUpsert, namespace: String) -> (Vec<(String, String)>, Vec<(String, String)>) {
+     |                                                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#type_complexity
+     = note: `#[warn(clippy::type_complexity)]` on by default
+
+warning: manual case-insensitive ASCII comparison
+   --> crates/dbx-core/src/nacos/service.rs:132:8
+    |
+132 |     if req.method.to_ascii_uppercase() != "GET" {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_ignore_case_cmp
+    = note: `#[warn(clippy::manual_ignore_case_cmp)]` on by default
+help: consider using `.eq_ignore_ascii_case()` instead
+    |
+132 -     if req.method.to_ascii_uppercase() != "GET" {
+132 +     if !req.method.eq_ignore_ascii_case("GET") {
+    |
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+  --> crates/dbx-core/src/nacos/mod.rs:30:16
+   |
+30 |     instances: RwLock<HashMap<String, (NacosAdminConfig, Arc<dyn NacosAdmin>)>>,
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#type_complexity
+
+warning: unneeded `return` statement
+   --> crates/dbx-core/src/object_source_sql.rs:448:9
+    |
+448 |         return (target_name.trim().to_string(), body);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_return
+    = note: `#[warn(clippy::needless_return)]` on by default
+help: remove `return`
+    |
+448 -         return (target_name.trim().to_string(), body);
+448 +         (target_name.trim().to_string(), body)
+    |
+
+warning: unnecessary map of the identity function
+   --> crates/dbx-core/src/object_source_sql.rs:582:55
+    |
+582 |     read_informix_identifier_text(source, ident_start).map(|(ident_end, ident_text)| (ident_end, ident_text))
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: remove the call to `map`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#map_identity
+    = note: `#[warn(clippy::map_identity)]` on by default
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/dbx-core/src/production_safety.rs:410:78
+    |
+410 |             if let Some((body, close_index)) = mysql_executable_comment_body(&chars, index) {
+    |                                                                              ^^^^^^ help: change this to: `chars`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/dbx-core/src/production_safety.rs:426:59
+    |
+426 |         if let Some((tag, tag_len)) = dollar_quote_tag_at(&chars, index) {
+    |                                                           ^^^^^^ help: change this to: `chars`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/dbx-core/src/production_safety.rs:436:41
+    |
+436 |             index = skip_string_literal(&chars, index, '\'', '\'');
+    |                                         ^^^^^^ help: change this to: `chars`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+
+warning: this function has too many arguments (9/7)
+    --> crates/dbx-core/src/query.rs:2140:1
+     |
+2140 | / async fn execute_multi_mysql(
+2141 | |     state: &AppState,
+2142 | |     pool_key: &str,
+2143 | |     db_type: Option<DatabaseType>,
+...    |
+2149 | |     options: QueryExecutionOptions,
+2150 | | ) -> Result<Vec<ExecuteMultiResult>, String> {
+     | |____________________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this `impl` can be derived
+  --> crates/dbx-core/src/query_cancel.rs:24:1
+   |
+24 | / impl Default for RunningTaskKind {
+25 | |     fn default() -> Self {
+26 | |         Self::Unknown
+27 | |     }
+28 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#derivable_impls
+help: replace the manual implementation with a derive attribute and mark the default variant
+   |
+16 + #[derive(Default)]
+17 | pub enum RunningTaskKind {
+18 |     Query,
+...
+21 |     Export,
+22 ~     #[default]
+23 ~     Unknown,
+   |
+
+warning: this `map_or` can be simplified
+   --> crates/dbx-core/src/query_result_export.rs:160:25
+    |
+160 |     format == "xlsx" && request.row_limit.map_or(true, |limit| limit > XLSX_MAX_DATA_ROWS)
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_map_or
+    = note: `#[warn(clippy::unnecessary_map_or)]` on by default
+help: use `is_none_or` instead
+    |
+160 -     format == "xlsx" && request.row_limit.map_or(true, |limit| limit > XLSX_MAX_DATA_ROWS)
+160 +     format == "xlsx" && request.row_limit.is_none_or(|limit| limit > XLSX_MAX_DATA_ROWS)
+    |
+
+warning: redundant closure
+   --> crates/dbx-core/src/query_result_sql.rs:966:66
+    |
+966 |     let order_sql = dedup_projection_count.map_or(String::new(), |count| format_positional_order_by(count));
+    |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `format_positional_order_by`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#redundant_closure
+    = note: `#[warn(clippy::redundant_closure)]` on by default
+
+warning: this function has too many arguments (8/7)
+  --> crates/dbx-core/src/redis_ops.rs:46:1
+   |
+46 | / pub async fn redis_scan_keys_batch_core(
+47 | |     state: &AppState,
+48 | |     connection_id: &str,
+49 | |     db: u32,
+...  |
+54 | |     include_types: bool,
+55 | | ) -> Result<RedisScanResult, String> {
+   | |____________________________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: match expression looks like `matches!` macro
+   --> crates/dbx-core/src/redis_ops.rs:777:5
+    |
+777 | /     match argv[0].to_ascii_uppercase().as_str() {
+778 | |         "PING" | "INFO" | "DBSIZE" | "TIME" | "ROLE" | "CLUSTER" | "CLIENT" | "COMMAND" | "HELLO" | "AUTH" | "QUIT" => {
+779 | |             false
+...   |
+782 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_like_matches_macro
+help: use `matches!` directly
+    |
+777 -     match argv[0].to_ascii_uppercase().as_str() {
+778 -         "PING" | "INFO" | "DBSIZE" | "TIME" | "ROLE" | "CLUSTER" | "CLIENT" | "COMMAND" | "HELLO" | "AUTH" | "QUIT" => {
+779 -             false
+780 -         }
+781 -         _ => true,
+782 -     }
+777 +     !matches!(argv[0].to_ascii_uppercase().as_str(), "PING" | "INFO" | "DBSIZE" | "TIME" | "ROLE" | "CLUSTER" | "CLIENT" | "COMMAND" | "HELLO" | "AUTH" | "QUIT")
+    |
+
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/redis_ops.rs:785:1
+    |
+785 | / pub async fn redis_load_more_in_db_core(
+786 | |     state: &AppState,
+787 | |     connection_id: &str,
+788 | |     db: u32,
+...   |
+793 | |     filter: Option<&str>,
+794 | | ) -> Result<RedisCollectionPage, String> {
+    | |________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: calls to `push` immediately after creation
+   --> crates/dbx-core/src/risk_metrics.rs:127:9
+    |
+127 | /         let mut entries = Vec::new();
+128 | |
+129 | |         entries.push(MetricEntry {
+130 | |             name: "dbx_degradation_total".to_string(),
+...   |
+176 | |             value: MetricValue::Gauge(*self.confidence_gauge.lock().unwrap_or_else(|e| e.into_inner())),
+177 | |         });
+    | |___________^ help: consider using the `vec![]` macro: `let mut entries = vec![..];`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#vec_init_then_push
+    = note: `#[warn(clippy::vec_init_then_push)]` on by default
+
+For more information about this error, try `rustc --explain E0063`.
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/schema.rs:698:1
+    |
+698 | / pub async fn list_sqlserver_linked_server_tables_core(
+699 | |     state: &AppState,
+700 | |     connection_id: &str,
+701 | |     server: &str,
+...   |
+706 | |     offset: Option<usize>,
+707 | | ) -> Result<Vec<db::TableInfo>, String> {
+    | |_______________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/schema.rs:781:1
+    |
+781 | / pub async fn list_doris_catalog_tables_core(
+782 | |     state: &AppState,
+783 | |     connection_id: &str,
+784 | |     catalog: &str,
+...   |
+789 | |     object_types: Option<&[String]>,
+790 | | ) -> Result<Vec<db::TableInfo>, String> {
+    | |_______________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+    --> crates/dbx-core/src/schema.rs:1213:1
+     |
+1213 | / pub async fn list_tables_core(
+1214 | |     state: &AppState,
+1215 | |     connection_id: &str,
+1216 | |     database: &str,
+...    |
+1221 | |     object_types: Option<&[String]>,
+1222 | | ) -> Result<Vec<db::TableInfo>, String> {
+     | |_______________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: used consecutive `str::replace` call
+    --> crates/dbx-core/src/schema.rs:1614:49
+     |
+1614 |     let normalized = value.to_ascii_uppercase().replace(' ', "_").replace('-', "_");
+     |                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `replace([' ', '-'], "_")`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_str_replace
+     = note: `#[warn(clippy::collapsible_str_replace)]` on by default
+
+warning: `dbx-core` (lib test) generated 17 warnings (9 duplicates)
+error: could not compile `dbx-core` (lib test) due to 4 previous errors; 17 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: this function has too many arguments (8/7)
+    --> crates/dbx-core/src/schema.rs:1797:1
+     |
+1797 | / async fn list_tables_once(
+1798 | |     state: &AppState,
+1799 | |     connection_id: &str,
+1800 | |     database: &str,
+...    |
+1805 | |     object_types: Option<&[String]>,
+1806 | | ) -> Result<Vec<db::TableInfo>, String> {
+     | |_______________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+    --> crates/dbx-core/src/schema.rs:3498:1
+     |
+3498 | / pub async fn list_objects_core(
+3499 | |     state: &AppState,
+3500 | |     connection_id: &str,
+3501 | |     database: &str,
+...    |
+3506 | |     object_types: Option<&[String]>,
+3507 | | ) -> Result<Vec<db::ObjectInfo>, String> {
+     | |________________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+    --> crates/dbx-core/src/schema.rs:3845:1
+     |
+3845 | / async fn list_objects_once(
+3846 | |     state: &AppState,
+3847 | |     connection_id: &str,
+3848 | |     database: &str,
+...    |
+3853 | |     object_types: Option<&[String]>,
+3854 | | ) -> Result<ObjectListOutcome, String> {
+     | |______________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/schema_diff.rs:904:1
+    |
+904 | / pub fn diff_columns_with_compatibility(
+905 | |     source: &[ColumnInfo],
+906 | |     target: &[ColumnInfo],
+907 | |     ignore_comments: bool,
+...   |
+912 | |     field_mappings: &[FieldMapping],
+913 | | ) -> (Vec<ColumnDiff>, Vec<ColumnCompatibilityWarning>) {
+    | |_______________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: match expression looks like `matches!` macro
+    --> crates/dbx-core/src/schema_diff.rs:1202:24
+     |
+1202 |                       && match (fwd.table_diff.diff_type.as_str(), rbk.table_diff.diff_type.as_str()) {
+     |  ________________________^
+1203 | |                         ("added", "removed") | ("removed", "added") => true,
+1204 | |                         ("modified", "modified") => true,
+1205 | |                         ("none", "none") => true,
+1206 | |                         _ => false,
+1207 | |                     }
+     | |_____________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_like_matches_macro
+help: use `matches!` directly
+     |
+1202 -                     && match (fwd.table_diff.diff_type.as_str(), rbk.table_diff.diff_type.as_str()) {
+1203 -                         ("added", "removed") | ("removed", "added") => true,
+1204 -                         ("modified", "modified") => true,
+1205 -                         ("none", "none") => true,
+1206 -                         _ => false,
+1207 -                     }
+1202 +                     && matches!((fwd.table_diff.diff_type.as_str(), rbk.table_diff.diff_type.as_str()), ("added", "removed") | ("removed", "added") | ("modified", "modified") | ("none", "none"))
+     |
+
+warning: this function has too many arguments (9/7)
+    --> crates/dbx-core/src/schema_diff.rs:2845:1
+     |
+2845 | / fn generate_create_table_sql(
+2846 | |     name: &str,
+2847 | |     columns: &[ColumnDiff],
+2848 | |     indexes: &[IndexDiff],
+...    |
+2854 | |     field_mappings: &[FieldMapping],
+2855 | | ) -> String {
+     | |___________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (10/7)
+    --> crates/dbx-core/src/schema_diff.rs:3050:1
+     |
+3050 | / fn generate_schema_sync_sql_inner(
+3051 | |     diffs: &[TableDiff],
+3052 | |     function_diffs: &[FunctionDiff],
+3053 | |     sequence_diffs: &[SequenceDiff],
+...    |
+3060 | |     field_mappings: &[FieldMapping],
+3061 | | ) -> String {
+     | |___________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this `if` has identical blocks
+   --> crates/dbx-core/src/sql.rs:398:108
+    |
+398 |                       if self.options.profile.supports_custom_delimiter_commands && self.on_delimiter_line() {
+    |  ____________________________________________________________________________________________________________^
+399 | |                         self.buffer.push(ch);
+400 | |                     } else if self.custom_delimiter.is_some() {
+    | |_____________________^
+    |
+note: same as this
+   --> crates/dbx-core/src/sql.rs:400:63
+    |
+400 |                       } else if self.custom_delimiter.is_some() {
+    |  _______________________________________________________________^
+401 | |                         self.buffer.push(ch);
+402 | |                     } else if self.options.profile.supports_mysql_routine_blocks
+    | |_____________________^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#if_same_then_else
+    = note: `#[warn(clippy::if_same_then_else)]` on by default
+
+warning: this `if` has identical blocks
+    --> crates/dbx-core/src/sql.rs:1612:47
+     |
+1612 |               if ch == '-' && next == Some('-') {
+     |  _______________________________________________^
+1613 | |                 self.in_line_comment = true;
+1614 | |             } else if self.profile.supports_hash_line_comments && ch == '#' {
+     | |_____________^
+     |
+note: same as this
+    --> crates/dbx-core/src/sql.rs:1614:77
+     |
+1614 |               } else if self.profile.supports_hash_line_comments && ch == '#' {
+     |  _____________________________________________________________________________^
+1615 | |                 self.in_line_comment = true;
+1616 | |             } else if ch == '/' && next == Some('*') {
+     | |_____________^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#if_same_then_else
+
+warning: this `impl` can be derived
+    --> crates/dbx-core/src/sql.rs:1650:1
+     |
+1650 | / impl Default for SqlScanner {
+1651 | |     fn default() -> Self {
+1652 | |         Self {
+1653 | |             profile: SqlDialectProfile::default(),
+...    |
+1663 | | }
+     | |_^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#derivable_impls
+help: replace the manual implementation with a derive attribute
+     |
+1570 + #[derive(Default)]
+1571 | struct SqlScanner {
+     |
+
+warning: this `if` statement can be collapsed
+   --> crates/dbx-core/src/sql_diagnostics.rs:161:9
+    |
+161 | /         if j < chars.len() && (chars[j] == '=' || chars[j] == ':') {
+162 | |             if is_sensitive_key(&key) {
+163 | |                 out.push_str(&key);
+164 | |                 for k in i..j {
+...   |
+180 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+161 ~         if j < chars.len() && (chars[j] == '=' || chars[j] == ':')
+162 ~             && is_sensitive_key(&key) {
+163 |                 out.push_str(&key);
+...
+178 |                 continue;
+179 ~             }
+    |
+
+warning: the loop variable `k` is only used to index `chars`
+   --> crates/dbx-core/src/sql_diagnostics.rs:164:26
+    |
+164 |                 for k in i..j {
+    |                          ^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_range_loop
+    = note: `#[warn(clippy::needless_range_loop)]` on by default
+help: consider using an iterator
+    |
+164 -                 for k in i..j {
+164 +                 for <item> in chars.iter().take(j).skip(i) {
+    |
+
+warning: this `map_or` can be simplified
+  --> crates/dbx-core/src/sql_dialect/dialect_loader.rs:91:9
+   |
+91 |         self.descriptors.read().ok().map_or(false, |d| d.contains_key(&name.to_ascii_lowercase()))
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_map_or
+help: use `is_some_and` instead
+   |
+91 -         self.descriptors.read().ok().map_or(false, |d| d.contains_key(&name.to_ascii_lowercase()))
+91 +         self.descriptors.read().ok().is_some_and(|d| d.contains_key(&name.to_ascii_lowercase()))
+   |
+
+warning: this `map_or` can be simplified
+   --> crates/dbx-core/src/sql_dialect/dialect_loader.rs:137:9
+    |
+137 |         self.descriptors.write().ok().map_or(false, |mut d| d.remove(&name.to_ascii_lowercase()).is_some())
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_map_or
+help: use `is_some_and` instead
+    |
+137 -         self.descriptors.write().ok().map_or(false, |mut d| d.remove(&name.to_ascii_lowercase()).is_some())
+137 +         self.descriptors.write().ok().is_some_and(|mut d| d.remove(&name.to_ascii_lowercase()).is_some())
+    |
+
+warning: this `map_or` can be simplified
+   --> crates/dbx-core/src/sql_dialect/dialect_loader.rs:141:9
+    |
+141 |         self.descriptors.read().ok().map_or(true, |d| d.is_empty())
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_map_or
+help: use `is_none_or` instead
+    |
+141 -         self.descriptors.read().ok().map_or(true, |d| d.is_empty())
+141 +         self.descriptors.read().ok().is_none_or(|d| d.is_empty())
+    |
+
+warning: this `impl` can be derived
+  --> crates/dbx-core/src/sql_dialect/dialect_yaml.rs:52:1
+   |
+52 | / impl Default for DialectMeta {
+53 | |     fn default() -> Self {
+54 | |         Self { name: String::new(), display_name: None, versions: vec![] }
+55 | |     }
+56 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#derivable_impls
+help: replace the manual implementation with a derive attribute
+   |
+44 + #[derive(Default)]
+45 | pub struct DialectMeta {
+   |
+
+warning: manual case-insensitive ASCII comparison
+   --> crates/dbx-core/src/sql_dialect/inference.rs:120:19
+    |
+120 |         } else if mapped_base.to_ascii_lowercase() == "integer" && source_parsed.precision.is_some() {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_ignore_case_cmp
+help: consider using `.eq_ignore_ascii_case()` instead
+    |
+120 -         } else if mapped_base.to_ascii_lowercase() == "integer" && source_parsed.precision.is_some() {
+120 +         } else if mapped_base.eq_ignore_ascii_case("integer") && source_parsed.precision.is_some() {
+    |
+
+warning: this `if` can be collapsed into the outer `match`
+    --> crates/dbx-core/src/storage.rs:1067:13
+     |
+1067 | /             if current.token.is_empty() {
+1068 | |                 current.token = previous.token.clone();
+1069 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_match
+help: collapse nested if block
+     |
+1066 ~         (TransportLayerConfig::HttpTunnel(current), TransportLayerConfig::HttpTunnel(previous))
+1067 ~             if current.token.is_empty() => {
+1068 |                 current.token = previous.token.clone();
+1069 ~             }
+     |
+
+warning: this function has too many arguments (8/7)
+   --> crates/dbx-core/src/table_export.rs:448:1
+    |
+448 | / async fn stream_native_table_rows(
+449 | |     state: &AppState,
+450 | |     pool_key: &str,
+451 | |     db_type: &DatabaseType,
+...   |
+456 | |     on_row: impl FnMut(&[Value]) -> Result<(), String>,
+457 | | ) -> Result<bool, String> {
+    | |_________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: manual implementation of `.is_multiple_of()`
+   --> crates/dbx-core/src/table_export.rs:550:24
+    |
+550 |                     if rows_exported % progress_interval == 0 {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `rows_exported.is_multiple_of(progress_interval)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_is_multiple_of
+    = note: `#[warn(clippy::manual_is_multiple_of)]` on by default
+
+warning: manual implementation of `.is_multiple_of()`
+   --> crates/dbx-core/src/table_export.rs:594:24
+    |
+594 |                     if rows_exported % progress_interval == 0 {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `rows_exported.is_multiple_of(progress_interval)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_is_multiple_of
+
+warning: manual implementation of `.is_multiple_of()`
+   --> crates/dbx-core/src/table_export.rs:639:24
+    |
+639 |                     if rows_exported % progress_interval == 0 {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `rows_exported.is_multiple_of(progress_interval)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_is_multiple_of
+
+warning: manual implementation of `.is_multiple_of()`
+   --> crates/dbx-core/src/table_export.rs:694:24
+    |
+694 |                     if rows_exported % progress_interval == 0 {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `rows_exported.is_multiple_of(progress_interval)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_is_multiple_of
+
+warning: manual implementation of `.is_multiple_of()`
+   --> crates/dbx-core/src/table_export.rs:745:24
+    |
+745 |                     if rows_exported % progress_interval == 0 {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `rows_exported.is_multiple_of(progress_interval)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_is_multiple_of
+
+warning: manual implementation of `.is_multiple_of()`
+   --> crates/dbx-core/src/table_export.rs:811:24
+    |
+811 |                     if rows_exported % progress_interval == 0 {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `rows_exported.is_multiple_of(progress_interval)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_is_multiple_of
+
+warning: manual implementation of `.is_multiple_of()`
+   --> crates/dbx-core/src/table_export.rs:842:16
+    |
+842 |             if rows_exported % progress_interval != 0 {
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!rows_exported.is_multiple_of(progress_interval)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_is_multiple_of
+
+warning: the variable `source_row_number` is used as a loop counter
+    --> crates/dbx-core/src/table_import.rs:2089:9
+     |
+2089 |         for record in reader.records() {
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using: `for (source_row_number, record) in (config.row_range.data_start_row..).zip(reader.records())`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#explicit_counter_loop
+     = note: `#[warn(clippy::explicit_counter_loop)]` on by default
+
+warning: `format!` in `format!` args
+   --> crates/dbx-core/src/transfer.rs:347:5
+    |
+347 | /     format!(
+348 | |         "{};\n{};\n{};",
+349 | |         format!("SET IDENTITY_INSERT {full_table} ON"),
+350 | |         trimmed,
+351 | |         format!("SET IDENTITY_INSERT {full_table} OFF")
+352 | |     )
+    | |_____^
+    |
+    = help: combine the `format!(..)` arguments with the outer `format!(..)` call
+    = help: or consider changing `format!` to `format_args!`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#format_in_format_args
+
+warning: this function has too many arguments (9/7)
+    --> crates/dbx-core/src/transfer.rs:3112:1
+     |
+3112 | / async fn prepare_postgres_owned_sequences_for_transfer(
+3113 | |     state: &AppState,
+3114 | |     request: &TransferRequest,
+3115 | |     table: &str,
+...    |
+3121 | |     target_table_preexisting: bool,
+3122 | | ) -> Result<Vec<PostgresOwnedSequence>, String> {
+     | |_______________________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+    --> crates/dbx-core/src/transfer.rs:4142:21
+     |
+4142 |                     &state,
+     |                     ^^^^^^ help: change this to: `state`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+
+warning: `dbx-core` (lib) generated 99 warnings (run `cargo clippy --fix --lib -p dbx-core -- ` to apply 54 suggestions)
+Error: Process completed with exit code 101.

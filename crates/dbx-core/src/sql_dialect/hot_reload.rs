@@ -1,12 +1,10 @@
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
 use super::dialect_loader::DialectPluginLoader;
-use super::dialect_loader::LoadError;
 
 /// Configuration for the hot-reload watcher.
 #[derive(Debug, Clone)]
@@ -52,7 +50,7 @@ impl DialectHotReload {
     pub fn start(&mut self, watch_dirs: Vec<PathBuf>) -> Result<mpsc::UnboundedReceiver<ReloadEvent>, String> {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        let debounce = Duration::from_millis(self.config.debounce_ms);
+        let _debounce = Duration::from_millis(self.config.debounce_ms);
 
         let tx_clone = tx.clone();
         let mut watcher = RecommendedWatcher::new(

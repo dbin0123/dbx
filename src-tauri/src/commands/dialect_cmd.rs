@@ -1,8 +1,7 @@
 use std::path::PathBuf;
 
 use dbx_core::sql_dialect::{
-    descriptor::DialectKind, dialect_check, dialect_check_all, dialect_yaml::DialectYaml, DialectCapabilityDescriptor,
-    DialectInfo,
+    descriptor::DialectKind, dialect_check, dialect_check_all, dialect_yaml::DialectYaml, DialectInfo,
 };
 
 #[tauri::command]
@@ -88,7 +87,7 @@ pub fn dialect_export_command(target_dir: Option<String>) -> DialectExportResult
 #[tauri::command]
 pub fn dialect_init_command(
     name: String,
-    display_name: Option<String>,
+    _display_name: Option<String>,
     quote_char: Option<String>,
     max_length: Option<u32>,
     target_dir: Option<String>,

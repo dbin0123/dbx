@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn binding_engine_low_fidelity_with_dml() {
-        let registry = DmlCleanRuleRegistry::new();
+        let _registry = DmlCleanRuleRegistry::new();
         if let Ok(mut reg) = DmlCleanRuleRegistry::global().write() {
             reg.rules = vec![DmlCleanRule {
                 name: "bigint_to_int".to_string(),

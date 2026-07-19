@@ -2816,7 +2816,7 @@ fn table_comment_sql(table_name: &str, comment: &str, db_type: DatabaseType, sch
     }
 }
 
-fn strip_mysql_ddl(ddl: &str) -> String {
+fn _strip_mysql_ddl(ddl: &str) -> String {
     let mut sql = ddl.to_string();
     // Remove MySQL-specific clauses
     let patterns = [
@@ -3105,9 +3105,9 @@ fn generate_schema_sync_sql_inner(
                 }
             } else {
                 // Cross-dialect → generate CREATE TABLE from column info
-                let cols: &[ColumnDiff] = diff.columns.as_ref().map_or(&[] as &[ColumnDiff], |v| v.as_slice());
-                let idxs: &[IndexDiff] = diff.indexes.as_ref().map_or(&[] as &[IndexDiff], |v| v.as_slice());
-                let fks: &[ForeignKeyDiff] =
+                let _cols: &[ColumnDiff] = diff.columns.as_ref().map_or(&[] as &[ColumnDiff], |v| v.as_slice());
+                let _idxs: &[IndexDiff] = diff.indexes.as_ref().map_or(&[] as &[IndexDiff], |v| v.as_slice());
+                let _fks: &[ForeignKeyDiff] =
                     diff.foreign_keys.as_ref().map_or(&[] as &[ForeignKeyDiff], |v| v.as_slice());
                 let gen = generate_create_table_sql(
                     &diff.name,
@@ -3526,6 +3526,9 @@ mod tests {
             numeric_precision: None,
             numeric_scale: None,
             character_maximum_length: None,
+            enum_values: None,
+            character_set: None,
+            collation: None,
         }
     }
 
@@ -4646,6 +4649,9 @@ mod tests {
                     numeric_precision: None,
                     numeric_scale: None,
                     character_maximum_length: None,
+                    enum_values: None,
+                    character_set: None,
+                    collation: None,
                 }),
                 target: None,
                 changes: Vec::new(),
@@ -6572,6 +6578,9 @@ mod tests {
             numeric_precision: None,
             numeric_scale: None,
             character_maximum_length: None,
+            enum_values: None,
+            character_set: None,
+            collation: None,
         }];
         let t = vec![ColumnInfo {
             name: "c".into(),
@@ -6584,6 +6593,9 @@ mod tests {
             numeric_precision: None,
             numeric_scale: None,
             character_maximum_length: None,
+            enum_values: None,
+            character_set: None,
+            collation: None,
         }];
         let diffs = diff_columns_with_options(&s, &t, false, false, false, 0.5);
         assert_eq!(diffs.len(), 1, "all changes in one diff");

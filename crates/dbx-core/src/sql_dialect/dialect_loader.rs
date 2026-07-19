@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use super::descriptor::{DialectCapabilityDescriptor, DialectKind};
-use super::dialect_yaml::{DialectYaml, YamlValidationError};
+use super::dialect_yaml::DialectYaml;
 
 /// Singleton dialect registry that holds all loaded dialect descriptors.
 /// Thread-safe via RwLock. Access via `DialectRegistry::global()`.

@@ -1,4 +1,4 @@
-use super::descriptor::{DialectCapabilityDescriptor, DialectKind, TypeMappingMatrix};
+use super::descriptor::{DialectKind, TypeMappingMatrix};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColumnType {
