@@ -648,7 +648,7 @@ const ALLOWED_TRANSITIONS: &[(StateTransition, &[StateTransition])] = &[
     ),
     (StateTransition::Paused, &[StateTransition::Running, StateTransition::Cancelled]),
     (StateTransition::OscSyncing, &[StateTransition::Completed, StateTransition::Failed]),
-    (StateTransition::Completed, &[StateTransition::RollingBack]),
+    (StateTransition::Completed, &[StateTransition::RollingBack, StateTransition::FullyRolledBack]),
     (
         StateTransition::Failed,
         &[

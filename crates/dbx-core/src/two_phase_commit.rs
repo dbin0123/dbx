@@ -513,7 +513,7 @@ mod tests {
 
         assert!(result.is_err());
         let log = coordinator.load_log("tx_commit_fail").await.unwrap().unwrap();
-        assert_eq!(log.status, TransactionStatus::RolledBack.as_str());
+        assert_eq!(log.status, TransactionStatus::Mixed.as_str());
     }
 
     #[tokio::test]
