@@ -193,7 +193,127 @@ fn builds_xugu_type_change_with_native_syntax() {
 
     assert_eq!(
         postgres_result.statements,
-        vec!["ALTER TABLE \"public\".\"info_x\" ALTER COLUMN \"code\" TYPE integer;"]
+        vec!["ALTER TABLE \"public\".\"info_x\" ALTER COLUMN \"code\" TYPE integer USING \"code\"::integer;"]
+    );
+}
+
+#[test]
+fn builds_postgres_explicit_type_cast_for_renamed_column() {
+    let mut code = column("new code");
+    code.data_type = "bigint".to_string();
+    code.original = Some(ColumnInfo {
+        name: "old code".to_string(),
+        data_type: "character varying(20)".to_string(),
+        is_nullable: true,
+        column_default: None,
+        ..Default::default()
+    });
+
+    let result = build_single_column_alter_sql(SingleColumnAlterSqlOptions {
+        database_type: Some(DatabaseType::Postgres),
+        schema: Some("public".to_string()),
+        table_name: "items".to_string(),
+        column: code,
+    });
+
+    assert_eq!(
+        result.statements,
+        vec![
+            "ALTER TABLE \"public\".\"items\" RENAME COLUMN \"old code\" TO \"new code\";",
+            "ALTER TABLE \"public\".\"items\" ALTER COLUMN \"new code\" TYPE bigint USING \"new code\"::bigint;",
+        ]
+    );
+}
+
+#[test]
+fn builds_postgres_atomic_type_change_with_existing_default() {
+    let mut code = column("code");
+    code.data_type = "varchar(20)".to_string();
+    code.default_value = "7".to_string();
+    code.original = Some(ColumnInfo {
+        name: "code".to_string(),
+        data_type: "integer".to_string(),
+        is_nullable: true,
+        column_default: Some("7".to_string()),
+        ..Default::default()
+    });
+
+    let result = build_single_column_alter_sql(SingleColumnAlterSqlOptions {
+        database_type: Some(DatabaseType::Postgres),
+        schema: Some("public".to_string()),
+        table_name: "items".to_string(),
+        column: code,
+    });
+
+    assert_eq!(
+        result.statements,
+        vec!["ALTER TABLE \"public\".\"items\" ALTER COLUMN \"code\" DROP DEFAULT, ALTER COLUMN \"code\" TYPE varchar(20) USING \"code\"::varchar(20), ALTER COLUMN \"code\" SET DEFAULT '7';"]
+    );
+}
+
+#[test]
+fn builds_postgres_type_change_that_drops_default() {
+    let mut code = column("code");
+    code.data_type = "bigint".to_string();
+    code.original = Some(ColumnInfo {
+        name: "code".to_string(),
+        data_type: "character varying".to_string(),
+        is_nullable: true,
+        column_default: Some("'7'::character varying".to_string()),
+        ..Default::default()
+    });
+
+    let result = build_single_column_alter_sql(SingleColumnAlterSqlOptions {
+        database_type: Some(DatabaseType::Postgres),
+        schema: None,
+        table_name: "items".to_string(),
+        column: code,
+    });
+
+    assert_eq!(
+        result.statements,
+        vec!["ALTER TABLE \"items\" ALTER COLUMN \"code\" DROP DEFAULT, ALTER COLUMN \"code\" TYPE bigint USING \"code\"::bigint;"]
+    );
+}
+
+#[test]
+fn builds_postgres_array_and_domain_type_casts_without_affecting_xugu() {
+    let mut tags = column("tags");
+    tags.data_type = "text[]".to_string();
+    tags.original = Some(ColumnInfo {
+        name: "tags".to_string(),
+        data_type: "varchar(20)[]".to_string(),
+        is_nullable: true,
+        ..Default::default()
+    });
+    let postgres = build_single_column_alter_sql(SingleColumnAlterSqlOptions {
+        database_type: Some(DatabaseType::Postgres),
+        schema: Some("catalog".to_string()),
+        table_name: "items".to_string(),
+        column: tags,
+    });
+    assert_eq!(
+        postgres.statements,
+        vec!["ALTER TABLE \"catalog\".\"items\" ALTER COLUMN \"tags\" TYPE text[] USING \"tags\"::text[];"]
+    );
+
+    let mut status = column("status");
+    status.data_type = "catalog.status_domain".to_string();
+    status.original = Some(ColumnInfo {
+        name: "status".to_string(),
+        data_type: "text".to_string(),
+        is_nullable: true,
+        ..Default::default()
+    });
+    let postgres = build_single_column_alter_sql(SingleColumnAlterSqlOptions {
+        database_type: Some(DatabaseType::Postgres),
+        schema: Some("catalog".to_string()),
+        table_name: "items".to_string(),
+        column: status,
+    });
+    assert_eq!(
+        postgres.statements,
+        vec!["ALTER TABLE \"catalog\".\"items\" ALTER COLUMN \"status\" TYPE catalog.status_domain USING \"status\"::catalog.status_domain;"]
     );
 }
 

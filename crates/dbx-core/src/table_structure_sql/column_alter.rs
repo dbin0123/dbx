@@ -316,11 +316,31 @@ fn build_postgres_like_existing_column_sql(
             quote_ident(StructureDialect::Postgres, &column.name)
         ));
     }
-    if column.data_type.trim() != original.data_type.trim() {
+    let type_changed = column.data_type.trim() != original.data_type.trim();
+    if type_changed {
         let column_name = quote_ident(StructureDialect::Postgres, current_name);
         let data_type = column_data_type(StructureDialect::Postgres, column);
-        let type_clause = if use_xugu_type_syntax { data_type } else { format!("TYPE {data_type}") };
-        statements.push(format!("ALTER TABLE {table} ALTER COLUMN {column_name} {type_clause};"));
+        if use_xugu_type_syntax {
+            statements.push(format!("ALTER TABLE {table} ALTER COLUMN {column_name} {data_type};"));
+        } else {
+            let current_default = normalize_default(Some(&column.default_value));
+            let mut alterations = Vec::new();
+            if !original_default(column).is_empty() {
+                alterations.push(format!("ALTER COLUMN {column_name} DROP DEFAULT"));
+            }
+            // PostgreSQL assignment casts do not cover many valid explicit conversions. USING keeps
+            // type changes generic for built-ins, arrays, and domains while still rejecting bad data.
+            alterations.push(format!("ALTER COLUMN {column_name} TYPE {data_type} USING {column_name}::{data_type}"));
+            if !current_default.is_empty() {
+                alterations.push(format!(
+                    "ALTER COLUMN {column_name} SET DEFAULT {}",
+                    format_default_for_sql(StructureDialect::Postgres, &column.data_type, &current_default)
+                ));
+            }
+            // USING is not applied to defaults. Keeping all three actions in one ALTER TABLE makes
+            // an incompatible restored default fail atomically instead of leaving it dropped.
+            statements.push(format!("ALTER TABLE {table} {};", alterations.join(", ")));
+        }
     }
     if column.is_nullable != original.is_nullable {
         let action = if column.is_nullable { "DROP NOT NULL" } else { "SET NOT NULL" };
@@ -329,7 +349,9 @@ fn build_postgres_like_existing_column_sql(
             quote_ident(StructureDialect::Postgres, current_name)
         ));
     }
-    if normalize_default(Some(&column.default_value)) != original_default(column) {
+    if (!type_changed || use_xugu_type_syntax)
+        && normalize_default(Some(&column.default_value)) != original_default(column)
+    {
         let default_value = normalize_default(Some(&column.default_value));
         let action = if default_value.is_empty() {
             "DROP DEFAULT".to_string()
