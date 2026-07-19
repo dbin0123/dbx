@@ -17,6 +17,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_data_types_matches_tauri_command_behavior() {
+        dbx_core::sql_dialect::dialect_loader::register_core_dialects();
         let Json(types) =
             list_data_types(Query(DialectDataTypesQuery { dialect_name: "PostgreSQL".to_string() })).await;
 
