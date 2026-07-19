@@ -5528,7 +5528,7 @@ mod tests {
         for (db, label) in [(DatabaseType::Mysql, "MySQL"), (DatabaseType::Postgres, "PG")] {
             let sql = gen_sql(wrap_table_diff("t", diffs.clone()), db.clone(), None);
             // Two renames → two CHANGE COLUMN / RENAME COLUMN operations
-            let n = if matches!(db, DatabaseType::Mysql) { 2 } else { 2 };
+            let _n = if matches!(db, DatabaseType::Mysql) { 2 } else { 2 };
             assert!(sql.contains("COLUMN"), "{label}: {sql}");
         }
     }
@@ -5959,7 +5959,7 @@ mod tests {
 
     #[test]
     fn table_comment_change_mysql() {
-        let diffs: Vec<ColumnDiff> = vec![];
+        let _diffs: Vec<ColumnDiff> = vec![];
         let table_diff = TableDiff {
             diff_type: "modified".to_string(),
             object_type: Some("table".to_string()),
@@ -6095,7 +6095,7 @@ mod tests {
 
     #[test]
     fn table_comment_change_mysql_sql() {
-        let diffs: Vec<ColumnDiff> = vec![];
+        let _diffs: Vec<ColumnDiff> = vec![];
         let table_diff = TableDiff {
             diff_type: "modified".to_string(),
             object_type: Some("table".to_string()),
@@ -6755,7 +6755,7 @@ mod tests {
         ddl: Option<&str>,
     ) -> String {
         let Some(db) = kind_to_db(target_kind) else { return String::new() };
-        let src_db = kind_to_db(source_kind).unwrap_or(DatabaseType::Mysql);
+        let _src_db = kind_to_db(source_kind).unwrap_or(DatabaseType::Mysql);
         let options = SchemaDiffPreparationOptions {
             source_tables: vec![TableInfo {
                 name: "t".into(),
@@ -6904,7 +6904,7 @@ mod tests {
     }
 
     fn s1_table_diff(src_kind: DialectKind, tgt_kind: DialectKind) -> TableDiff {
-        let Some(db) = kind_to_db(tgt_kind) else { panic!("no db for {tgt_kind:?}") };
+        let Some(_db) = kind_to_db(tgt_kind) else { panic!("no db for {tgt_kind:?}") };
         let is_mysql_tgt = matches!(tgt_kind, DialectKind::Mysql | DialectKind::ManticoreSearch);
         let ddl = if is_mysql_tgt {
             Some("CREATE TABLE `t` (`id` int NOT NULL AUTO_INCREMENT, `name` varchar(100) NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB".into())

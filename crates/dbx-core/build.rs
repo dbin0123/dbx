@@ -13,7 +13,7 @@ fn main() {
     let mut entries: Vec<_> = std::fs::read_dir(&dialects_dir)
         .expect("Cannot read plugins/dialects directory")
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "yaml" || ext == "yml"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "yaml" || ext == "yml"))
         .collect();
     entries.sort_by_key(|e| e.file_name());
 
@@ -33,7 +33,7 @@ fn main() {
         // type catalog (e.g. old type names) and silently misbehaves (see field mapping).
         println!("cargo::rerun-if-changed={}", path_str);
 
-        code.push_str(&format!("match crate::sql_dialect::dialect_loader::DialectPluginLoader::load_from_string(\n"));
+        code.push_str("match crate::sql_dialect::dialect_loader::DialectPluginLoader::load_from_string(\n");
         code.push_str(&format!("    include_str!(\"{}\"),\n", path_str.replace('\\', "\\\\")));
         code.push_str("    None,\n");
         code.push_str(") {\n");
