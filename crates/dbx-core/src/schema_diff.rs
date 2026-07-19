@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::models::connection::DatabaseType;
 use crate::sql_dialect::descriptor::DialectKind;
 use crate::sql_dialect::inference::{ColumnType, DefaultTypeInferenceEngine, TypeInferenceEngine};
+use crate::sql_parser::ast_filter::AstTransmitFilter;
 use crate::types::{
     ColumnInfo, ForeignKeyInfo, FunctionInfo, IndexInfo, OwnerInfo, RuleInfo, SequenceInfo, TableInfo, TriggerInfo,
 };
@@ -1670,6 +1671,10 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
         }
         log::info!("  source_dialect={:?} target_dialect={:?}", options.source_dialect, options.target_dialect);
     }
+
+    let dialect_str = options.source_dialect.as_deref().unwrap_or("generic");
+    let options = AstTransmitFilter::filter_diff_preparation_options(options, dialect_str);
+
     let dep_graph = DependencyGraph::build(&options.source_details, &options.source_tables);
 
     let mut diffs = if let Some(ref strategy) = options.shard_strategy {
