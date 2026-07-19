@@ -348,11 +348,11 @@ mod tests {
             metric_type: MetricType::Gauge,
             description: "A test gauge".to_string(),
             labels: HashMap::new(),
-            value: MetricValue::Gauge(1.23),
+            value: MetricValue::Gauge(3.125),
         }];
         let output = export_prometheus(&entries);
         assert!(output.contains("# TYPE test_gauge gauge"));
-        assert!(output.contains("test_gauge 1.23"));
+        assert!(output.contains("test_gauge 3.125"));
     }
 
     #[test]

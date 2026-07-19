@@ -101,6 +101,8 @@ ddl_capabilities:
   alter_column_type: true
   reorder_column: true
   comment: true
+  create_index: false
+  drop_index: false
   create_table: true
   drop_table: true
   truncate_table: true

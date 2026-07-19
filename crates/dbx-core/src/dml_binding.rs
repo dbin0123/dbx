@@ -362,7 +362,7 @@ mod tests {
             }];
         }
 
-        let result = BindingEngine::bind("BIGINT", "INT", "users", "id", 0.81);
+        let result = BindingEngine::bind("BIGINT", "INT", "users", "id", 0.4);
         assert!(result.pre_transform_sql.is_some());
         assert!(result.pre_transform_sql.unwrap().contains("2147483647"));
     }

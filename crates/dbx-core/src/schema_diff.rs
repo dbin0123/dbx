@@ -3175,8 +3175,9 @@ fn generate_schema_sync_sql_inner(
                     lines.push(format!("{};", ddl.trim_end_matches(';')));
                     lines.push(String::new());
                 }
-            } else if is_same_dialect || (source_dialect.is_none() && is_mysql_like(db_type)) {
-                // Same dialect, or MySQL target with no source_dialect → use original DDL as-is
+            } else if is_same_dialect || (source_dialect.is_none() && diff.ddl.is_some()) {
+                // With no source dialect, native DDL is the only reliable
+                // source when structured metadata is absent or incomplete.
                 if let Some(ddl) = &diff.ddl {
                     lines.push(format!("-- Create {}: {}", diff.object_type.as_deref().unwrap_or("table"), diff.name));
                     lines.push(format!("{};", ddl));

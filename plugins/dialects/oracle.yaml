@@ -99,6 +99,7 @@ ddl_capabilities:
   grant_revoke: true
   if_not_exists: true
   temporary_table: true
+  identity_columns: true
   templates:
     add_column: "ALTER TABLE {table} ADD ({column} {type})"
     drop_column: "ALTER TABLE {table} DROP COLUMN {column}"
