@@ -7,6 +7,7 @@ mod models;
 mod window_state_guard;
 
 use commands::connection::AppState;
+use dbx_core::sql_dialect::dialect_loader::{register_core_dialects, DialectPluginLoader, DialectRegistry};
 use dbx_core::storage::{maybe_import_user_data_db, DesktopIconTheme, DesktopSettings, Storage};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -943,6 +944,20 @@ pub fn run() {
             )?;
             apply_debug_log_level(desktop_settings.debug_logging_enabled);
             eprintln!("[STARTUP] storage ready in {:?}", t.elapsed());
+
+            // Initialize core dialect registry and load external plugin dialects
+            let dialect_init_start = Instant::now();
+            register_core_dialects();
+            let registry = DialectRegistry::global();
+            let plugin_dirs = vec![data_dir.join("plugins").join("dialects")];
+            let load_result = DialectPluginLoader::scan_and_load(&registry, &plugin_dirs);
+            eprintln!(
+                "[STARTUP] dialect plugins loaded: {} success, {} errors, {} skipped in {:?}",
+                load_result.loaded.len(),
+                load_result.errors.len(),
+                load_result.skipped.len(),
+                dialect_init_start.elapsed()
+            );
 
             let default_agent_dir = data_dir_resolution.uses_custom_data_dir().then(|| data_dir.join("agents"));
             let (plugin_dir, agent_dir) = commands::app_settings::resolve_driver_store_dirs_from_settings(

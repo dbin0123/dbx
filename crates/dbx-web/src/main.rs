@@ -16,6 +16,7 @@ use axum::middleware;
 use axum::routing::{delete, get, post};
 use axum::Router;
 use dbx_core::connection::AppState;
+use dbx_core::sql_dialect::dialect_loader::{register_core_dialects, DialectPluginLoader, DialectRegistry};
 use dbx_core::storage::Storage;
 use state::WebState;
 use tokio::sync::RwLock;
@@ -197,6 +198,19 @@ async fn main() {
         let db_path = data_dir.join("dbx.db");
         let storage = Storage::open(&db_path).await.expect("Failed to open storage");
         storage.migrate_from_json(&data_dir).await.expect("Failed to migrate JSON data");
+
+        // Initialize core dialect registry and load external plugin dialects
+        register_core_dialects();
+        let registry = DialectRegistry::global();
+        let plugin_dirs = vec![data_dir.join("plugins").join("dialects")];
+        let load_result = DialectPluginLoader::scan_and_load(&registry, &plugin_dirs);
+        log::info!(
+            "Dialect plugins loaded: {} success, {} errors, {} skipped",
+            load_result.loaded.len(),
+            load_result.errors.len(),
+            load_result.skipped.len()
+        );
+
         Arc::new(AppState::new_with_plugin_and_agent_dir_and_app_version(
             storage,
             data_dir.join("plugins"),
