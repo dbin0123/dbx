@@ -202,46 +202,6 @@ fn default_true() -> bool {
     true
 }
 
-impl Default for DdlCapabilitiesYaml {
-    fn default() -> Self {
-        Self {
-            add_column: true,
-            drop_column: true,
-            rename_column: false,
-            alter_column_type: false,
-            reorder_column: false,
-            comment: false,
-            create_index: true,
-            drop_index: true,
-            rebuild_index: false,
-            index_type: false,
-            index_include: false,
-            index_filter: false,
-            index_comment: false,
-            alter_primary_key: false,
-            foreign_key: false,
-            create_table: true,
-            drop_table: true,
-            truncate_table: false,
-            create_trigger: false,
-            drop_trigger: false,
-            create_function: false,
-            drop_function: false,
-            create_sequence: false,
-            drop_sequence: false,
-            alter_owner: false,
-            grant_revoke: false,
-            if_not_exists: false,
-            create_or_replace: false,
-            temporary_table: false,
-            transactional_ddl: false,
-            auto_increment: false,
-            identity_columns: false,
-            templates: DdlTemplatesYaml::default(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DdlTemplatesYaml {
     #[serde(default)]
