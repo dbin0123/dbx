@@ -42,6 +42,9 @@ fn generate_details(tables: &[TableInfo], columns_per_table: usize) -> Vec<Table
                     numeric_precision: if j % 3 == 0 { Some(10) } else { None },
                     numeric_scale: if j % 3 == 0 { Some(0) } else { None },
                     character_maximum_length: if j % 3 != 0 { Some(64) } else { None },
+                    enum_values: None,
+                    character_set: None,
+                    collation: None,
                 })
                 .collect(),
             indexes: vec![],

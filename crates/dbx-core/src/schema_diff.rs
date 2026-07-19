@@ -5096,11 +5096,11 @@ mod tests {
             description: "all log tables".to_string(),
         }];
 
-        let (_added, removed, common, _matches) = diff_names_with_patterns(&source, &target, &patterns);
+        let (_added, removed, common, match_results) = diff_names_with_patterns(&source, &target, &patterns);
         assert_eq!(removed, vec!["log_2024_03"]);
         assert_eq!(common.len(), 0);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].len(), 2);
+        assert_eq!(match_results.len(), 1);
+        assert_eq!(match_results[0].len(), 2);
     }
 
     #[test]
@@ -5113,8 +5113,8 @@ mod tests {
             description: "numbered tables".to_string(),
         }];
 
-        let (_added, _removed, _common, matches) = diff_names_with_patterns(&source, &target, &patterns);
-        assert_eq!(matches[0].len(), 2);
+        let (_added, _removed, _common, match_results) = diff_names_with_patterns(&source, &target, &patterns);
+        assert_eq!(match_results[0].len(), 2);
     }
 
     #[test]
@@ -6765,7 +6765,7 @@ mod tests {
                 parent_name: None,
             }],
             target_tables: vec![],
-            source_details: vec![make_added_table_detail("t", columns, indexes, fks, ddl)],
+            source_details: vec![_make_added_table_detail("t", columns, indexes, fks, ddl)],
             target_details: vec![],
             source_functions: vec![],
             target_functions: vec![],
@@ -7170,7 +7170,7 @@ mod tests {
                 parent_name: None,
             }],
             target_tables: vec![],
-            source_details: vec![make_added_table_detail("t", columns, indexes, vec![], ddl)],
+            source_details: vec![_make_added_table_detail("t", columns, indexes, vec![], ddl)],
             target_details: vec![],
             database_type: db,
             ..Default::default()

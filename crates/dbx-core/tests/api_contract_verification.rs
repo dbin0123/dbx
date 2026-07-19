@@ -234,6 +234,9 @@ fn column_info_serialization_roundtrip() {
         numeric_precision: Some(10),
         numeric_scale: Some(0),
         character_maximum_length: None,
+        enum_values: None,
+        character_set: None,
+        collation: None,
     };
     let json = serde_json::to_value(&col).unwrap();
     let deserialized: ColumnInfo = serde_json::from_value(json).unwrap();
