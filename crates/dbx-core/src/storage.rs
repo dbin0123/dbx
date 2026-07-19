@@ -2341,6 +2341,16 @@ impl Storage {
         .await
     }
 
+    pub async fn get_state_version(&self, key: &str) -> Result<Option<u64>, String> {
+        let key = key.to_string();
+        self.with_conn(move |conn| {
+            conn.prepare("SELECT version FROM state_store WHERE key = ?1")
+                .and_then(|mut stmt| stmt.query_row(params![key], |row| row.get(0)).optional())
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
     pub async fn compare_and_swap_state(
         &self,
         key: &str,

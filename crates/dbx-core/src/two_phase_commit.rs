@@ -165,7 +165,7 @@ impl TwoPhaseCommit {
         if all_agreed {
             self.update_status(transaction_id, TransactionStatus::Committing).await?;
             match self.commit_phase(transaction_id, participants, 2).await {
-                Ok(results) => {
+                Ok(_results) => {
                     let log = self.update_status(transaction_id, TransactionStatus::Committed).await?;
                     let _ = self
                         .state_machine
