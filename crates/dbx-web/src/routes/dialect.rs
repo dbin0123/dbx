@@ -17,11 +17,17 @@ mod tests {
 
     #[tokio::test]
     async fn list_data_types_matches_tauri_command_behavior() {
+        let registry = dbx_core::sql_dialect::dialect_loader::DialectRegistry::global();
+        eprintln!("registry len before init: {}", registry.len());
         dbx_core::sql_dialect::dialect_loader::register_core_dialects();
+        eprintln!("registry len after init: {}", registry.len());
+        eprintln!("registry has postgresql: {:?}", registry.get("PostgreSQL").is_some());
+
         let Json(types) =
             list_data_types(Query(DialectDataTypesQuery { dialect_name: "PostgreSQL".to_string() })).await;
+        eprintln!("types count: {}", types.len());
 
         assert_eq!(types, dbx_core::sql_dialect::dialect_types::list_dialect_type_names("PostgreSQL"));
-        assert!(!types.is_empty());
+        assert!(!types.is_empty(), "Expected non-empty types for PostgreSQL dialect");
     }
 }
