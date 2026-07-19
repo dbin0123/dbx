@@ -1176,6 +1176,8 @@ impl RollbackGraph {
             "removed" => (diff.source_table_comment.clone(), diff.target_table_comment.clone()),
             _ => (diff.target_table_comment.clone(), diff.source_table_comment.clone()),
         };
+        let recreates_removed_table =
+            diff.diff_type == "removed" && inverted_type == "added" && diff.object_type.as_deref() == Some("table");
 
         TableDiff {
             diff_type: inverted_type,
@@ -1185,8 +1187,10 @@ impl RollbackGraph {
             indexes: inverted_indexes,
             foreign_keys: inverted_fks,
             triggers: inverted_triggers,
-            ddl: diff.target_ddl.clone(),
-            target_ddl: diff.ddl.clone(),
+            // Rollback recreation must use the structured snapshot first. Keep
+            // native target DDL isolated as a same-target-dialect fallback.
+            ddl: if recreates_removed_table { None } else { diff.target_ddl.clone() },
+            target_ddl: if recreates_removed_table { diff.target_ddl.clone() } else { diff.ddl.clone() },
             source_table_comment: source_comment,
             target_table_comment: target_comment,
             sync_sql: None,
@@ -1940,18 +1944,67 @@ fn diff_schema(options: &SchemaDiffPreparationOptions) -> Vec<TableDiff> {
 
     for name in removed {
         let name_clone = name.clone();
+        let target_detail = target_details.get(name_clone.as_str()).copied();
         result.push(TableDiff {
             diff_type: "removed".to_string(),
             object_type: Some("table".to_string()),
             name,
-            columns: None,
-            indexes: None,
-            foreign_keys: None,
-            triggers: None,
+            columns: target_detail.map(|detail| {
+                detail
+                    .columns
+                    .iter()
+                    .map(|column| ColumnDiff {
+                        diff_type: "removed".to_string(),
+                        name: column.name.clone(),
+                        source: None,
+                        target: Some(column.clone()),
+                        changes: vec![],
+                    })
+                    .collect()
+            }),
+            indexes: target_detail.map(|detail| {
+                detail
+                    .indexes
+                    .iter()
+                    .map(|index| IndexDiff {
+                        diff_type: "removed".to_string(),
+                        name: index.name.clone(),
+                        source: None,
+                        target: Some(index.clone()),
+                        changes: vec![],
+                    })
+                    .collect()
+            }),
+            foreign_keys: target_detail.map(|detail| {
+                detail
+                    .foreign_keys
+                    .iter()
+                    .map(|foreign_key| ForeignKeyDiff {
+                        diff_type: "removed".to_string(),
+                        name: foreign_key.name.clone(),
+                        source: None,
+                        target: Some(foreign_key.clone()),
+                        changes: vec![],
+                    })
+                    .collect()
+            }),
+            triggers: target_detail.map(|detail| {
+                detail
+                    .triggers
+                    .iter()
+                    .map(|trigger| TriggerDiff {
+                        diff_type: "removed".to_string(),
+                        name: trigger.name.clone(),
+                        source: None,
+                        target: Some(trigger.clone()),
+                        changes: vec![],
+                    })
+                    .collect()
+            }),
             ddl: None,
-            target_ddl: target_details.get(name_clone.as_str()).and_then(|detail| detail.ddl.clone()),
+            target_ddl: target_detail.and_then(|detail| detail.ddl.clone()),
             source_table_comment: None,
-            target_table_comment: None,
+            target_table_comment: target_table_comments.get(name_clone.as_str()).cloned(),
             sync_sql: None,
         });
     }
@@ -2888,6 +2941,12 @@ fn generate_create_table_sql(
             def.push_str(&format!(" DEFAULT {default}"));
         }
 
+        if is_mysql_tgt {
+            if let Some(comment) = col.comment.as_deref().filter(|comment| !comment.is_empty()) {
+                def.push_str(&format!(" COMMENT {}", comment_literal(comment)));
+            }
+        }
+
         let is_int = mapped_type.to_ascii_lowercase().contains("int")
             || mapped_type.to_ascii_lowercase().contains("integer")
             || mapped_type.to_ascii_lowercase().contains("serial");
@@ -2914,6 +2973,26 @@ fn generate_create_table_sql(
 
         if col.is_primary_key {
             pk_cols.push(quote_id(&col.name, db_type));
+        }
+    }
+
+    if db_type == DatabaseType::Sqlite {
+        for fk_diff in foreign_keys {
+            let Some(fk) = &fk_diff.source else {
+                continue;
+            };
+            let ref_table = qualified_name(&fk.ref_table, db_type, fk.ref_schema.as_deref().or(schema));
+            let on_delete = fk.on_delete.as_ref().map(|action| format!(" ON DELETE {action}")).unwrap_or_default();
+            let on_update = fk.on_update.as_ref().map(|action| format!(" ON UPDATE {action}")).unwrap_or_default();
+            col_defs.push(format!(
+                "CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {}({}){}{}",
+                quote_id(&fk.name, db_type),
+                quote_id(&fk.column, db_type),
+                ref_table,
+                quote_id(&fk.ref_column, db_type),
+                on_delete,
+                on_update
+            ));
         }
     }
 
@@ -2953,14 +3032,7 @@ fn generate_create_table_sql(
         if idx.is_primary {
             continue;
         }
-        let idx_name = quote_id(&idx.name, db_type);
-        let idx_cols: Vec<String> = idx.columns.iter().map(|c| quote_id(c, db_type)).collect();
-        let unique = if idx.is_unique { "UNIQUE " } else { "" };
-        if is_mysql_tgt {
-            lines.push(format!("ALTER TABLE {} ADD {}KEY {} ({});", table, unique, idx_name, idx_cols.join(", ")));
-        } else {
-            lines.push(format!("CREATE {}INDEX {} ON {} ({});", unique, idx_name, table, idx_cols.join(", ")));
-        }
+        lines.push(create_index_sql(name, idx, db_type, schema));
     }
     if !indexes.is_empty() {
         lines.push(String::new());
@@ -2968,12 +3040,15 @@ fn generate_create_table_sql(
 
     // Foreign Keys
     for fk_diff in foreign_keys {
+        if db_type == DatabaseType::Sqlite {
+            continue;
+        }
         let Some(fk) = &fk_diff.source else {
             continue;
         };
         let fk_name = quote_id(&fk.name, db_type);
         let fk_col = quote_id(&fk.column, db_type);
-        let ref_table = qualified_name(&fk.ref_table, db_type, schema);
+        let ref_table = qualified_name(&fk.ref_table, db_type, fk.ref_schema.as_deref().or(schema));
         let ref_col = quote_id(&fk.ref_column, db_type);
         let on_delete = fk.on_delete.as_ref().map(|a| format!(" ON DELETE {}", a)).unwrap_or_default();
         let on_update = fk.on_update.as_ref().map(|a| format!(" ON UPDATE {}", a)).unwrap_or_default();
@@ -2995,15 +3070,7 @@ fn generate_create_table_sql(
             if !comment.is_empty() {
                 let col_name = quote_id(&col.name, db_type);
                 let esc_comment = comment.replace('\'', "''");
-                if is_mysql_tgt {
-                    lines.push(format!(
-                        "ALTER TABLE {} MODIFY COLUMN {} {} COMMENT '{}';",
-                        table,
-                        col_name,
-                        map_type(&col.data_type),
-                        esc_comment
-                    ));
-                } else {
+                if !is_mysql_tgt {
                     lines.push(format!("COMMENT ON COLUMN {}.{} IS '{}';", table, col_name, esc_comment));
                 }
             }
@@ -3078,10 +3145,37 @@ fn generate_schema_sync_sql_inner(
     for diff in diffs {
         let table = qualified_name(&diff.name, db_type, schema);
 
-        if diff.diff_type == "added" && diff.columns.is_some() {
+        if diff.diff_type == "added" && diff.object_type.as_deref() != Some("view") {
+            let has_structured_snapshot = diff.columns.as_ref().is_some_and(|columns| !columns.is_empty());
+            let is_rollback_recreation = diff.ddl.is_none() && diff.target_ddl.is_some();
             let is_same_dialect =
                 source_dialect.map(|src| DialectKind::from_database_type(db_type) == src).unwrap_or(false);
-            if is_same_dialect || (source_dialect.is_none() && is_mysql_like(db_type)) {
+            if is_rollback_recreation {
+                if has_structured_snapshot {
+                    let generated = generate_create_table_sql(
+                        &diff.name,
+                        diff.columns.as_ref().map_or(&[] as &[ColumnDiff], |columns| columns.as_slice()),
+                        diff.indexes.as_ref().map_or(&[] as &[IndexDiff], |indexes| indexes.as_slice()),
+                        diff.foreign_keys
+                            .as_ref()
+                            .map_or(&[] as &[ForeignKeyDiff], |foreign_keys| foreign_keys.as_slice()),
+                        diff.source_table_comment.as_ref().and_then(|comment| comment.as_deref()),
+                        db_type,
+                        schema,
+                        None,
+                        field_mappings,
+                    );
+                    if !generated.is_empty() {
+                        lines.push(generated);
+                    }
+                } else if let Some(ddl) = diff.target_ddl.as_deref() {
+                    // Inversion places only the removed target table's native
+                    // DDL here, validating that it belongs to the dialect restored.
+                    lines.push(format!("-- Recreate table from native target DDL: {}", diff.name));
+                    lines.push(format!("{};", ddl.trim_end_matches(';')));
+                    lines.push(String::new());
+                }
+            } else if is_same_dialect || (source_dialect.is_none() && is_mysql_like(db_type)) {
                 // Same dialect, or MySQL target with no source_dialect → use original DDL as-is
                 if let Some(ddl) = &diff.ddl {
                     lines.push(format!("-- Create {}: {}", diff.object_type.as_deref().unwrap_or("table"), diff.name));
@@ -3103,7 +3197,7 @@ fn generate_schema_sync_sql_inner(
                         lines.push(gen);
                     }
                 }
-            } else {
+            } else if has_structured_snapshot {
                 // Cross-dialect → generate CREATE TABLE from column info
                 let _cols: &[ColumnDiff] = diff.columns.as_ref().map_or(&[] as &[ColumnDiff], |v| v.as_slice());
                 let _idxs: &[IndexDiff] = diff.indexes.as_ref().map_or(&[] as &[IndexDiff], |v| v.as_slice());
@@ -5209,6 +5303,263 @@ mod tests {
 
         assert_eq!(graph.rollback_nodes[0].table_diff.diff_type, "added");
         assert_eq!(graph.rollback_nodes[0].table_diff.ddl, None);
+    }
+
+    fn rollback_removed_table_sql(
+        database_type: DatabaseType,
+        target_schema: Option<&str>,
+        source_dialect: Option<DialectKind>,
+        target_dialect: DialectKind,
+        table_name: &str,
+        table_comment: Option<&str>,
+        target_detail: TableSchemaDetail,
+    ) -> SchemaDiffPreparation {
+        prepare_schema_diff(SchemaDiffPreparationOptions {
+            target_tables: vec![TableInfo {
+                name: table_name.to_string(),
+                table_type: "BASE TABLE".to_string(),
+                comment: table_comment.map(str::to_string),
+                parent_schema: None,
+                parent_name: None,
+            }],
+            target_details: vec![target_detail],
+            database_type,
+            target_schema: target_schema.map(str::to_string),
+            enable_rollback: true,
+            source_dialect,
+            target_dialect: Some(target_dialect),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn dropped_postgres_table_rollback_preserves_structured_snapshot() {
+        let table_name = "Order Items";
+        let result = rollback_removed_table_sql(
+            DatabaseType::Postgres,
+            Some("sales"),
+            Some(DialectKind::Postgres),
+            DialectKind::Postgres,
+            table_name,
+            Some("order line history"),
+            TableSchemaDetail {
+                name: table_name.to_string(),
+                columns: vec![
+                    ColumnInfo {
+                        is_primary_key: true,
+                        column_default: Some("gen_random_uuid()".to_string()),
+                        ..column("Item ID", "uuid", Some("stable row id"))
+                    },
+                    ColumnInfo {
+                        column_default: Some("'new'::text".to_string()),
+                        ..column("Status", "text", Some("workflow state"))
+                    },
+                    column("User ID", "bigint", None),
+                ],
+                indexes: vec![index(IndexInfo {
+                    name: "Order Status IDX".to_string(),
+                    columns: vec!["Status".to_string()],
+                    is_unique: true,
+                    is_primary: false,
+                    filter: Some("\"Status\" <> 'deleted'".to_string()),
+                    index_type: Some("btree".to_string()),
+                    included_columns: Some(vec!["User ID".to_string()]),
+                    comment: None,
+                })],
+                foreign_keys: vec![foreign_key(ForeignKeyInfo {
+                    name: "Order User FK".to_string(),
+                    column: "User ID".to_string(),
+                    ref_schema: Some("auth".to_string()),
+                    ref_table: "Users".to_string(),
+                    ref_column: "ID".to_string(),
+                    on_update: None,
+                    on_delete: Some("CASCADE".to_string()),
+                })],
+                triggers: vec![],
+                ddl: Some("CREATE TABLE native_postgres_fallback (ignored int)".to_string()),
+            },
+        );
+        let rollback = result.rollback_sync_sql.unwrap();
+
+        assert!(rollback.contains("CREATE TABLE \"sales\".\"Order Items\""), "{rollback}");
+        assert!(rollback.contains("\"Item ID\" uuid NOT NULL DEFAULT gen_random_uuid()"), "{rollback}");
+        assert!(rollback.contains("PRIMARY KEY (\"Item ID\")"), "{rollback}");
+        assert!(rollback.contains("CREATE UNIQUE INDEX \"Order Status IDX\""), "{rollback}");
+        assert!(rollback.contains("USING btree"), "{rollback}");
+        assert!(rollback.contains("INCLUDE (\"User ID\")"), "{rollback}");
+        assert!(rollback.contains("WHERE \"Status\" <> 'deleted'"), "{rollback}");
+        assert!(rollback.contains("REFERENCES \"auth\".\"Users\"(\"ID\") ON DELETE CASCADE"), "{rollback}");
+        assert!(rollback.contains("COMMENT ON COLUMN \"sales\".\"Order Items\".\"Status\" IS 'workflow state'"));
+        assert!(rollback.contains("COMMENT ON TABLE \"sales\".\"Order Items\" IS 'order line history'"));
+        assert!(!rollback.contains("native_postgres_fallback"), "{rollback}");
+    }
+
+    #[test]
+    fn dropped_mysql_table_rollback_preserves_defaults_comments_indexes_and_fk() {
+        let table_name = "order-items";
+        let result = rollback_removed_table_sql(
+            DatabaseType::Mysql,
+            Some("shop"),
+            Some(DialectKind::Mysql),
+            DialectKind::Mysql,
+            table_name,
+            Some("order item history"),
+            TableSchemaDetail {
+                name: table_name.to_string(),
+                columns: vec![
+                    ColumnInfo {
+                        is_primary_key: true,
+                        column_default: Some("(uuid())".to_string()),
+                        ..column("item-id", "varchar(36)", Some("stable item id"))
+                    },
+                    ColumnInfo {
+                        column_default: Some("'new'".to_string()),
+                        ..column("status", "varchar(32)", Some("workflow state"))
+                    },
+                    column("user-id", "bigint", None),
+                ],
+                indexes: vec![index(IndexInfo {
+                    name: "status-index".to_string(),
+                    columns: vec!["status".to_string()],
+                    is_unique: true,
+                    is_primary: false,
+                    filter: None,
+                    index_type: Some("BTREE".to_string()),
+                    included_columns: None,
+                    comment: Some("status lookup".to_string()),
+                })],
+                foreign_keys: vec![foreign_key(ForeignKeyInfo {
+                    name: "user-fk".to_string(),
+                    column: "user-id".to_string(),
+                    ref_schema: Some("identity".to_string()),
+                    ref_table: "users".to_string(),
+                    ref_column: "id".to_string(),
+                    on_update: Some("CASCADE".to_string()),
+                    on_delete: Some("RESTRICT".to_string()),
+                })],
+                triggers: vec![],
+                ddl: Some("CREATE TABLE native_mysql_fallback (ignored int)".to_string()),
+            },
+        );
+        let rollback = result.rollback_sync_sql.unwrap();
+
+        assert!(rollback.contains("CREATE TABLE `shop`.`order-items`"), "{rollback}");
+        assert!(rollback.contains("`item-id` varchar(36) NOT NULL DEFAULT (uuid()) COMMENT 'stable item id'"));
+        assert!(rollback.contains("PRIMARY KEY (`item-id`)"), "{rollback}");
+        assert!(rollback.contains("CREATE UNIQUE INDEX `status-index` USING BTREE ON `shop`.`order-items` (`status`)"));
+        assert!(rollback.contains("COMMENT 'status lookup'"), "{rollback}");
+        assert!(rollback.contains("REFERENCES `identity`.`users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE"));
+        assert!(rollback.contains("ALTER TABLE `shop`.`order-items` COMMENT = 'order item history'"));
+        assert!(!rollback.contains("native_mysql_fallback"), "{rollback}");
+    }
+
+    #[test]
+    fn dropped_sqlite_table_rollback_preserves_quoted_pk_index_fk_and_default() {
+        let table_name = "select \"items";
+        let result = rollback_removed_table_sql(
+            DatabaseType::Sqlite,
+            None,
+            Some(DialectKind::Sqlite),
+            DialectKind::Sqlite,
+            table_name,
+            None,
+            TableSchemaDetail {
+                name: table_name.to_string(),
+                columns: vec![
+                    ColumnInfo { is_primary_key: true, ..column("item \"id", "TEXT", None) },
+                    ColumnInfo { column_default: Some("'new'".to_string()), ..column("status", "TEXT", None) },
+                    column("parent id", "TEXT", None),
+                ],
+                indexes: vec![index(IndexInfo {
+                    name: "active status index".to_string(),
+                    columns: vec!["status".to_string()],
+                    is_unique: false,
+                    is_primary: false,
+                    filter: Some("status <> 'deleted'".to_string()),
+                    index_type: None,
+                    included_columns: None,
+                    comment: None,
+                })],
+                foreign_keys: vec![foreign_key(ForeignKeyInfo {
+                    name: "parent item fk".to_string(),
+                    column: "parent id".to_string(),
+                    ref_schema: None,
+                    ref_table: "parent items".to_string(),
+                    ref_column: "id".to_string(),
+                    on_update: None,
+                    on_delete: Some("SET NULL".to_string()),
+                })],
+                triggers: vec![],
+                ddl: Some("CREATE TABLE native_sqlite_fallback (ignored int)".to_string()),
+            },
+        );
+        let rollback = result.rollback_sync_sql.unwrap();
+
+        assert!(rollback.contains("CREATE TABLE \"select \"\"items\""), "{rollback}");
+        assert!(rollback.contains("\"item \"\"id\" TEXT NOT NULL"), "{rollback}");
+        assert!(rollback.contains("\"status\" TEXT NOT NULL DEFAULT 'new'"), "{rollback}");
+        assert!(rollback.contains("PRIMARY KEY (\"item \"\"id\")"), "{rollback}");
+        assert!(rollback.contains("CONSTRAINT \"parent item fk\" FOREIGN KEY (\"parent id\")"), "{rollback}");
+        assert!(rollback.contains("REFERENCES \"parent items\"(\"id\") ON DELETE SET NULL"), "{rollback}");
+        assert!(rollback.contains("CREATE INDEX \"active status index\""), "{rollback}");
+        assert!(rollback.contains("WHERE status <> 'deleted'"), "{rollback}");
+        assert!(!rollback.contains("ALTER TABLE"), "SQLite FK must be part of CREATE TABLE: {rollback}");
+        assert!(!rollback.contains("native_sqlite_fallback"), "{rollback}");
+    }
+
+    #[test]
+    fn dropped_table_cross_dialect_rollback_uses_target_snapshot_and_syntax() {
+        let result = rollback_removed_table_sql(
+            DatabaseType::Mysql,
+            Some("archive"),
+            Some(DialectKind::Postgres),
+            DialectKind::Mysql,
+            "Audit Log",
+            None,
+            TableSchemaDetail {
+                name: "Audit Log".to_string(),
+                columns: vec![ColumnInfo {
+                    is_primary_key: true,
+                    column_default: Some("0".to_string()),
+                    ..column("Event ID", "BIGINT UNSIGNED", None)
+                }],
+                indexes: vec![],
+                foreign_keys: vec![],
+                triggers: vec![],
+                ddl: Some("CREATE TABLE native_cross_dialect_fallback (ignored int)".to_string()),
+            },
+        );
+        let rollback = result.rollback_sync_sql.unwrap();
+
+        assert!(rollback.contains("CREATE TABLE `archive`.`Audit Log`"), "{rollback}");
+        assert!(rollback.contains("`Event ID` BIGINT UNSIGNED NOT NULL DEFAULT 0 AUTO_INCREMENT"), "{rollback}");
+        assert!(!rollback.contains('"'), "rollback must use target MySQL quoting: {rollback}");
+        assert!(!rollback.contains("native_cross_dialect_fallback"), "{rollback}");
+    }
+
+    #[test]
+    fn dropped_table_rollback_uses_native_target_ddl_only_without_structured_columns() {
+        let result = rollback_removed_table_sql(
+            DatabaseType::Postgres,
+            Some("archive"),
+            Some(DialectKind::Postgres),
+            DialectKind::Postgres,
+            "legacy_table",
+            None,
+            TableSchemaDetail {
+                name: "legacy_table".to_string(),
+                columns: vec![],
+                indexes: vec![],
+                foreign_keys: vec![],
+                triggers: vec![],
+                ddl: Some("CREATE TABLE \"archive\".\"legacy_table\" (\"id\" bigint PRIMARY KEY)".to_string()),
+            },
+        );
+        let rollback = result.rollback_sync_sql.unwrap();
+
+        assert!(rollback.contains("-- Recreate table from native target DDL: legacy_table"));
+        assert!(rollback.contains("CREATE TABLE \"archive\".\"legacy_table\" (\"id\" bigint PRIMARY KEY);"));
+        assert!(!rollback.contains("CREATE TABLE \"archive\".\"legacy_table\" (\n  \n)"), "{rollback}");
     }
 
     #[test]
