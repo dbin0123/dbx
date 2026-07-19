@@ -20,7 +20,7 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
-const toast = useToast();
+const { toast } = useToast();
 
 const editingMappings = ref<FieldMappingEntry[]>([]);
 const fileInputRef = ref<HTMLInputElement | null>(null);

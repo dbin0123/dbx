@@ -7,6 +7,7 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { useToast } from "@/composables/useToast";
 import { GitCompareArrows, ArrowLeft, Play, Loader2, Maximize2, Minimize2, AlertTriangle, CircleCheck, ChevronDown, ChevronRight } from "@lucide/vue";
 import * as api from "@/lib/backend/api";
+import { executeWithProductionSqlGuard } from "@/lib/database/productionExecutionGuard";
 import { useSchemaDiffConfig } from "@/composables/useSchemaDiffConfig";
 import SchemaDiffConfigStep from "@/components/diff/SchemaDiffConfigStep.vue";
 import FieldMappingDialog from "@/components/diff/FieldMappingDialog.vue";
@@ -761,11 +762,21 @@ async function onConfirmDeploy() {
   showConfirmDialog.value = false;
   executing.value = true;
   try {
-    const result = await api.executeScript(targetConnectionId.value, targetDatabase.value, deploySql.value, targetSchema.value);
+    const targetConnection = store.getConfig(targetConnectionId.value);
+    const failed = await executeWithProductionSqlGuard({
+      connection: targetConnection,
+      database: targetDatabase.value,
+      sql: deploySql.value,
+      source: t("production.sourceSchemaDiff"),
+      execute: async () => {
+        await api.executeScript(targetConnectionId.value, targetDatabase.value, deploySql.value, targetSchema.value);
+        return 0;
+      },
+    });
+    if (failed === undefined) return;
     deployResult.value = {
       success: true,
       message: t("diff.deploySuccess"),
-      affectedRows: result.affected_rows,
     };
     showResultDialog.value = true;
   } catch (e: any) {

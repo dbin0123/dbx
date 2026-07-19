@@ -2,8 +2,7 @@
 import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Clock, Layers, Loader2, SkipForward } from "@lucide/vue";
+import { AlertTriangle, Check, Clock, Layers, SkipForward } from "@lucide/vue";
 
 interface ConflictItem {
   objectName: string;

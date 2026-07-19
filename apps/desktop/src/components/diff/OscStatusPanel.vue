@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { Badge } from "@/components/ui/badge";
 import { AlertTriangle, CheckCircle, Clock, Hourglass, Loader2, XCircle } from "@lucide/vue";

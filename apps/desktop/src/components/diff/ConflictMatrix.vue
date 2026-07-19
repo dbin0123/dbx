@@ -47,7 +47,7 @@ const emit = defineEmits<{
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(c, i) in conflicts" :key="c.objectName" class="border-t" :class="c.autoResolvable ? 'bg-emerald-500/5' : 'bg-red-500/5'">
+            <tr v-for="c in conflicts" :key="c.objectName" class="border-t" :class="c.autoResolvable ? 'bg-emerald-500/5' : 'bg-red-500/5'">
               <td class="px-2 py-1.5 font-mono">{{ c.objectName }}</td>
               <td class="px-2 py-1.5">{{ c.conflictType }}</td>
               <td class="px-2 py-1.5 font-mono max-w-[200px] truncate" :title="c.sourceValue">{{ c.sourceValue }}</td>

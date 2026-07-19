@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { AlertTriangle, ShieldAlert } from "@lucide/vue";
 
@@ -58,7 +57,7 @@ const emit = defineEmits<{
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(v, i) in violations" :key="`${v.fileName}:${v.lineNumber}:${v.tagName}`" class="border-t">
+              <tr v-for="v in violations" :key="`${v.fileName}:${v.lineNumber}:${v.tagName}`" class="border-t">
                 <td class="px-2 py-1.5 font-mono">{{ v.fileName }}</td>
                 <td class="px-2 py-1.5">{{ v.lineNumber }}</td>
                 <td class="px-2 py-1.5 font-mono">{{ v.tagName }}</td>
