@@ -706,24 +706,43 @@ impl StateMachine {
 
     pub async fn transition(&self, key: &str, to: StateTransition) -> Result<StateEntry, String> {
         let state_key = format!("{STATE_KEY_PREFIX}{key}");
-        let raw = self.backend.load(&state_key).await?;
-        let mut entry: StateEntry = match raw {
-            Some(data) => serde_json::from_slice(&data).map_err(|e| e.to_string())?,
-            None => return Err(format!("State not found: {key}")),
-        };
+        let max_retries = 3;
 
-        let current = StateTransition::from_str(&entry.current_state)
-            .ok_or_else(|| format!("Invalid current state: {}", entry.current_state))?;
+        for attempt in 0..=max_retries {
+            let raw = self.backend.load(&state_key).await?;
+            let mut entry: StateEntry = match raw {
+                Some(data) => serde_json::from_slice(&data).map_err(|e| e.to_string())?,
+                None => return Err(format!("State not found: {key}")),
+            };
 
-        if !is_valid_transition(&current, &to) {
-            return Err(format!("Invalid transition: {} -> {}", current.as_str(), to.as_str()));
+            let current = StateTransition::from_str(&entry.current_state)
+                .ok_or_else(|| format!("Invalid current state: {}", entry.current_state))?;
+
+            if !is_valid_transition(&current, &to) {
+                return Err(format!("Invalid transition: {} -> {}", current.as_str(), to.as_str()));
+            }
+
+            let expected_version = entry.version;
+            entry.current_state = to.as_str().to_string();
+            entry.version += 1;
+
+            let success = self.compare_and_swap_state(key, expected_version, &entry).await?;
+            if success {
+                return Ok(entry);
+            }
+
+            if attempt < max_retries {
+                log::warn!(
+                    "CAS conflict for state key '{}' at version {}, retrying {}/{}",
+                    key,
+                    expected_version,
+                    attempt + 1,
+                    max_retries
+                );
+            }
         }
 
-        entry.current_state = to.as_str().to_string();
-        entry.version += 1;
-        let data = serde_json::to_vec(&entry).map_err(|e| e.to_string())?;
-        self.backend.save(&state_key, &data).await?;
-        Ok(entry)
+        Err(format!("CAS failed after {} retries for state key: {}", max_retries, key))
     }
 
     pub async fn get_state(&self, key: &str) -> Result<Option<StateEntry>, String> {
