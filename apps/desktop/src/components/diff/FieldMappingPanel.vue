@@ -5,8 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, Trash2, ArrowRight } from "@lucide/vue";
 import SearchableSelect from "@/components/ui/searchable-select/SearchableSelect.vue";
-import { listDialectDataTypes } from "@/lib/api";
-import { getDataTypeOptions } from "@/lib/tableStructureEditorState";
+import { getDataTypeOptions } from "@/lib/table/tableStructureEditorState";
 import { findPreset } from "@/lib/fieldMappingPresets";
 import type { FieldMappingEntry, FieldMappingParamStrategy } from "@/types/schemaDiff";
 
@@ -33,22 +32,12 @@ const availablePresets = computed(() => {
   return preset ? [preset] : [];
 });
 
-async function loadSourceTypes() {
-  try {
-    const types = await listDialectDataTypes(props.sourceDbType);
-    sourceTypeOptions.value = types.length > 0 ? types : getDataTypeOptions(props.sourceDbType as any);
-  } catch {
-    sourceTypeOptions.value = getDataTypeOptions(props.sourceDbType as any);
-  }
+function loadSourceTypes() {
+  sourceTypeOptions.value = getDataTypeOptions(props.sourceDbType as any);
 }
 
-async function loadTargetTypes() {
-  try {
-    const types = await listDialectDataTypes(props.targetDbType);
-    targetTypeOptions.value = types.length > 0 ? types : getDataTypeOptions(props.targetDbType as any);
-  } catch {
-    targetTypeOptions.value = getDataTypeOptions(props.targetDbType as any);
-  }
+function loadTargetTypes() {
+  targetTypeOptions.value = getDataTypeOptions(props.targetDbType as any);
 }
 
 function addMapping() {
@@ -102,16 +91,14 @@ onMounted(() => {
         <label class="text-[10px] font-medium text-muted-foreground mb-1 block">
           {{ t("diff.fieldMapping.preset") }}
         </label>
-        <SearchableSelect
-          :model-value="selectedPresetId"
-          @update:model-value="applyPreset"
-          :options="availablePresets.map((p) => p.id)"
-          :display-name="(id: string) => availablePresets.find((p) => p.id === id)?.label || id"
-          :placeholder="t('diff.fieldMapping.selectPreset')"
-          trigger-variant="outline"
-          trigger-class="h-8 w-full justify-between text-xs"
-          content-class="w-[var(--reka-popover-trigger-width)]"
-        />
+        <Select :model-value="selectedPresetId" @update:model-value="(v: any) => applyPreset(v)">
+          <SelectTrigger class="h-8 w-full text-xs">
+            <SelectValue :placeholder="t('diff.fieldMapping.selectPreset')" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem v-for="p in availablePresets" :key="p.id" :value="p.id">{{ p.label }}</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       <div v-if="mappings.length === 0" class="flex flex-col items-center justify-center py-6 gap-2">
@@ -153,7 +140,7 @@ onMounted(() => {
               content-class="w-[var(--reka-popover-trigger-width)]"
               allow-custom
             />
-            <Select :model-value="mapping.paramStrategy" @update:model-value="(v: FieldMappingParamStrategy) => updateMapping(i, 'paramStrategy', v)">
+            <Select :model-value="mapping.paramStrategy" @update:model-value="(v: any) => updateMapping(i, 'paramStrategy', v)">
               <SelectTrigger class="h-8 w-full text-xs">
                 <SelectValue />
               </SelectTrigger>

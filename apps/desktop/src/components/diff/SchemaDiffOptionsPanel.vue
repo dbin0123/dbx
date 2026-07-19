@@ -167,10 +167,10 @@ function getItemClasses(state: "checked" | "unchecked" | "indeterminate"): strin
         </div>
 
         <label class="pt-2 text-xs font-medium text-muted-foreground" for="schema-diff-source-dialect">{{ t("schemaDiff.options.sourceDialect") }}</label>
-        <input id="schema-diff-source-dialect" v-model="localOptions.sourceDialect" class="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring" placeholder="auto" />
+        <input id="schema-diff-source-dialect" v-model="localOptions.sourceDialect" class="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring" :placeholder="t('schemaDiff.options.dialectAuto')" />
 
         <label class="pt-2 text-xs font-medium text-muted-foreground" for="schema-diff-target-dialect">{{ t("schemaDiff.options.targetDialect") }}</label>
-        <input id="schema-diff-target-dialect" v-model="localOptions.targetDialect" class="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring" placeholder="auto" />
+        <input id="schema-diff-target-dialect" v-model="localOptions.targetDialect" class="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring" :placeholder="t('schemaDiff.options.dialectAuto')" />
 
         <div class="col-span-2 pt-3 pb-1 text-xs font-medium text-muted-foreground border-t mt-2">{{ t("schemaDiff.options.batchSection") }}</div>
 

@@ -1,16 +1,12 @@
 pub mod expression;
-pub mod governance;
+// governance disabled — storage methods not available at HEAD after main merge
+// pub mod governance;
 pub mod layer;
 pub mod tag;
 pub mod trace;
 
 pub use expression::{parse_expression, resolve_all_expressions_in_value, resolve_expression, Expression};
-pub use governance::{
-    compute_config_checksum, compute_config_checksum_for_layer, detect_drift, is_sensitive_domain,
-    requires_approval_for_change, ApprovalRecord, ApprovalStatus, AuditQuery, AuditSummary, ConfigApproval,
-    ConfigAuditEntry, ConfigAuditor, ConfigChecksum, ConfigSnapshot, ConfigVersionSnapshot, DriftAlert, DriftDetector,
-    DriftReport,
-};
+// pub use governance::{ ... };
 pub use layer::{ConfigLayer, ConfigTree, LayerConfig, MergedConfig};
 pub use tag::{
     BlockStats, BusinessTag, TagGuard, TagInheritanceWhitelist, TagPolicy, TagValidationResult, TagValidator,
