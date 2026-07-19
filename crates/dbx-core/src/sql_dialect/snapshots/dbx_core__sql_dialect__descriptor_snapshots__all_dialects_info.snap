@@ -349,8 +349,8 @@ expression: all
     "capabilities": [
       "add_column",
       "drop_column",
-      "create_index",
-      "drop_index",
+      "create_table",
+      "drop_table",
       "truncate_table",
       "auto_increment"
     ],

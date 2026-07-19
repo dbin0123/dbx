@@ -3209,9 +3209,13 @@ fn generate_schema_sync_sql_inner(
                     lines.push(format!("{};", ddl.trim_end_matches(';')));
                     lines.push(String::new());
                 }
-            } else if is_same_dialect || (source_dialect.is_none() && diff.ddl.is_some()) {
-                // With no source dialect, native DDL is the only reliable
-                // source when structured metadata is absent or incomplete.
+            } else if is_same_dialect
+                || (source_dialect.is_none()
+                    && diff.ddl.is_some()
+                    && (is_mysql_like(db_type) || !has_structured_snapshot))
+            {
+                // Preserve native MySQL-family DDL when the source is unknown,
+                // or use it as the last fallback when no structured snapshot exists.
                 if let Some(ddl) = &diff.ddl {
                     lines.push(format!("-- Create {}: {}", diff.object_type.as_deref().unwrap_or("table"), diff.name));
                     lines.push(format!("{};", ddl));
@@ -7806,36 +7810,8 @@ mod tests {
 
     // -- FieldMapping apply_with_params tests --
 
-    fn register_oracle_dialect() {
-        use crate::sql_dialect::descriptor::DialectCapabilityDescriptor;
-        use crate::sql_dialect::dialect_loader::DialectRegistry;
-        use crate::sql_dialect::dialect_yaml::{DialectMeta, DialectType, DialectYaml};
-
-        let yaml = DialectYaml {
-            dialect: DialectMeta {
-                name: "Oracle".to_string(),
-                display_name: Some("Oracle".to_string()),
-                versions: vec![],
-            },
-            types: vec![DialectType {
-                name: "VARCHAR2".to_string(),
-                category: "STRING".to_string(),
-                has_length: true,
-                aliases: vec![],
-                max_precision: Some(4000),
-                precision_range: None,
-                has_precision: false,
-                semantic_fidelity_base: 1.0,
-            }],
-            ..Default::default()
-        };
-        let descriptor = DialectCapabilityDescriptor { dialect: DialectKind::Oracle, ..Default::default() };
-        DialectRegistry::global().register_descriptor("oracle", descriptor, yaml);
-    }
-
     #[test]
     fn field_mapping_preserve_params() {
-        register_oracle_dialect();
         let mappings = vec![FieldMapping {
             source_type: "VARCHAR".into(),
             target_type: "VARCHAR2".into(),
