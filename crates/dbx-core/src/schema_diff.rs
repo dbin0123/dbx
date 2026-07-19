@@ -1672,8 +1672,8 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
         log::info!("  source_dialect={:?} target_dialect={:?}", options.source_dialect, options.target_dialect);
     }
 
-    let dialect_str = options.source_dialect.as_deref().unwrap_or("generic");
-    let options = AstTransmitFilter::filter_diff_preparation_options(options, dialect_str);
+    let dialect_str = options.source_dialect.map(|d| d.label().to_string()).unwrap_or_else(|| "generic".to_string());
+    let options = AstTransmitFilter::filter_diff_preparation_options(options, &dialect_str);
 
     let dep_graph = DependencyGraph::build(&options.source_details, &options.source_tables);
 
@@ -3095,21 +3095,17 @@ fn generate_create_table_sql(
         lines.push(String::new());
         lines.push(format!("-- Triggers for table: {} (review trigger definitions before executing)", name));
         for trigger in triggers {
-            lines.push(format!(
-                "-- Trigger {} {} on {}: {}",
-                trigger.name,
-                if trigger.event_type.to_uppercase().contains("INSERT") {
-                    "INSERT"
-                } else if trigger.event_type.to_uppercase().contains("UPDATE") {
-                    "UPDATE"
-                } else if trigger.event_type.to_uppercase().contains("DELETE") {
-                    "DELETE"
-                } else {
-                    &trigger.event_type
-                },
-                name,
-                trigger.definition
-            ));
+            let event_desc = if trigger.event.to_uppercase().contains("INSERT") {
+                "INSERT"
+            } else if trigger.event.to_uppercase().contains("UPDATE") {
+                "UPDATE"
+            } else if trigger.event.to_uppercase().contains("DELETE") {
+                "DELETE"
+            } else {
+                &trigger.event
+            };
+            let stmt = trigger.statement.as_deref().unwrap_or("-- trigger body not available");
+            lines.push(format!("-- Trigger {} {} on {}: {}", trigger.name, event_desc, name, stmt));
         }
     }
 
