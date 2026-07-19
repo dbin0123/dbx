@@ -248,7 +248,8 @@ expression: all
       "alter_owner",
       "grant_revoke",
       "if_not_exists",
-      "temporary_table"
+      "temporary_table",
+      "identity_columns"
     ],
     "max_identifier_length": 30,
     "supports_schemas": true,
@@ -345,7 +346,8 @@ expression: all
       "drop_column",
       "create_table",
       "drop_table",
-      "truncate_table"
+      "truncate_table",
+      "auto_increment"
     ],
     "max_identifier_length": 256,
     "supports_schemas": false,

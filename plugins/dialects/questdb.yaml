@@ -54,6 +54,8 @@ ddl_capabilities:
   drop_column: true
   rename_column: true
   alter_column_type: true
+  create_index: false
+  drop_index: false
   create_table: true
   drop_table: true
   truncate_table: true

@@ -88,7 +88,7 @@ fn default_fidelity() -> f64 {
     1.0
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DdlCapabilitiesYaml {
     #[serde(default = "default_true")]
     pub add_column: bool,
@@ -160,6 +160,83 @@ pub struct DdlCapabilitiesYaml {
 
 fn default_true() -> bool {
     true
+}
+
+impl Default for DdlCapabilitiesYaml {
+    fn default() -> Self {
+        Self {
+            add_column: true,
+            drop_column: true,
+            rename_column: false,
+            alter_column_type: false,
+            reorder_column: false,
+            comment: false,
+            create_index: true,
+            drop_index: true,
+            rebuild_index: false,
+            index_type: false,
+            index_include: false,
+            index_filter: false,
+            index_comment: false,
+            alter_primary_key: false,
+            foreign_key: false,
+            create_table: true,
+            drop_table: true,
+            truncate_table: false,
+            create_trigger: false,
+            drop_trigger: false,
+            create_function: false,
+            drop_function: false,
+            create_sequence: false,
+            drop_sequence: false,
+            alter_owner: false,
+            grant_revoke: false,
+            if_not_exists: false,
+            create_or_replace: false,
+            temporary_table: false,
+            transactional_ddl: false,
+            auto_increment: false,
+            identity_columns: false,
+            templates: DdlTemplatesYaml::default(),
+        }
+    }
+}
+
+impl DdlCapabilitiesYaml {
+    fn apply_descriptor_flags(&mut self, flags: u64) {
+        self.add_column = flags & CAP_ADD_COLUMN != 0;
+        self.drop_column = flags & CAP_DROP_COLUMN != 0;
+        self.rename_column = flags & CAP_RENAME_COLUMN != 0;
+        self.alter_column_type = flags & CAP_ALTER_EXISTING_COLUMN != 0;
+        self.reorder_column = flags & CAP_REORDER_COLUMN != 0;
+        self.comment = flags & CAP_COMMENT != 0;
+        self.create_index = flags & CAP_CREATE_INDEX != 0;
+        self.drop_index = flags & CAP_DROP_INDEX != 0;
+        self.rebuild_index = flags & CAP_REBUILD_INDEX != 0;
+        self.index_type = flags & CAP_INDEX_TYPE != 0;
+        self.index_include = flags & CAP_INDEX_INCLUDE != 0;
+        self.index_filter = flags & CAP_INDEX_FILTER != 0;
+        self.index_comment = flags & CAP_INDEX_COMMENT != 0;
+        self.alter_primary_key = flags & CAP_ALTER_PRIMARY_KEY != 0;
+        self.foreign_key = flags & CAP_FOREIGN_KEY != 0;
+        self.create_table = flags & CAP_CREATE_TABLE != 0;
+        self.drop_table = flags & CAP_DROP_TABLE != 0;
+        self.truncate_table = flags & CAP_TRUNCATE_TABLE != 0;
+        self.create_trigger = flags & CAP_CREATE_TRIGGER != 0;
+        self.drop_trigger = flags & CAP_DROP_TRIGGER != 0;
+        self.create_function = flags & CAP_CREATE_FUNCTION != 0;
+        self.drop_function = flags & CAP_DROP_FUNCTION != 0;
+        self.create_sequence = flags & CAP_CREATE_SEQUENCE != 0;
+        self.drop_sequence = flags & CAP_DROP_SEQUENCE != 0;
+        self.alter_owner = flags & CAP_ALTER_OWNER != 0;
+        self.grant_revoke = flags & CAP_GRANT_REVOKE != 0;
+        self.if_not_exists = flags & CAP_IF_NOT_EXISTS != 0;
+        self.create_or_replace = flags & CAP_CREATE_OR_REPLACE != 0;
+        self.temporary_table = flags & CAP_TEMPORARY_TABLE != 0;
+        self.transactional_ddl = flags & CAP_TRANSACTIONAL_DDL != 0;
+        self.auto_increment = flags & CAP_AUTO_INCREMENT != 0;
+        self.identity_columns = flags & CAP_IDENTITY_COLUMNS != 0;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -616,7 +693,7 @@ impl DialectYaml {
     }
 
     pub fn from_descriptor_with_caps(kind: DialectKind, desc: &DialectCapabilityDescriptor) -> Self {
-        let (versions, ddl_caps) = match kind {
+        let (versions, mut ddl_caps) = match kind {
             DialectKind::Mysql => (
                 vec![
                     DialectVersion { version: "8.0".to_string(), status: "RECOMMENDED".to_string() },
@@ -812,6 +889,10 @@ impl DialectYaml {
             ),
         };
 
+        // Export must preserve the canonical descriptor exactly; the
+        // hard-coded blocks above only provide human-friendly templates.
+        ddl_caps.apply_descriptor_flags(desc.flags);
+
         let identifier_rules = match kind {
             DialectKind::Mysql => IdentifierRules {
                 quote_char: "`".to_string(),
@@ -963,6 +1044,20 @@ identifier_rules:
         assert_eq!(parsed.identifier_rules.quote_char, "`");
         assert_eq!(parsed.identifier_rules.max_length, 64);
         assert!(parsed.is_valid());
+    }
+
+    #[test]
+    fn ddl_capability_default_matches_serde_defaults() {
+        let from_default = DdlCapabilitiesYaml::default();
+        let from_yaml: DdlCapabilitiesYaml = serde_yaml::from_str("{}").unwrap();
+
+        assert_eq!(DialectYaml::build_capability_flags(&from_default), DialectYaml::build_capability_flags(&from_yaml));
+        assert!(from_default.add_column);
+        assert!(from_default.drop_column);
+        assert!(from_default.create_index);
+        assert!(from_default.drop_index);
+        assert!(from_default.create_table);
+        assert!(from_default.drop_table);
     }
 
     #[test]
@@ -1198,6 +1293,10 @@ identifier_rules:
     fn from_descriptor_postgres_roundtrip() {
         let yaml = DialectYaml::from_descriptor(DialectKind::Postgres);
         assert_eq!(yaml.dialect.name, "PostgreSQL");
+        assert!(yaml.ddl_capabilities.add_column);
+        assert!(yaml.ddl_capabilities.drop_column);
+        assert!(yaml.ddl_capabilities.create_table);
+        assert!(yaml.ddl_capabilities.drop_table);
         assert!(yaml.ddl_capabilities.transactional_ddl);
         assert!(yaml.ddl_capabilities.identity_columns);
         assert_eq!(yaml.identifier_rules.quote_char, "\"");
@@ -1220,9 +1319,9 @@ identifier_rules:
             let yaml_str = yaml.to_yaml_string().unwrap();
             let parsed: DialectYaml = serde_yaml::from_str(&yaml_str).unwrap();
             let desc = parsed.to_descriptor(*kind);
+            let expected = DialectCapabilityDescriptor::for_dialect(*kind);
             assert_eq!(desc.dialect, *kind);
-            assert!(desc.has_capability(CAP_CREATE_TABLE));
-            assert!(desc.has_capability(CAP_DROP_TABLE));
+            assert_eq!(desc.flags, expected.flags, "capabilities changed for {kind:?}");
         }
     }
 

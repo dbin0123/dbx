@@ -28,9 +28,12 @@ types:
 ddl_capabilities:
   add_column: true
   drop_column: true
+  create_index: false
+  drop_index: false
   create_table: true
   drop_table: true
   truncate_table: true
+  auto_increment: true
   templates:
     add_column: "ALTER TABLE {table} ADD COLUMN {column} {type}"
     drop_column: "ALTER TABLE {table} DROP COLUMN {column}"
