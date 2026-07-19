@@ -42,6 +42,10 @@ impl DmlCleanRule {
         let rule_tgt = normalize_type(&self.target_type);
         src_norm == rule_src && tgt_norm == rule_tgt
     }
+
+    fn applies(&self, source_type: &str, target_type: &str, fidelity: f64) -> bool {
+        self.matches(source_type, target_type) && fidelity < self.max_fidelity
+    }
 }
 
 fn normalize_type(t: &str) -> String {
@@ -132,6 +136,22 @@ impl BindingEngine {
         let tgt_parsed = ColumnType::parse(target_type);
         let fidelity = engine.type_compatibility_score(&src_parsed, &tgt_parsed);
 
+        if let Ok(registry) = DmlCleanRuleRegistry::global().read() {
+            if let Some(rule) = registry.find_rule(source_type, target_type) {
+                // A pair-specific rule owns its fidelity boundary; the caller
+                // threshold remains the fallback for mappings without a rule.
+                if rule.applies(source_type, target_type, fidelity) {
+                    return BindingResult {
+                        source_type: source_type.to_string(),
+                        target_type: target_type.to_string(),
+                        fidelity,
+                        pre_transform_sql: rule.transform_sql(table, column),
+                        rule_name: Some(rule.name.clone()),
+                    };
+                }
+            }
+        }
+
         if fidelity >= threshold {
             return BindingResult {
                 source_type: source_type.to_string(),
@@ -140,18 +160,6 @@ impl BindingEngine {
                 pre_transform_sql: None,
                 rule_name: None,
             };
-        }
-
-        if let Ok(registry) = DmlCleanRuleRegistry::global().read() {
-            if let Some(rule) = registry.find_rule(source_type, target_type) {
-                return BindingResult {
-                    source_type: source_type.to_string(),
-                    target_type: target_type.to_string(),
-                    fidelity,
-                    pre_transform_sql: rule.transform_sql(table, column),
-                    rule_name: Some(rule.name.clone()),
-                };
-            }
         }
 
         BindingResult {
@@ -348,7 +356,7 @@ mod tests {
                 name: "bigint_to_int".to_string(),
                 source_type: "BIGINT".to_string(),
                 target_type: "INT".to_string(),
-                max_fidelity: 0.8,
+                max_fidelity: 0.9,
                 pre_transform_sql: Some("UPDATE {table} SET {column} = NULL WHERE {column} > 2147483647".to_string()),
                 description: None,
             }];
@@ -357,6 +365,31 @@ mod tests {
         let result = BindingEngine::bind("BIGINT", "INT", "users", "id", 0.81);
         assert!(result.pre_transform_sql.is_some());
         assert!(result.pre_transform_sql.unwrap().contains("2147483647"));
+    }
+
+    #[test]
+    fn rule_max_fidelity_boundary_is_exclusive() {
+        let rule = DmlCleanRule {
+            name: "boundary".to_string(),
+            source_type: "BIGINT".to_string(),
+            target_type: "INT".to_string(),
+            max_fidelity: 0.5,
+            pre_transform_sql: Some("SELECT 1".to_string()),
+            description: None,
+        };
+
+        assert!(rule.applies("BIGINT", "INT", 0.49));
+        assert!(!rule.applies("BIGINT", "INT", 0.5));
+    }
+
+    #[test]
+    fn default_rules_honor_configured_max_fidelity() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/mappings/rules/dml_clean_rules.yaml");
+        let rules = DmlCleanRuleRegistry::load(&path).unwrap();
+        let rule = rules.iter().find(|rule| rule.matches("BIGINT", "INT")).unwrap();
+
+        assert!(rule.applies("BIGINT", "INT", rule.max_fidelity - f64::EPSILON));
+        assert!(!rule.applies("BIGINT", "INT", rule.max_fidelity));
     }
 
     #[test]

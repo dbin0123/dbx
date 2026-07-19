@@ -202,6 +202,46 @@ fn default_true() -> bool {
     true
 }
 
+impl Default for DdlCapabilitiesYaml {
+    fn default() -> Self {
+        Self {
+            add_column: true,
+            drop_column: true,
+            rename_column: false,
+            alter_column_type: false,
+            reorder_column: false,
+            comment: false,
+            create_index: true,
+            drop_index: true,
+            rebuild_index: false,
+            index_type: false,
+            index_include: false,
+            index_filter: false,
+            index_comment: false,
+            alter_primary_key: false,
+            foreign_key: false,
+            create_table: true,
+            drop_table: true,
+            truncate_table: false,
+            create_trigger: false,
+            drop_trigger: false,
+            create_function: false,
+            drop_function: false,
+            create_sequence: false,
+            drop_sequence: false,
+            alter_owner: false,
+            grant_revoke: false,
+            if_not_exists: false,
+            create_or_replace: false,
+            temporary_table: false,
+            transactional_ddl: false,
+            auto_increment: false,
+            identity_columns: false,
+            templates: DdlTemplatesYaml::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DdlTemplatesYaml {
     #[serde(default)]
@@ -1006,6 +1046,20 @@ identifier_rules:
     }
 
     #[test]
+    fn ddl_capability_default_matches_serde_defaults() {
+        let from_default = DdlCapabilitiesYaml::default();
+        let from_yaml: DdlCapabilitiesYaml = serde_yaml::from_str("{}").unwrap();
+
+        assert_eq!(DialectYaml::build_capability_flags(&from_default), DialectYaml::build_capability_flags(&from_yaml));
+        assert!(from_default.add_column);
+        assert!(from_default.drop_column);
+        assert!(from_default.create_index);
+        assert!(from_default.drop_index);
+        assert!(from_default.create_table);
+        assert!(from_default.drop_table);
+    }
+
+    #[test]
     fn parse_mysql_with_capabilities() {
         let yaml = r#"
 dialect:
@@ -1238,6 +1292,10 @@ identifier_rules:
     fn from_descriptor_postgres_roundtrip() {
         let yaml = DialectYaml::from_descriptor(DialectKind::Postgres);
         assert_eq!(yaml.dialect.name, "PostgreSQL");
+        assert!(yaml.ddl_capabilities.add_column);
+        assert!(yaml.ddl_capabilities.drop_column);
+        assert!(yaml.ddl_capabilities.create_table);
+        assert!(yaml.ddl_capabilities.drop_table);
         assert!(yaml.ddl_capabilities.transactional_ddl);
         assert!(yaml.ddl_capabilities.identity_columns);
         assert_eq!(yaml.identifier_rules.quote_char, "\"");
