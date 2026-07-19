@@ -1,3 +1,4 @@
+use crate::sql_dialect::descriptor::DialectKind;
 use crate::sql_dialect::dialect_loader::DialectRegistry;
 
 pub fn list_dialect_type_names(dialect_name: &str) -> Vec<String> {
@@ -6,10 +7,19 @@ pub fn list_dialect_type_names(dialect_name: &str) -> Vec<String> {
 }
 
 fn list_dialect_type_names_in(dialect_name: &str, registry: &DialectRegistry) -> Vec<String> {
-    match registry.get(dialect_name) {
-        Some(loaded) => loaded.yaml.types.iter().map(|t| t.name.clone()).collect(),
-        None => Vec::new(),
+    // Try exact name match first
+    if let Some(loaded) = registry.get(dialect_name) {
+        return loaded.yaml.types.iter().map(|t| t.name.clone()).collect();
     }
+
+    // Fall back to kind-based lookup (same dialect family)
+    if let Some(kind) = DialectKind::from_label(dialect_name) {
+        if let Some(loaded) = registry.get_by_kind(kind) {
+            return loaded.yaml.types.iter().map(|t| t.name.clone()).collect();
+        }
+    }
+
+    Vec::new()
 }
 
 #[cfg(test)]
