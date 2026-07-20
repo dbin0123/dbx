@@ -499,48 +499,62 @@ pub async fn execute_script_with_2pc(
     tracing::debug!(connection_id = %req.connection_id, "execute_script_with_2pc");
     use dbx_core::state_persistence::LocalBackend;
     use dbx_core::two_phase_commit::{FnParticipant, Participant, TwoPhaseCommit};
-    use std::sync::Arc as StdArc;
 
-    let backend = StdArc::new(LocalBackend::new(StdArc::new(state.app.storage.clone())));
+    let app = state.app.clone();
+    let backend = Arc::new(LocalBackend::new(Arc::new(app.storage.clone())));
     let coordinator = TwoPhaseCommit::new(backend);
 
-    let mut participants: Vec<StdArc<dyn Participant>> = Vec::new();
+    let mut participants: Vec<Arc<dyn Participant>> = Vec::new();
     for (i, stmt) in req.statements.iter().enumerate() {
-        let cid = req.connection_id.clone();
-        let db = req.database.clone();
-        let sql = stmt.clone();
-        let sch = req.schema.clone();
-        let app_state = state.app.clone();
+        let cid_prepare = req.connection_id.clone();
+        let db_prepare = req.database.clone();
+        let sql_prepare = stmt.clone();
+        let sch_prepare = req.schema.clone();
+        let app_prepare = app.clone();
+
+        let cid_commit = req.connection_id.clone();
+        let db_commit = req.database.clone();
+        let sql_commit = stmt.clone();
+        let sch_commit = req.schema.clone();
+        let app_commit = app.clone();
 
         let participant = FnParticipant::new(
             format!("stmt_{i}"),
             format!("Statement {i}"),
             "database".to_string(),
             move || {
-                let cid = cid.clone();
-                let db = db.clone();
-                let app_state = app_state.clone();
-                Box::pin(async move {
-                    dbx_core::query::execute_statements(&app_state, &cid, &db, &[sql.clone()], sch.as_deref(), None)
-                        .await
-                        .map(|_| ())
-                        .map_err(|e| format!("Prepare error: {e}"))
+                Box::pin({
+                    let cid = cid_prepare.clone();
+                    let db = db_prepare.clone();
+                    let sql = sql_prepare.clone();
+                    let sch = sch_prepare.clone();
+                    let app = app_prepare.clone();
+                    async move {
+                        dbx_core::query::execute_statements(&app, &cid, &db, &[sql], sch.as_deref(), None)
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| format!("Prepare error: {e}"))
+                    }
                 })
             },
             move || {
-                let cid = cid.clone();
-                let db = db.clone();
-                let app_state = app_state.clone();
-                Box::pin(async move {
-                    dbx_core::query::execute_statements(&app_state, &cid, &db, &[sql.clone()], sch.as_deref(), None)
-                        .await
-                        .map(|_| ())
-                        .map_err(|e| format!("Commit error: {e}"))
+                Box::pin({
+                    let cid = cid_commit.clone();
+                    let db = db_commit.clone();
+                    let sql = sql_commit.clone();
+                    let sch = sch_commit.clone();
+                    let app = app_commit.clone();
+                    async move {
+                        dbx_core::query::execute_statements(&app, &cid, &db, &[sql], sch.as_deref(), None)
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| format!("Commit error: {e}"))
+                    }
                 })
             },
             || Box::pin(async { Ok(()) }),
         );
-        participants.push(StdArc::new(participant));
+        participants.push(Arc::new(participant));
     }
 
     let tx_id = format!("2pc_{}", uuid::Uuid::new_v4());
