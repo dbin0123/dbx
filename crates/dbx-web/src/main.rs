@@ -204,7 +204,7 @@ async fn main() {
         register_core_dialects();
         let registry = DialectRegistry::global();
         let plugin_dirs = vec![data_dir.join("plugins").join("dialects")];
-        let load_result = DialectPluginLoader::scan_and_load(&registry, &plugin_dirs);
+        let load_result = DialectPluginLoader::scan_and_load(registry, &plugin_dirs);
         log::info!(
             "Dialect plugins loaded: {} success, {} errors, {} skipped",
             load_result.loaded.len(),

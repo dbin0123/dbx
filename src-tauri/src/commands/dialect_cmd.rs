@@ -5,6 +5,7 @@ use dbx_core::sql_dialect::{
 };
 
 #[tauri::command]
+#[allow(dead_code)]
 pub fn dialect_check_command(kind: String) -> Result<DialectInfo, String> {
     let db_type = match kind.to_ascii_lowercase().as_str() {
         "mysql" => DialectKind::Mysql,
@@ -24,11 +25,13 @@ pub fn dialect_check_command(kind: String) -> Result<DialectInfo, String> {
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub fn dialect_check_all_command() -> Vec<DialectInfo> {
     dialect_check_all()
 }
 
 #[derive(serde::Serialize)]
+#[allow(dead_code)]
 pub struct DialectExportResult {
     pub files_written: Vec<String>,
     pub errors: Vec<String>,
@@ -37,6 +40,7 @@ pub struct DialectExportResult {
 /// Export all hardcoded dialect descriptors to YAML files.
 /// Writes to `plugins/dialects/<label>.yaml` for each core dialect.
 #[tauri::command]
+#[allow(dead_code)]
 pub fn dialect_export_command(target_dir: Option<String>) -> DialectExportResult {
     let dir = target_dir.filter(|d| !d.is_empty()).unwrap_or_else(|| "plugins/dialects".to_string());
     let dir_path = PathBuf::from(&dir);
@@ -85,6 +89,7 @@ pub fn dialect_export_command(target_dir: Option<String>) -> DialectExportResult
 /// Initialize a new dialect YAML descriptor with minimal required fields.
 /// This creates a skeleton YAML file at `plugins/dialects/<label>.yaml`.
 #[tauri::command]
+#[allow(dead_code)]
 pub fn dialect_init_command(
     name: String,
     _display_name: Option<String>,
@@ -111,12 +116,11 @@ pub fn dialect_init_command(
         r#"dialect:
   name: "{name}"
   display_name: "{name}"
-{versions}
+  versions: ""
 identifier_rules:
   quote_char: "{quote}"
   max_length: {max_len}
 "#,
-        versions = if name == name.to_uppercase() { "".to_string() } else { "".to_string() }
     );
 
     std::fs::write(&file_path, &content).map_err(|e| format!("Failed to write {file_name}: {e}"))?;

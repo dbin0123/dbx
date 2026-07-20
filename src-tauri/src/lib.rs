@@ -951,7 +951,7 @@ pub fn run() {
             register_core_dialects();
             let registry = DialectRegistry::global();
             let plugin_dirs = vec![data_dir.join("plugins").join("dialects")];
-            let load_result = DialectPluginLoader::scan_and_load(&registry, &plugin_dirs);
+            let load_result = DialectPluginLoader::scan_and_load(registry, &plugin_dirs);
             eprintln!(
                 "[STARTUP] dialect plugins loaded: {} success, {} errors, {} skipped in {:?}",
                 load_result.loaded.len(),
