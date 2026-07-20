@@ -367,6 +367,7 @@ impl Storage {
             ensure_saved_sql_columns_sync(conn)?;
             ensure_tab_runtime_cache_columns_sync(conn)?;
             ensure_ai_configs_columns_sync(conn)?;
+            ensure_state_store_columns_sync(conn)?;
             Ok(())
         })
     }
@@ -535,6 +536,15 @@ fn ensure_table_columns(conn: &Connection, table_name: &str, columns: &[(&str, &
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+fn ensure_state_store_columns_sync(conn: &Connection) -> Result<(), String> {
+    const COLUMNS: &[(&str, &str)] = &[
+        ("value", "BLOB NOT NULL DEFAULT (x'')"),
+        ("content_type", "TEXT NOT NULL DEFAULT 'application/octet-stream'"),
+        ("version", "INTEGER NOT NULL DEFAULT 1"),
+    ];
+    ensure_table_columns(conn, "state_store", COLUMNS)
 }
 
 fn ssh_tunnel_secret_segment(index: usize, hop: &crate::models::connection::SshTunnelConfig) -> String {
