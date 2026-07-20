@@ -545,13 +545,9 @@ fn ensure_state_store_columns_sync(conn: &Connection) -> Result<(), String> {
         ("value", "BLOB NOT NULL DEFAULT (x'')"),
         ("content_type", "TEXT NOT NULL DEFAULT 'application/octet-stream'"),
         ("version", "INTEGER NOT NULL DEFAULT 1"),
+        ("payload", "BLOB DEFAULT (x'')"),
     ];
-    if let Err(e) = ensure_table_columns(conn, "state_store", COLUMNS) {
-        log::warn!("state_store migration failed, rebuilding table: {e}");
-        let _ = conn.execute("DROP TABLE IF EXISTS state_store", []);
-        conn.execute("CREATE TABLE IF NOT EXISTS state_store (key TEXT PRIMARY KEY, value BLOB NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/octet-stream', version INTEGER NOT NULL DEFAULT 1)", []).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    ensure_table_columns(conn, "state_store", COLUMNS)
 }
 
 fn ssh_tunnel_secret_segment(index: usize, hop: &crate::models::connection::SshTunnelConfig) -> String {
