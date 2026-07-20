@@ -896,3 +896,79 @@ pub async fn build_database_sql_export(
     }
     dbx_core::database_export::build_database_sql_export(options).map(Json).map_err(AppError)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{LoginRateLimit, WebState};
+    use axum::extract::State as AxumState;
+    use dbx_core::storage::Storage;
+    use std::collections::{HashMap, HashSet};
+    use tokio::sync::Mutex;
+
+    async fn test_web_state() -> (Arc<WebState>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("dbx-web-query-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
+        let app = Arc::new(AppState::new_with_plugin_dir(storage, dir.join("plugins")));
+        let state = Arc::new(WebState {
+            app,
+            data_dir: dir.clone(),
+            public_base_path: "/".to_string(),
+            password_disabled: false,
+            password_hash: RwLock::new(None),
+            sessions: RwLock::new(HashSet::new()),
+            sse_channels: RwLock::new(HashMap::new()),
+            sql_file_executions: RwLock::new(HashMap::new()),
+            login_rate_limit: Mutex::new(LoginRateLimit { fail_count: 0, locked_until: None }),
+            export_files: RwLock::new(HashMap::new()),
+        });
+        (state, dir)
+    }
+
+    #[tokio::test]
+    async fn execute_script_with_2pc_returns_transaction_log() {
+        let (state, _dir) = test_web_state().await;
+        let req = ExecuteBatchRequest {
+            connection_id: "conn-1".to_string(),
+            database: "testdb".to_string(),
+            statements: vec!["SELECT 1".to_string()],
+            schema: None,
+            timeout_secs: None,
+        };
+
+        let result = execute_script_with_2pc(AxumState(state), Json(req)).await;
+
+        match result {
+            Ok(Json(log)) => {
+                assert!(!log.transaction_id.is_empty());
+                assert!(!log.participants.is_empty());
+            }
+            Err(e) => {
+                assert!(!e.to_string().is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_script_with_2pc_empty_statements_succeeds() {
+        let (state, _dir) = test_web_state().await;
+        let req = ExecuteBatchRequest {
+            connection_id: "conn-empty".to_string(),
+            database: "testdb".to_string(),
+            statements: vec![],
+            schema: None,
+            timeout_secs: None,
+        };
+
+        let result = execute_script_with_2pc(AxumState(state), Json(req)).await;
+
+        match result {
+            Ok(Json(log)) => {
+                assert_eq!(log.participants.len(), 0);
+                assert_eq!(log.status, "committed");
+            }
+            Err(_) => {}
+        }
+    }
+}

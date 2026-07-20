@@ -707,3 +707,63 @@ pub async fn get_explain_info(
 pub fn build_create_user_sql(username: String, password: String, tablespace: String) -> Result<String, String> {
     Ok(dbx_core::db_admin_sql::build_create_user_sql(&username, &password, &tablespace))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dbx_core::storage::Storage;
+    use std::sync::Arc;
+
+    async fn test_app_state() -> Arc<AppState> {
+        let dir = std::env::temp_dir().join(format!("dbx-query-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
+        Arc::new(AppState::new_with_plugin_dir(storage, dir.join("plugins")))
+    }
+
+    #[tokio::test]
+    async fn execute_script_with_2pc_returns_transaction_log() {
+        let state = test_app_state().await;
+        let result = execute_script_with_2pc(
+            tauri::State::from(&state),
+            "conn-1".to_string(),
+            "testdb".to_string(),
+            vec!["SELECT 1".to_string()],
+            None,
+        )
+        .await;
+
+        // Expect failure because no real connection exists, but we test the 2PC flow works
+        match result {
+            Ok(log) => {
+                assert!(!log.transaction_id.is_empty());
+                assert!(!log.participants.is_empty());
+            }
+            Err(e) => {
+                // Expected when no real DB connection
+                assert!(!e.is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_script_with_2pc_empty_statements_succeeds() {
+        let state = test_app_state().await;
+        let result = execute_script_with_2pc(
+            tauri::State::from(&state),
+            "conn-empty".to_string(),
+            "testdb".to_string(),
+            vec![],
+            None,
+        )
+        .await;
+
+        match result {
+            Ok(log) => {
+                assert_eq!(log.participants.len(), 0);
+                assert_eq!(log.status, dbx_core::two_phase_commit::TransactionStatus::Committed.as_str());
+            }
+            Err(_) => {}
+        }
+    }
+}

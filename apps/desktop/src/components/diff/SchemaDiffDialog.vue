@@ -17,6 +17,7 @@ import SchemaDiffDeployStep from "@/components/diff/SchemaDiffDeployStep.vue";
 import SchemaDiffOptionsPanel from "@/components/diff/SchemaDiffOptionsPanel.vue";
 
 import { getSchemaDiffOptionsForDbType } from "@/lib/schema/schemaDiffOptions";
+import { buildDeployTxResult } from "@/lib/schema/deployTxResult";
 import { createConcurrencyLimiter, mapWithConcurrency, schemaDiffMetadataConcurrency } from "@/lib/schema/schemaDiffMetadataLoad";
 import { normalizeSchemaDiffCompareOptions } from "@/types/schemaDiff";
 import type { SchemaDiffCompareOptions, SchemaDiffConfig, FieldMappingEntry } from "@/types/schemaDiff";
@@ -647,20 +648,7 @@ async function handleExecuteScript() {
 }
 
 function showDeployTxResult(txLog: any) {
-  const status = txLog?.status;
-  if (status === "committed") {
-    deployResult.value = { success: true, status, message: t("diff.executeSuccess") };
-  } else if (status === "mixed") {
-    deployResult.value = {
-      success: false,
-      status,
-      message: t("diff.deployMixed", { participants: txLog?.participants?.length ?? 0 }),
-    };
-  } else if (status === "rolled_back") {
-    deployResult.value = { success: false, status, message: t("diff.deployRolledBack") };
-  } else {
-    deployResult.value = { success: false, status, message: t("diff.deployFailed", { status: status || "unknown" }) };
-  }
+  deployResult.value = buildDeployTxResult(txLog, t);
   showResultDialog.value = true;
 }
 async function handleSelectObject(obj: SchemaDiffObject) {
