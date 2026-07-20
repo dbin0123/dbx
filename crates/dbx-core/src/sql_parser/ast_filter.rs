@@ -279,12 +279,10 @@ mod tests {
             "CREATE PROCEDURE test_proc() AS LANGUAGE SQL BEGIN ATOMIC SELECT 1; END",
             "postgres",
         );
-        match result {
-            Ok(r) => {
-                assert!(r.allowed.is_empty());
-                assert!(!r.denied.is_empty());
-            }
-            Err(_) => {} // parse failure on some platforms is acceptable
+        // parse failure on some platforms is acceptable
+        if let Ok(r) = result {
+            assert!(r.allowed.is_empty());
+            assert!(!r.denied.is_empty());
         }
     }
 

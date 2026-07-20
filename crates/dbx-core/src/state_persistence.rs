@@ -1351,8 +1351,8 @@ mod tests {
 
     #[test]
     fn hex_encoding() {
-        assert_eq!(hex(&[0x00, 0xFF, 0xAB]), "00ffab");
-        assert_eq!(hex(&[]), "");
+        assert_eq!(hex([0x00, 0xFF, 0xAB]), "00ffab");
+        assert_eq!(hex([] as [u8; 0]), "");
     }
 
     // --- Constant time eq test ---
