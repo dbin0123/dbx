@@ -21,9 +21,5 @@ mod tests {
         let Json(types) =
             list_data_types(Query(DialectDataTypesQuery { dialect_name: "PostgreSQL".to_string() })).await;
         assert!(!types.is_empty(), "Expected non-empty types, got {types:?}");
-
-        for t in &types {
-            eprintln!("PG type: {t}");
-        }
     }
 }

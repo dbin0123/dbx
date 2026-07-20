@@ -234,17 +234,36 @@ fn append_table_schema_step(
         _ => CorrectionRiskLevel::Safe,
     };
 
+    let has_incomplete_triggers = table_diff
+        .triggers
+        .as_ref()
+        .is_some_and(|triggers| triggers.iter().any(|t| t.source.as_ref().is_some_and(|s| s.statement.is_none())));
+
     let rollback_sql = if options.include_rollback {
         match table_diff.diff_type.as_str() {
             "added" => Some(format!("DROP TABLE IF EXISTS {};", tbl_name)),
             "removed" => {
-                // For dropped tables, the rollback would recreate the table
-                // Use native DDL if available, otherwise mark as requiring manual intervention
-                table_diff.target_ddl.as_ref().map(|ddl| ddl.clone()).or_else(|| {
-                    Some(format!(
-                        "-- Manual rollback required: recreate table {} with original DDL",
-                        tbl_name
-                    ))
+                table_diff.target_ddl.as_ref().map(|ddl| {
+                    if has_incomplete_triggers {
+                        format!(
+                            "-- WARNING: Rollback DDL is INCOMPLETE — trigger bodies could not be reconstructed.\n-- Manual review required. Original DDL:\n{}",
+                            ddl
+                        )
+                    } else {
+                        ddl.clone()
+                    }
+                }).or_else(|| {
+                    if has_incomplete_triggers {
+                        Some(format!(
+                            "-- WARNING: Rollback is INCOMPLETE — table '{}' had triggers that cannot be reconstructed.\n-- Manual intervention required before executing.",
+                            tbl_name
+                        ))
+                    } else {
+                        Some(format!(
+                            "-- Manual rollback required: recreate table {} with original DDL",
+                            tbl_name
+                        ))
+                    }
                 })
             }
             "modified" => table_diff.sync_sql.as_ref().map(|s| format!("-- Rollback: {}", s)),
@@ -252,6 +271,21 @@ fn append_table_schema_step(
         }
     } else {
         None
+    };
+
+    let rollback_risk = if has_incomplete_triggers {
+        CorrectionRiskLevel::Blocked
+    } else {
+        risk_level
+    };
+
+    let rollback_desc = if has_incomplete_triggers {
+        format!(
+            "INCOMPLETE Rollback for schema {} on table: {tbl_name} — trigger bodies cannot be reconstructed",
+            table_diff.diff_type
+        )
+    } else {
+        format!("Rollback for schema {} on table: {tbl_name}", table_diff.diff_type)
     };
 
     let sql = table_diff.sync_sql.clone().unwrap_or_else(|| format!("-- Schema change for table: {tbl_name}"));
@@ -266,7 +300,6 @@ fn append_table_schema_step(
         depends_on: Vec::new(),
     });
 
-    // Also add to rollback_steps if rollback SQL is available
     if let Some(rollback) = rollback_sql {
         rollback_steps.push(CorrectionStep {
             step_type: match table_diff.diff_type.as_str() {
@@ -277,8 +310,8 @@ fn append_table_schema_step(
             table_name: Some(tbl_name.to_string()),
             sql: rollback,
             rollback_sql: None,
-            description: format!("Rollback for schema {} on table: {tbl_name}", table_diff.diff_type),
-            risk_level,
+            description: rollback_desc,
+            risk_level: rollback_risk,
             depends_on: Vec::new(),
         });
     }

@@ -73,7 +73,7 @@ pub struct DialectType {
     #[serde(default)]
     pub max_precision: Option<u32>,
     #[serde(default)]
-    pub precision_range: Option<[u32; 2]>,
+    pub precision_range: Option<[i64; 2]>,
     #[serde(default)]
     pub has_length: bool,
     #[serde(default)]

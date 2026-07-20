@@ -3090,10 +3090,10 @@ fn generate_create_table_sql(
         }
     }
 
-    // Trigger recreation (requires manual review of trigger bodies)
+    // Trigger recreation
     if !triggers.is_empty() {
         lines.push(String::new());
-        lines.push(format!("-- Triggers for table: {} (review trigger definitions before executing)", name));
+        let mut incomplete_trigger = false;
         for trigger in triggers {
             let event_desc = if trigger.event.to_uppercase().contains("INSERT") {
                 "INSERT"
@@ -3104,8 +3104,67 @@ fn generate_create_table_sql(
             } else {
                 &trigger.event
             };
-            let stmt = trigger.statement.as_deref().unwrap_or("-- trigger body not available");
-            lines.push(format!("-- Trigger {} {} on {}: {}", trigger.name, event_desc, name, stmt));
+            let timing = &trigger.timing;
+
+            if let Some(stmt) = &trigger.statement {
+                if !stmt.trim().is_empty() {
+                    let create_trigger = match db_type {
+                        DatabaseType::Mysql | DatabaseType::ManticoreSearch => {
+                            format!(
+                                "CREATE TRIGGER {} {} {} ON {} FOR EACH ROW BEGIN\n{} END;",
+                                quote_id(&trigger.name, db_type),
+                                timing,
+                                event_desc,
+                                table,
+                                stmt
+                            )
+                        }
+                        DatabaseType::Postgres => {
+                            format!(
+                                "CREATE TRIGGER {} {} {} ON {} FOR EACH ROW EXECUTE FUNCTION {};",
+                                quote_id(&trigger.name, db_type),
+                                timing,
+                                event_desc,
+                                table,
+                                stmt.trim_end_matches(';')
+                            )
+                        }
+                        DatabaseType::SqlServer => {
+                            format!(
+                                "CREATE TRIGGER {} ON {} {} {} AS BEGIN {} END;",
+                                quote_id(&trigger.name, db_type),
+                                table,
+                                timing,
+                                event_desc,
+                                stmt
+                            )
+                        }
+                        _ => {
+                            format!(
+                                "CREATE TRIGGER {} {} {} ON {} FOR EACH ROW BEGIN {} END;",
+                                quote_id(&trigger.name, db_type),
+                                timing,
+                                event_desc,
+                                table,
+                                stmt
+                            )
+                        }
+                    };
+                    lines.push(create_trigger);
+                } else {
+                    incomplete_trigger = true;
+                }
+            } else {
+                incomplete_trigger = true;
+            }
+        }
+        if incomplete_trigger {
+            lines.push(String::new());
+            lines.push(format!(
+                "-- WARNING: Rollback DDL is INCOMPLETE — one or more triggers on table '{}' could not be reconstructed.",
+                name
+            ));
+            lines.push("-- Manual intervention required before executing this rollback script.".to_string());
         }
     }
 

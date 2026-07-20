@@ -7,19 +7,40 @@ pub fn list_dialect_type_names(dialect_name: &str) -> Vec<String> {
 }
 
 fn list_dialect_type_names_in(dialect_name: &str, registry: &DialectRegistry) -> Vec<String> {
-    // Try exact name match first
     if let Some(loaded) = registry.get(dialect_name) {
         return loaded.yaml.types.iter().map(|t| t.name.clone()).collect();
     }
 
-    // Fall back to kind-based lookup (same dialect family)
+    // Public callers may use stable dialect labels such as `postgres`,
+    // while the embedded catalog keeps the product name `PostgreSQL`.
     if let Some(kind) = DialectKind::from_label(dialect_name) {
+        if let Some(loaded) = registry.get(core_catalog_name(kind)) {
+            return loaded.yaml.types.iter().map(|t| t.name.clone()).collect();
+        }
+        // Last-resort fallback: any dialect in the same family
         if let Some(loaded) = registry.get_by_kind(kind) {
             return loaded.yaml.types.iter().map(|t| t.name.clone()).collect();
         }
     }
 
     Vec::new()
+}
+
+fn core_catalog_name(kind: DialectKind) -> &'static str {
+    match kind {
+        DialectKind::Mysql => "MySQL",
+        DialectKind::Postgres => "PostgreSQL",
+        DialectKind::Sqlite => "SQLite",
+        DialectKind::DuckDb => "DuckDB",
+        DialectKind::SqlServer => "SQL Server",
+        DialectKind::Oracle => "Oracle",
+        DialectKind::H2 => "H2",
+        DialectKind::ClickHouse => "ClickHouse",
+        DialectKind::ManticoreSearch => "ManticoreSearch",
+        DialectKind::Informix => "Informix",
+        DialectKind::Questdb => "QuestDB",
+        DialectKind::Unsupported => "Unsupported",
+    }
 }
 
 #[cfg(test)]
@@ -99,5 +120,15 @@ mod tests {
         let registry = DialectRegistry::new();
         let types = list_dialect_type_names_in("nonexistent_db", &registry);
         assert!(types.is_empty());
+    }
+
+    #[test]
+    fn lists_embedded_postgres_types_by_name_and_label() {
+        let by_name = list_dialect_type_names("PostgreSQL");
+        let by_label = list_dialect_type_names("postgres");
+
+        assert!(!by_name.is_empty());
+        assert_eq!(by_label, by_name);
+        assert!(by_name.contains(&"SMALLINT".to_string()));
     }
 }
