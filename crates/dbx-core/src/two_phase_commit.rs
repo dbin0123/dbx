@@ -192,7 +192,7 @@ impl TwoPhaseCommit {
                         .state_machine
                         .transition(&format!("2pc_{transaction_id}"), crate::state_persistence::StateTransition::Failed)
                         .await;
-                    Err(format!("Commit phase failed: {e}. Some participants committed. Status: {}", log.status));
+                    Err(format!("Commit phase failed: {e}. Some participants committed. Status: {}", log.status))
                 }
             }
         } else {

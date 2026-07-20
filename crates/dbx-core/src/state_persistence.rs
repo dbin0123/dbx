@@ -565,8 +565,8 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
         ipad[i] ^= k[i];
         opad[i] ^= k[i];
     }
-    let inner = Sha256::digest([ipad, data].concat());
-    let result = Sha256::digest([opad, &inner[..]].concat());
+    let inner = Sha256::digest([&ipad[..], data].concat());
+    let result = Sha256::digest([&opad[..], &inner[..]].concat());
     result.into()
 }
 
