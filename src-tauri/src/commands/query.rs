@@ -234,8 +234,7 @@ pub async fn execute_script_with_2pc(
     schema: Option<String>,
 ) -> Result<dbx_core::two_phase_commit::TransactionLog, String> {
     use std::sync::Arc as StdArc;
-    let storage = state.storage.clone();
-    let backend = StdArc::new(LocalBackend::new(storage));
+    let backend = StdArc::new(LocalBackend::new(Arc::new(state.storage.clone())));
     let coordinator = TwoPhaseCommit::new(backend);
 
     let mut participants: Vec<StdArc<dyn dbx_core::two_phase_commit::Participant>> = Vec::new();

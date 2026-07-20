@@ -501,8 +501,7 @@ pub async fn execute_script_with_2pc(
     use dbx_core::two_phase_commit::{FnParticipant, Participant, TwoPhaseCommit};
     use std::sync::Arc as StdArc;
 
-    let storage = state.app.storage.clone();
-    let backend = StdArc::new(LocalBackend::new(storage));
+    let backend = StdArc::new(LocalBackend::new(StdArc::new(state.app.storage.clone())));
     let coordinator = TwoPhaseCommit::new(backend);
 
     let mut participants: Vec<StdArc<dyn Participant>> = Vec::new();
