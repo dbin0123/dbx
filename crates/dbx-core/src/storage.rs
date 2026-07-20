@@ -345,7 +345,8 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         key TEXT PRIMARY KEY,
         value BLOB NOT NULL,
         content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
-        version INTEGER NOT NULL DEFAULT 1
+        version INTEGER NOT NULL DEFAULT 1,
+        payload BLOB DEFAULT (x'')
     )",
 ];
 
@@ -2309,10 +2310,10 @@ impl Storage {
         let content_type = content_type.to_string();
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO state_store (key, value, content_type, version) \
-                 VALUES (?1, ?2, ?3, 1) \
+                "INSERT INTO state_store (key, value, content_type, version, payload) \
+                 VALUES (?1, ?2, ?3, 1, x'') \
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value, content_type = excluded.content_type, \
-                 version = version + 1",
+                 version = version + 1, payload = excluded.payload",
                 params![key, value, content_type],
             )
             .map(|_| ())
@@ -2384,7 +2385,7 @@ impl Storage {
             match (current, expected_version) {
                 (None, None) => {
                     conn.execute(
-                        "INSERT INTO state_store (key, value, content_type, version) VALUES (?1, ?2, ?3, 1)",
+                        "INSERT INTO state_store (key, value, content_type, version, payload) VALUES (?1, ?2, ?3, 1, x'')",
                         params![key, new_value, content_type],
                     )
                     .map(|_| true)
