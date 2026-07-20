@@ -92,7 +92,7 @@ pub fn validate_sql_meta_consistency(sql: &str, meta: &MetaData) -> Vec<String> 
 fn charset_mentions_match(sql: &str, charset: &str, dialect: Option<&str>) -> bool {
     let sql_upper = sql.to_ascii_uppercase();
     let charset_upper = charset.to_ascii_uppercase();
-    let is_pg = dialect.map_or(false, |d| matches!(d.to_ascii_lowercase().as_str(), "postgres" | "postgresql"));
+    let is_pg = dialect.is_some_and(|d| matches!(d.to_ascii_lowercase().as_str(), "postgres" | "postgresql"));
     if is_pg {
         sql_upper.contains(&format!("ENCODING '{}'", charset_upper))
             || sql_upper.contains(&format!("ENCODING '{}'", charset_upper.to_ascii_lowercase()))

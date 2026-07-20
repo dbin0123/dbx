@@ -124,57 +124,57 @@ impl DegradationMetrics {
     }
 
     pub fn snapshot(&self) -> Vec<MetricEntry> {
-        let mut entries = Vec::new();
-
-        entries.push(MetricEntry {
-            name: "dbx_degradation_total".to_string(),
-            metric_type: MetricType::Counter,
-            description: "Total number of degradation decisions".to_string(),
-            labels: HashMap::new(),
-            value: MetricValue::Counter(self.degradation_total.load(Ordering::Relaxed)),
-        });
-        entries.push(MetricEntry {
-            name: "dbx_degradation_level_full".to_string(),
-            metric_type: MetricType::Counter,
-            description: "Number of full compare decisions".to_string(),
-            labels: HashMap::new(),
-            value: MetricValue::Counter(self.degradation_level_full.load(Ordering::Relaxed)),
-        });
-        entries.push(MetricEntry {
-            name: "dbx_degradation_level_sample".to_string(),
-            metric_type: MetricType::Counter,
-            description: "Number of sample compare decisions".to_string(),
-            labels: HashMap::new(),
-            value: MetricValue::Counter(self.degradation_level_sample.load(Ordering::Relaxed)),
-        });
-        entries.push(MetricEntry {
-            name: "dbx_degradation_level_skip".to_string(),
-            metric_type: MetricType::Counter,
-            description: "Number of skip-with-risk decisions".to_string(),
-            labels: HashMap::new(),
-            value: MetricValue::Counter(self.degradation_level_skip.load(Ordering::Relaxed)),
-        });
-        entries.push(MetricEntry {
-            name: "dbx_auto_upgrade_total".to_string(),
-            metric_type: MetricType::Counter,
-            description: "Number of automatic upgrades in degradation chain".to_string(),
-            labels: HashMap::new(),
-            value: MetricValue::Counter(self.auto_upgrade_total.load(Ordering::Relaxed)),
-        });
-        entries.push(MetricEntry {
-            name: "dbx_auto_downgrade_total".to_string(),
-            metric_type: MetricType::Counter,
-            description: "Number of automatic downgrades in degradation chain".to_string(),
-            labels: HashMap::new(),
-            value: MetricValue::Counter(self.auto_downgrade_total.load(Ordering::Relaxed)),
-        });
-        entries.push(MetricEntry {
-            name: "dbx_confidence_gauge".to_string(),
-            metric_type: MetricType::Gauge,
-            description: "Current confidence score".to_string(),
-            labels: HashMap::new(),
-            value: MetricValue::Gauge(*self.confidence_gauge.lock().unwrap_or_else(|e| e.into_inner())),
-        });
+        let mut entries = vec![
+            MetricEntry {
+                name: "dbx_degradation_total".to_string(),
+                metric_type: MetricType::Counter,
+                description: "Total number of degradation decisions".to_string(),
+                labels: HashMap::new(),
+                value: MetricValue::Counter(self.degradation_total.load(Ordering::Relaxed)),
+            },
+            MetricEntry {
+                name: "dbx_degradation_level_full".to_string(),
+                metric_type: MetricType::Counter,
+                description: "Number of full compare decisions".to_string(),
+                labels: HashMap::new(),
+                value: MetricValue::Counter(self.degradation_level_full.load(Ordering::Relaxed)),
+            },
+            MetricEntry {
+                name: "dbx_degradation_level_sample".to_string(),
+                metric_type: MetricType::Counter,
+                description: "Number of sample compare decisions".to_string(),
+                labels: HashMap::new(),
+                value: MetricValue::Counter(self.degradation_level_sample.load(Ordering::Relaxed)),
+            },
+            MetricEntry {
+                name: "dbx_degradation_level_skip".to_string(),
+                metric_type: MetricType::Counter,
+                description: "Number of skip-with-risk decisions".to_string(),
+                labels: HashMap::new(),
+                value: MetricValue::Counter(self.degradation_level_skip.load(Ordering::Relaxed)),
+            },
+            MetricEntry {
+                name: "dbx_auto_upgrade_total".to_string(),
+                metric_type: MetricType::Counter,
+                description: "Number of automatic upgrades in degradation chain".to_string(),
+                labels: HashMap::new(),
+                value: MetricValue::Counter(self.auto_upgrade_total.load(Ordering::Relaxed)),
+            },
+            MetricEntry {
+                name: "dbx_auto_downgrade_total".to_string(),
+                metric_type: MetricType::Counter,
+                description: "Number of automatic downgrades in degradation chain".to_string(),
+                labels: HashMap::new(),
+                value: MetricValue::Counter(self.auto_downgrade_total.load(Ordering::Relaxed)),
+            },
+            MetricEntry {
+                name: "dbx_confidence_gauge".to_string(),
+                metric_type: MetricType::Gauge,
+                description: "Current confidence score".to_string(),
+                labels: HashMap::new(),
+                value: MetricValue::Gauge(*self.confidence_gauge.lock().unwrap_or_else(|e| e.into_inner())),
+            },
+        ];
 
         // Phase 15.5: OSC and rollback metrics
         if let Ok(h) = self.osc_probe_latency.lock() {
@@ -188,34 +188,36 @@ impl DegradationMetrics {
                 });
             }
         }
-        entries.push(MetricEntry {
-            name: "dbx_osc_execution_status".to_string(),
-            metric_type: MetricType::Gauge,
-            description: "Current OSC execution status (0=idle, 1=running, 2=completed, -1=error)".to_string(),
-            labels: HashMap::new(),
-            value: MetricValue::Gauge(*self.osc_execution_gauge.lock().unwrap_or_else(|e| e.into_inner())),
-        });
-        entries.push(MetricEntry {
-            name: "dbx_rollback_trigger_total".to_string(),
-            metric_type: MetricType::Counter,
-            description: "Total number of rollback triggers".to_string(),
-            labels: HashMap::new(),
-            value: MetricValue::Counter(self.rollback_trigger_count.load(Ordering::Relaxed)),
-        });
-        entries.push(MetricEntry {
-            name: "dbx_tag_block_total".to_string(),
-            metric_type: MetricType::Counter,
-            description: "Total number of tag policy blocks".to_string(),
-            labels: HashMap::new(),
-            value: MetricValue::Counter(self.tag_block_count.load(Ordering::Relaxed)),
-        });
-        entries.push(MetricEntry {
-            name: "dbx_trace_dropped_total".to_string(),
-            metric_type: MetricType::Counter,
-            description: "Total number of dropped trace entries".to_string(),
-            labels: HashMap::new(),
-            value: MetricValue::Counter(self.trace_dropped_count.load(Ordering::Relaxed)),
-        });
+        entries.extend(vec![
+            MetricEntry {
+                name: "dbx_osc_execution_status".to_string(),
+                metric_type: MetricType::Gauge,
+                description: "Current OSC execution status (0=idle, 1=running, 2=completed, -1=error)".to_string(),
+                labels: HashMap::new(),
+                value: MetricValue::Gauge(*self.osc_execution_gauge.lock().unwrap_or_else(|e| e.into_inner())),
+            },
+            MetricEntry {
+                name: "dbx_rollback_trigger_total".to_string(),
+                metric_type: MetricType::Counter,
+                description: "Total number of rollback triggers".to_string(),
+                labels: HashMap::new(),
+                value: MetricValue::Counter(self.rollback_trigger_count.load(Ordering::Relaxed)),
+            },
+            MetricEntry {
+                name: "dbx_tag_block_total".to_string(),
+                metric_type: MetricType::Counter,
+                description: "Total number of tag policy blocks".to_string(),
+                labels: HashMap::new(),
+                value: MetricValue::Counter(self.tag_block_count.load(Ordering::Relaxed)),
+            },
+            MetricEntry {
+                name: "dbx_trace_dropped_total".to_string(),
+                metric_type: MetricType::Counter,
+                description: "Total number of dropped trace entries".to_string(),
+                labels: HashMap::new(),
+                value: MetricValue::Counter(self.trace_dropped_count.load(Ordering::Relaxed)),
+            },
+        ]);
 
         if let Ok(h) = self.sample_rate_histogram.lock() {
             entries.push(MetricEntry {

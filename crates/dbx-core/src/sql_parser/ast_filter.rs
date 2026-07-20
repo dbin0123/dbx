@@ -31,18 +31,13 @@ pub struct SandboxResult {
     pub stats: SandboxStats,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxMode {
     Permissive,
+    #[default]
     Strict,
     Isolation,
-}
-
-impl Default for SandboxMode {
-    fn default() -> Self {
-        SandboxMode::Strict
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,9 +126,7 @@ impl AstSandbox {
                     max_depth = max_depth.max(current);
                 }
                 ')' => {
-                    if current > 0 {
-                        current -= 1;
-                    }
+                    current = current.saturating_sub(1);
                 }
                 _ => {}
             }
@@ -169,12 +162,10 @@ impl AstTransmitFilter {
     }
 
     fn is_dangerous_body_node(&self, stmt: &Statement) -> bool {
-        match stmt {
-            Statement::CreateFunction { .. } | Statement::CreateProcedure { .. } | Statement::CreateTrigger { .. } => {
-                true
-            }
-            _ => false,
-        }
+        matches!(
+            stmt,
+            Statement::CreateFunction { .. } | Statement::CreateProcedure { .. } | Statement::CreateTrigger { .. }
+        )
     }
 
     pub fn filter_diff_preparation_options(

@@ -565,8 +565,8 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
         ipad[i] ^= k[i];
         opad[i] ^= k[i];
     }
-    let inner = Sha256::digest(&[&ipad[..], data].concat());
-    let result = Sha256::digest(&[&opad[..], &inner[..]].concat());
+    let inner = Sha256::digest([ipad, data].concat());
+    let result = Sha256::digest([opad, &inner[..]].concat());
     result.into()
 }
 
@@ -669,7 +669,7 @@ const ALLOWED_TRANSITIONS: &[(StateTransition, &[StateTransition])] = &[
 ];
 
 pub fn is_valid_transition(from: &StateTransition, to: &StateTransition) -> bool {
-    ALLOWED_TRANSITIONS.iter().find(|(state, _)| state == from).map_or(false, |(_, allowed)| allowed.contains(to))
+    ALLOWED_TRANSITIONS.iter().any(|(state, allowed)| state == from && allowed.contains(to))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

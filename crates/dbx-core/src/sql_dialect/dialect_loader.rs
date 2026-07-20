@@ -88,7 +88,7 @@ impl DialectRegistry {
     }
 
     pub fn has(&self, name: &str) -> bool {
-        self.descriptors.read().ok().map_or(false, |d| d.contains_key(&name.to_ascii_lowercase()))
+        self.descriptors.read().ok().is_some_and(|d| d.contains_key(&name.to_ascii_lowercase()))
     }
 
     pub fn all_names(&self) -> Vec<String> {
@@ -134,11 +134,11 @@ impl DialectRegistry {
     }
 
     pub fn unregister(&self, name: &str) -> bool {
-        self.descriptors.write().ok().map_or(false, |mut d| d.remove(&name.to_ascii_lowercase()).is_some())
+        self.descriptors.write().ok().is_some_and(|mut d| d.remove(&name.to_ascii_lowercase()).is_some())
     }
 
     pub fn is_empty(&self) -> bool {
-        self.descriptors.read().ok().map_or(true, |d| d.is_empty())
+        self.descriptors.read().ok().is_none_or(|d| d.is_empty())
     }
 
     pub fn len(&self) -> usize {

@@ -1204,12 +1204,10 @@ impl RollbackGraph {
         for fwd in &self.forward_nodes {
             let has_rollback = self.rollback_nodes.iter().any(|rbk| {
                 rbk.table_diff.name == fwd.table_diff.name
-                    && match (fwd.table_diff.diff_type.as_str(), rbk.table_diff.diff_type.as_str()) {
-                        ("added", "removed") | ("removed", "added") => true,
-                        ("modified", "modified") => true,
-                        ("none", "none") => true,
-                        _ => false,
-                    }
+                    && matches!(
+                        (fwd.table_diff.diff_type.as_str(), rbk.table_diff.diff_type.as_str()),
+                        ("added", "removed") | ("removed", "added") | ("modified", "modified") | ("none", "none")
+                    )
             });
 
             if !has_rollback {
@@ -4003,7 +4001,7 @@ mod tests {
                 &[("id", "int"), ("old_name", "varchar(100)")],
                 true,
             );
-            let sql = gen_sql(wrap_table_diff("t", diffs), db.clone(), None);
+            let sql = gen_sql(wrap_table_diff("t", diffs), db, None);
             assert!(sql.contains("RENAME COLUMN"), "{db:?} uses RENAME COLUMN: {sql}");
             assert!(!sql.contains('`'), "{db:?} no backticks: {sql}");
         }
@@ -4026,7 +4024,7 @@ mod tests {
                 &[("id", "int"), ("name", "varchar(50)")],
                 true,
             );
-            let sql = gen_sql(wrap_table_diff("t", diffs), db.clone(), None);
+            let sql = gen_sql(wrap_table_diff("t", diffs), db, None);
             assert!(sql.contains('`'), "{db:?} uses backticks: {sql}");
             assert!(sql.contains("CHANGE COLUMN"), "{db:?} uses CHANGE COLUMN: {sql}");
         }
@@ -4050,7 +4048,7 @@ mod tests {
                 &[("id", "integer"), ("name", "varchar(50)")],
                 true,
             );
-            let sql = gen_sql(wrap_table_diff("t", diffs), target.clone(), Some(DialectKind::Mysql));
+            let sql = gen_sql(wrap_table_diff("t", diffs), target, Some(DialectKind::Mysql));
             // These pairs have no type-mapping rules → types pass through
             assert!(sql.contains("int(11)"), "{target:?} preserves int(11): {sql}");
             assert!(!sql.contains('`'), "{target:?} no backticks: {sql}");
@@ -4272,7 +4270,7 @@ mod tests {
     fn all_columns_added() {
         let diffs = make_col_diffs(&[("new1", "int"), ("new2", "varchar(10)")], &[], false);
         for db in [DatabaseType::Mysql, DatabaseType::Postgres, DatabaseType::Oracle] {
-            let sql = gen_sql(wrap_table_diff("t", diffs.clone()), db.clone(), None);
+            let sql = gen_sql(wrap_table_diff("t", diffs.clone()), db, None);
             assert_eq!(sql.matches("ADD COLUMN").count(), 2, "{db:?} two adds: {sql}");
         }
     }
@@ -4405,7 +4403,7 @@ mod tests {
                 &[("id", "int"), ("name", "varchar(50)")],
                 true,
             );
-            let sql = gen_sql(wrap_table_diff("t", diffs), db.clone(), None);
+            let sql = gen_sql(wrap_table_diff("t", diffs), db, None);
             assert!(sql.contains('`'), "{db:?} backticks: {sql}");
         }
     }
@@ -4431,7 +4429,7 @@ mod tests {
                 &[("id", "int"), ("name", "varchar(50)")],
                 true,
             );
-            let sql = gen_sql(wrap_table_diff("t", diffs), db.clone(), None);
+            let sql = gen_sql(wrap_table_diff("t", diffs), db, None);
             assert!(sql.contains("RENAME COLUMN"), "{db:?} RENAME COLUMN: {sql}");
             assert!(!sql.contains('`'), "{db:?} no backticks: {sql}");
         }
@@ -4447,7 +4445,7 @@ mod tests {
                 &[("id", "int"), ("name", "varchar(50)")],
                 true,
             );
-            let sql = gen_sql(wrap_table_diff("t", diffs), db.clone(), None);
+            let sql = gen_sql(wrap_table_diff("t", diffs), db, None);
             assert!(sql.contains("RENAME COLUMN"), "{db:?} RENAME COLUMN: {sql}");
             assert!(!sql.contains('`'), "{db:?} no backticks: {sql}");
         }
@@ -5981,9 +5979,9 @@ mod tests {
             true,
         );
         for (db, label) in [(DatabaseType::Mysql, "MySQL"), (DatabaseType::Postgres, "PG")] {
-            let sql = gen_sql(wrap_table_diff("t", diffs.clone()), db.clone(), None);
+            let sql = gen_sql(wrap_table_diff("t", diffs.clone()), db, None);
             // Two renames → two CHANGE COLUMN / RENAME COLUMN operations
-            let _n = if matches!(db, DatabaseType::Mysql) { 2 } else { 2 };
+            let _n: u64 = 2;
             assert!(sql.contains("COLUMN"), "{label}: {sql}");
         }
     }
@@ -6397,7 +6395,7 @@ mod tests {
         let target: Vec<ColumnInfo> = vec![];
         let diffs = diff_columns_with_options(&source, &target, false, false, false, 0.5);
         for (db, label) in [(DatabaseType::Mysql, "MySQL"), (DatabaseType::Postgres, "PG")] {
-            let sql = gen_sql(wrap_table_diff("t", diffs.clone()), db.clone(), None);
+            let sql = gen_sql(wrap_table_diff("t", diffs.clone()), db, None);
             assert!(sql.contains("DEFAULT 0"), "{label} default: {sql}");
         }
     }
@@ -6515,7 +6513,7 @@ mod tests {
         let t = vec![column("name", "varchar(100)", None)];
         let diffs = diff_columns_with_options(&s, &t, false, false, false, 0.5);
         for (db, label) in [(DatabaseType::Mysql, "MySQL"), (DatabaseType::Postgres, "PG")] {
-            let sql = gen_sql(wrap_table_diff("t", diffs.clone()), db.clone(), None);
+            let sql = gen_sql(wrap_table_diff("t", diffs.clone()), db, None);
             assert!(sql.contains("varchar(255)"), "{label} length: {sql}");
         }
     }
@@ -7312,11 +7310,7 @@ mod tests {
                     assert!(sql.contains("TEXT"), "datetime→TEXT in SQLite: {sql}");
                 }
             }
-            (DialectKind::Postgres, DialectKind::Mysql) => {
-                if sql.contains("text") || sql.contains("TEXT") {
-                    // verify it was converted to LONGTEXT when applicable
-                }
-            }
+            (DialectKind::Postgres, DialectKind::Mysql) if sql.contains("text") || sql.contains("TEXT") => {}
             _ => {}
         }
     }
@@ -7364,9 +7358,10 @@ mod tests {
         let ddl = if is_mysql_tgt {
             Some("CREATE TABLE `t` (`id` int NOT NULL AUTO_INCREMENT, `name` varchar(100) NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB".into())
         } else if src_kind == tgt_kind {
-            Some(format!(
+            Some(
                 "CREATE TABLE \"t\" (\"id\" INTEGER NOT NULL, \"name\" varchar(100) NOT NULL, PRIMARY KEY (\"id\"));"
-            ))
+                    .into(),
+            )
         } else {
             None
         };

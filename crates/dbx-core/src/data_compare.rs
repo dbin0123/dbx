@@ -1290,18 +1290,17 @@ impl DegradationChain {
             DegradationLevel::Sample => {
                 let rate = self.threshold.sample_size as f64 / max_count as f64;
                 let conf = 0.95 * rate;
-                (rate, conf.max(0.5).min(0.95))
+                (rate, conf.clamp(0.5, 0.95))
             }
             DegradationLevel::SkipWithRisk => (0.0, 0.0),
         };
 
         if self.auto_upgrade_enabled {
             if let Some(last) = self.events.last() {
-                let auto_upgrade = match (last.decided_level.as_str(), &new_level) {
-                    ("skip_with_risk", DegradationLevel::Sample) => true,
-                    ("sample", DegradationLevel::Full) => true,
-                    _ => false,
-                };
+                let auto_upgrade = matches!(
+                    (last.decided_level.as_str(), &new_level),
+                    ("skip_with_risk", DegradationLevel::Sample) | ("sample", DegradationLevel::Full)
+                );
                 if auto_upgrade {
                     if let Some(m) = metrics {
                         m.record_auto_upgrade();
@@ -1312,11 +1311,11 @@ impl DegradationChain {
 
         if self.auto_downgrade_enabled {
             if let Some(last) = self.events.last() {
-                let auto_downgrade = match (last.decided_level.as_str(), &new_level) {
-                    ("full", DegradationLevel::Sample | DegradationLevel::SkipWithRisk) => true,
-                    ("sample", DegradationLevel::SkipWithRisk) => true,
-                    _ => false,
-                };
+                let auto_downgrade = matches!(
+                    (last.decided_level.as_str(), &new_level),
+                    ("full", DegradationLevel::Sample | DegradationLevel::SkipWithRisk)
+                        | ("sample", DegradationLevel::SkipWithRisk)
+                );
                 if auto_downgrade {
                     if let Some(m) = metrics {
                         m.record_auto_downgrade();
@@ -1593,7 +1592,7 @@ fn compute_confidence(
                 source_row_count.min(target_row_count) as f64 / source_row_count.max(target_row_count).max(1) as f64;
             let base = if row_count_match { 0.95 } else { 0.85 };
             let adjusted = base * sampling_rate * count_ratio.sqrt();
-            adjusted.max(0.5).min(0.95)
+            adjusted.clamp(0.5, 0.95)
         }
         DegradationLevel::SkipWithRisk => 0.0,
     }

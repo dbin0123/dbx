@@ -117,7 +117,7 @@ impl TypeInferenceEngine for DefaultTypeInferenceEngine {
 
         let (precision, scale, length) = if needs_precision {
             (source_parsed.precision, source_parsed.scale, source_parsed.length)
-        } else if mapped_base.to_ascii_lowercase() == "integer" && source_parsed.precision.is_some() {
+        } else if mapped_base.eq_ignore_ascii_case("integer") && source_parsed.precision.is_some() {
             (None, None, None)
         } else {
             (source_parsed.precision, source_parsed.scale, source_parsed.length)

@@ -40,19 +40,13 @@ pub struct DialectYaml {
     pub script_templates: ScriptTemplatesYaml,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DialectMeta {
     pub name: String,
     #[serde(default)]
     pub display_name: Option<String>,
     #[serde(default)]
     pub versions: Vec<DialectVersion>,
-}
-
-impl Default for DialectMeta {
-    fn default() -> Self {
-        Self { name: String::new(), display_name: None, versions: vec![] }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

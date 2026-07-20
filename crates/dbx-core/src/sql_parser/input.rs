@@ -5,6 +5,7 @@ use crate::schema_diff::SchemaDiffPreparationOptions;
 use crate::sql_parser::meta::{validate_sql_meta_consistency, MetaData, MetaReader};
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum InputSource {
     DdlFiles(Vec<PathBuf>),
     DatabaseConnection(ConnectionConfig),

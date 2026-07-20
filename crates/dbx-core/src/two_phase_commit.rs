@@ -33,6 +33,7 @@ impl TransactionStatus {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "preparing" => Self::Preparing,
@@ -176,7 +177,7 @@ impl TwoPhaseCommit {
                             crate::state_persistence::StateTransition::Completed,
                         )
                         .await;
-                    return Ok(log);
+                    Ok(log)
                 }
                 Err(e) => {
                     let _ = self.update_status(transaction_id, TransactionStatus::RollingBack).await?;
@@ -191,10 +192,7 @@ impl TwoPhaseCommit {
                         .state_machine
                         .transition(&format!("2pc_{transaction_id}"), crate::state_persistence::StateTransition::Failed)
                         .await;
-                    return Err(format!(
-                        "Commit phase failed: {e}. Some participants committed. Status: {}",
-                        log.status
-                    ));
+                    Err(format!("Commit phase failed: {e}. Some participants committed. Status: {}", log.status));
                 }
             }
         } else {
@@ -381,6 +379,7 @@ impl TwoPhaseCommit {
 
 /// Participant adapter for database statement execution via TwoPhaseCommit.
 /// The caller provides async closures for the actual database operations.
+#[allow(clippy::type_complexity)]
 pub struct FnParticipant {
     id: String,
     name: String,
