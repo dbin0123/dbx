@@ -17,6 +17,7 @@ use axum::routing::{delete, get, post};
 use axum::Router;
 use dbx_core::connection::AppState;
 use dbx_core::sql_dialect::dialect_loader::{register_core_dialects, DialectPluginLoader, DialectRegistry};
+use dbx_core::sql_dialect::hot_reload::DialectHotReload;
 use dbx_core::storage::Storage;
 use state::WebState;
 use tokio::sync::RwLock;
@@ -210,6 +211,15 @@ async fn main() {
             load_result.errors.len(),
             load_result.skipped.len()
         );
+
+        // Start dialect YAML hot-reload watcher
+        let watch_dirs = plugin_dirs.clone();
+        tokio::spawn(async move {
+            if let Err(e) = DialectHotReload::run_forever(watch_dirs, DialectRegistry::global()).await {
+                log::error!("Dialect hot-reload watcher exited: {e}");
+            }
+        });
+        log::info!("Dialect hot-reload watcher started");
 
         Arc::new(AppState::new_with_plugin_and_agent_dir_and_app_version(
             storage,

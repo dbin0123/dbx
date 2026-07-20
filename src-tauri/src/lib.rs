@@ -8,6 +8,7 @@ mod window_state_guard;
 
 use commands::connection::AppState;
 use dbx_core::sql_dialect::dialect_loader::{register_core_dialects, DialectPluginLoader, DialectRegistry};
+use dbx_core::sql_dialect::hot_reload::DialectHotReload;
 use dbx_core::storage::{maybe_import_user_data_db, DesktopIconTheme, DesktopSettings, Storage};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -958,6 +959,15 @@ pub fn run() {
                 load_result.skipped.len(),
                 dialect_init_start.elapsed()
             );
+
+            // Start dialect YAML hot-reload watcher
+            let watch_dirs = plugin_dirs.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = DialectHotReload::run_forever(watch_dirs, DialectRegistry::global()).await {
+                    log::error!("[STARTUP] dialect hot-reload watcher exited: {e}");
+                }
+            });
+            eprintln!("[STARTUP] dialect hot-reload watcher started");
 
             let default_agent_dir = data_dir_resolution.uses_custom_data_dir().then(|| data_dir.join("agents"));
             let (plugin_dir, agent_dir) = commands::app_settings::resolve_driver_store_dirs_from_settings(
