@@ -3050,7 +3050,16 @@ export default withEnglishFallback({
       importError: "Falha ao importar mapeamentos de campos. Verifique o formato JSON.",
       clearMappings: "Limpar",
       staleMappingWarning: "O tipo de banco de dados mudou de {prevSrc} → {prevTgt} para {curSrc} → {curTgt}. Os mapeamentos de campos existentes podem não ser mais válidos. Limpá-los?",
+      deployMode: "Implantar",
+      forwardSql: "SQL Direto",
+      rollbackSql: "SQL de Reversão",
+      rollbackMode: "Reversão",
     },
+  },
+  rollbackComparison: {
+    title: "Comparação de Reversão",
+    forwardSql: "SQL Direto",
+    rollbackSql: "SQL de Reversão",
   },
   schemaDiff: {
     optionsTitle: "Opções de Comparação",

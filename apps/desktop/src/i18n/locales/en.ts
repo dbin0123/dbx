@@ -3272,7 +3272,16 @@ export default {
       importError: "Failed to import field mappings. Please check the JSON format.",
       clearMappings: "Clear",
       staleMappingWarning: "The database type has changed from {prevSrc} → {prevTgt} to {curSrc} → {curTgt}. Existing field mappings may no longer be valid. Clear them?",
+      deployMode: "Deploy",
+      forwardSql: "Forward SQL",
+      rollbackSql: "Rollback SQL",
+      rollbackMode: "Rollback",
     },
+  },
+  rollbackComparison: {
+    title: "Rollback Comparison",
+    forwardSql: "Forward SQL",
+    rollbackSql: "Rollback SQL",
   },
   schemaDiff: {
     optionsTitle: "Compare Options",

@@ -3048,7 +3048,16 @@ export default withEnglishFallback({
       importError: "Importazione mappature campi non riuscita. Verificare il formato JSON.",
       clearMappings: "Cancella",
       staleMappingWarning: "Il tipo di database è cambiato da {prevSrc} → {prevTgt} a {curSrc} → {curTgt}. Le mappature dei campi esistenti potrebbero non essere più valide. Cancellarle?",
+      deployMode: "Distribuisci",
+      forwardSql: "SQL Diretto",
+      rollbackSql: "SQL di Rollback",
+      rollbackMode: "Rollback",
     },
+  },
+  rollbackComparison: {
+    title: "Confronto Rollback",
+    forwardSql: "SQL Diretto",
+    rollbackSql: "SQL di Rollback",
   },
   schemaDiff: {
     optionsTitle: "Opzioni di Confronto",

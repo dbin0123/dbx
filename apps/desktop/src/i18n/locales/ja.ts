@@ -3049,7 +3049,16 @@ export default withEnglishFallback({
       importError: "フィールドマッピングのインポートに失敗しました。JSON形式を確認してください。",
       clearMappings: "クリア",
       staleMappingWarning: "データベースタイプが {prevSrc} → {prevTgt} から {curSrc} → {curTgt} に変更されました。既存のフィールドマッピングは有効でない可能性があります。クリアしますか？",
+      deployMode: "デプロイ",
+      forwardSql: "フォワードSQL",
+      rollbackSql: "ロールバックSQL",
+      rollbackMode: "ロールバック",
     },
+  },
+  rollbackComparison: {
+    title: "ロールバック比較",
+    forwardSql: "フォワードSQL",
+    rollbackSql: "ロールバックSQL",
   },
   schemaDiff: {
     optionsTitle: "比較オプション",

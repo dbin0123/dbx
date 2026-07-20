@@ -2867,7 +2867,16 @@ export default withEnglishFallback({
       importError: "欄位映射匯入失敗，請檢查 JSON 格式。",
       clearMappings: "清空",
       staleMappingWarning: "資料庫類型已從 {prevSrc} → {prevTgt} 變更為 {curSrc} → {curTgt}，現有欄位映射可能不再有效。是否清除？",
+      deployMode: "部署",
+      forwardSql: "正向 SQL",
+      rollbackSql: "回溯 SQL",
+      rollbackMode: "回溯",
     },
+  },
+  rollbackComparison: {
+    title: "回溯對比",
+    forwardSql: "正向 SQL",
+    rollbackSql: "回溯 SQL",
   },
   schemaDiff: {
     optionsTitle: "比較選項",
