@@ -233,7 +233,7 @@ pub async fn execute_script_with_2pc(
     statements: Vec<String>,
     schema: Option<String>,
 ) -> Result<dbx_core::two_phase_commit::TransactionLog, String> {
-    let app = state.clone();
+    let app: Arc<AppState> = (*state).clone();
     let backend = Arc::new(LocalBackend::new(Arc::new(app.storage.clone())));
     let coordinator = TwoPhaseCommit::new(backend);
 
