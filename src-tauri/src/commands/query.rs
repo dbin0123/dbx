@@ -7,6 +7,8 @@ use dbx_core::db;
 use dbx_core::models::connection::DatabaseType;
 use dbx_core::query_cancel::RunningTaskMetadata;
 use dbx_core::sql::split_sql_statements;
+use dbx_core::state_persistence::LocalBackend;
+use dbx_core::two_phase_commit::{FnParticipant, TwoPhaseCommit};
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -218,6 +220,65 @@ pub async fn execute_in_transaction(
         schema.as_deref(),
     )
     .await
+}
+
+/// Execute multiple SQL statements across multiple databases using TwoPhaseCommit.
+/// Each participant is a single statement; if all prepare successfully they all commit,
+/// otherwise they roll back and report Mixed status.
+#[tauri::command]
+pub async fn execute_script_with_2pc(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    database: String,
+    statements: Vec<String>,
+    schema: Option<String>,
+) -> Result<dbx_core::two_phase_commit::TransactionLog, String> {
+    use std::sync::Arc as StdArc;
+    let storage = state.storage.clone();
+    let backend = StdArc::new(LocalBackend::new(storage));
+    let coordinator = TwoPhaseCommit::new(backend);
+
+    let mut participants: Vec<StdArc<dyn dbx_core::two_phase_commit::Participant>> = Vec::new();
+    for (i, stmt) in statements.iter().enumerate() {
+        let cid = connection_id.clone();
+        let db = database.clone();
+        let sql = stmt.clone();
+        let sch = schema.clone();
+        let app_state = state.clone();
+
+        let participant = FnParticipant::new(
+            format!("stmt_{i}"),
+            format!("Statement {i}"),
+            "database".to_string(),
+            move || {
+                let cid = cid.clone();
+                let db = db.clone();
+                let app_state = app_state.clone();
+                Box::pin(async move {
+                    dbx_core::query::execute_statements(&app_state, &cid, &db, &[sql.clone()], sch.as_deref(), None)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| format!("Prepare error: {e}"))
+                })
+            },
+            move || {
+                let cid = cid.clone();
+                let db = db.clone();
+                let app_state = app_state.clone();
+                Box::pin(async move {
+                    dbx_core::query::execute_statements(&app_state, &cid, &db, &[sql.clone()], sch.as_deref(), None)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| format!("Commit error: {e}"))
+                })
+            },
+            || Box::pin(async { Ok(()) }),
+        );
+        participants.push(StdArc::new(participant));
+    }
+
+    let tx_id = format!("2pc_{}", uuid::Uuid::new_v4());
+    coordinator.execute(&tx_id, &participants, serde_json::json!({"source": "execute_script_with_2pc"})).await
 }
 
 #[tauri::command]

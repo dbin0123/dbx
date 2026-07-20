@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::state_persistence::{StateBackend, StateMachine};
@@ -374,6 +375,74 @@ impl TwoPhaseCommit {
                 Err(format!("Unknown transaction status for {transaction_id}: cannot recover"))
             }
         }
+    }
+}
+
+/// Participant adapter for database statement execution via TwoPhaseCommit.
+/// The caller provides async closures for the actual database operations.
+pub struct FnParticipant {
+    id: String,
+    name: String,
+    role: String,
+    prepare_fn:
+        Box<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>,
+    commit_fn:
+        Box<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>,
+    rollback_fn:
+        Box<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>,
+}
+
+impl FnParticipant {
+    pub fn new(
+        id: String,
+        name: String,
+        role: String,
+        prepare_fn: impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+            + Send
+            + Sync
+            + 'static,
+        commit_fn: impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+            + Send
+            + Sync
+            + 'static,
+        rollback_fn: impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            role,
+            prepare_fn: Box::new(prepare_fn),
+            commit_fn: Box::new(commit_fn),
+            rollback_fn: Box::new(rollback_fn),
+        }
+    }
+}
+
+#[async_trait]
+impl Participant for FnParticipant {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn role(&self) -> &str {
+        &self.role
+    }
+
+    async fn prepare(&self, _transaction_id: &str) -> Result<(), String> {
+        (self.prepare_fn)().await
+    }
+
+    async fn commit(&self, _transaction_id: &str) -> Result<(), String> {
+        (self.commit_fn)().await
+    }
+
+    async fn rollback(&self, _transaction_id: &str) -> Result<(), String> {
+        (self.rollback_fn)().await
     }
 }
 
