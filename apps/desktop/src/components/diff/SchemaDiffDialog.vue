@@ -99,7 +99,7 @@ const executing = ref(false);
 const lastDiffResult = ref<SchemaDiffPreparation | null>(null);
 const targetDbVersion = ref<string | null>(null);
 const showResultDialog = ref(false);
-const deployResult = ref<{ success: boolean; message: string; affectedRows?: number } | null>(null);
+const deployResult = ref<{ success: boolean; status?: string; message: string; affectedRows?: number } | null>(null);
 
 // Phase 4 result fields
 const rollbackSql = ref("");
@@ -637,13 +637,31 @@ async function handleExecuteScript() {
 
   executing.value = true;
   try {
-    await api.executeScript(targetConnectionId.value, targetDatabase.value, deploySql.value, targetSchema.value);
-    toast(t("diff.executeSuccess"), 3000);
+    const txLog = await api.executeScriptWith2pc(targetConnectionId.value, targetDatabase.value, [deploySql.value], targetSchema.value);
+    showDeployTxResult(txLog);
   } catch (e: any) {
     toast(e?.message || String(e), 5000);
   } finally {
     executing.value = false;
   }
+}
+
+function showDeployTxResult(txLog: any) {
+  const status = txLog?.status;
+  if (status === "committed") {
+    deployResult.value = { success: true, status, message: t("diff.executeSuccess") };
+  } else if (status === "mixed") {
+    deployResult.value = {
+      success: false,
+      status,
+      message: t("diff.deployMixed", { participants: txLog?.participants?.length ?? 0 }),
+    };
+  } else if (status === "rolled_back") {
+    deployResult.value = { success: false, status, message: t("diff.deployRolledBack") };
+  } else {
+    deployResult.value = { success: false, status, message: t("diff.deployFailed", { status: status || "unknown" }) };
+  }
+  showResultDialog.value = true;
 }
 async function handleSelectObject(obj: SchemaDiffObject) {
   selectedObjectId.value = obj.id;
@@ -769,16 +787,12 @@ async function onConfirmDeploy() {
       sql: deploySql.value,
       source: t("production.sourceSchemaDiff"),
       execute: async () => {
-        await api.executeScript(targetConnectionId.value, targetDatabase.value, deploySql.value, targetSchema.value);
-        return 0;
+        const txLog = await api.executeScriptWith2pc(targetConnectionId.value, targetDatabase.value, [deploySql.value], targetSchema.value);
+        return txLog;
       },
     });
     if (failed === undefined) return;
-    deployResult.value = {
-      success: true,
-      message: t("diff.deploySuccess"),
-    };
-    showResultDialog.value = true;
+    showDeployTxResult(failed);
   } catch (e: any) {
     deployResult.value = {
       success: false,
@@ -1034,12 +1048,23 @@ const targetConnectionInfo = computed(() => {
             <DialogTitle class="flex items-center gap-2" :class="deployResult?.success ? 'text-green-500' : 'text-destructive'">
               <AlertTriangle v-if="!deployResult?.success" class="h-5 w-5" />
               <CircleCheck v-else class="h-5 w-5" />
-              {{ deployResult?.success ? t("diff.deploySuccess") : t("diff.deployFailed") }}
+              <template v-if="deployResult?.status === 'mixed'">{{ t("diff.deployMixedTitle") }}</template>
+              <template v-else-if="deployResult?.status === 'rolled_back'">{{ t("diff.deployRolledBackTitle") }}</template>
+              <template v-else>{{ deployResult?.success ? t("diff.deploySuccess") : t("diff.deployFailed") }}</template>
             </DialogTitle>
           </DialogHeader>
 
           <div class="py-2">
-            <div v-if="deployResult?.success" class="space-y-2">
+            <div v-if="deployResult?.status === 'mixed'" class="space-y-2">
+              <p class="text-sm text-destructive-foreground">{{ deployResult.message }}</p>
+              <div class="bg-yellow-50 border border-yellow-300 p-3 rounded text-xs text-yellow-800">
+                {{ t("diff.deployMixedWarning") }}
+              </div>
+            </div>
+            <div v-else-if="deployResult?.status === 'rolled_back'" class="space-y-2">
+              <p class="text-sm text-destructive-foreground">{{ deployResult.message }}</p>
+            </div>
+            <div v-else-if="deployResult?.success" class="space-y-2">
               <p class="text-sm text-muted-foreground">{{ t("diff.deploySuccessMessage") }}</p>
               <div class="bg-muted p-3 rounded text-xs font-mono">
                 <div>{{ t("diff.affectedRows") }}: {{ deployResult.affectedRows ?? 0 }}</div>

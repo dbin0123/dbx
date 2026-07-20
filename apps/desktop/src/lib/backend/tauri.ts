@@ -857,6 +857,10 @@ export async function executeScript(connectionId: string, database: string, sql:
   return invoke("execute_script", { connectionId, database, sql, schema });
 }
 
+export async function executeScriptWith2pc(connectionId: string, database: string, statements: string[], schema?: string): Promise<TransactionLog> {
+  return invoke("execute_script_with_2pc", { connectionId, database, statements, schema });
+}
+
 export async function executeInTransaction(connectionId: string, database: string, statements: string[], schema?: string): Promise<QueryResult> {
   return invoke("execute_in_transaction", { connectionId, database, statements, schema });
 }

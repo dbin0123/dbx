@@ -3055,6 +3055,12 @@ export default withEnglishFallback({
     forwardSql: "SQL Direto",
     rollbackSql: "SQL de Reversão",
     rollbackMode: "Reversão",
+    deployMixed: "Implantação parcialmente concluída. Algumas alterações confirmadas, outras revertidas.",
+    deployRolledBack: "Todas as alterações foram revertidas.",
+    deployFailed: "Implantação falhou.",
+    deployMixedTitle: "Parcialmente Implantado",
+    deployRolledBackTitle: "Revertido",
+    deployMixedWarning: "Algumas instruções foram confirmadas enquanto outras falharam. O banco de dados pode estar em um estado inconsistente. Revise o log de transações e tome ação corretiva manual antes de tentar novamente.",
   },
   rollbackComparison: {
     title: "Comparação de Reversão",

@@ -765,6 +765,10 @@ export async function executeScript(connectionId: string, database: string, sql:
   return post("/api/query/execute-script", { connectionId, database, sql, schema });
 }
 
+export async function executeScriptWith2pc(connectionId: string, database: string, statements: string[], schema?: string): Promise<any> {
+  return post("/api/query/execute-script-2pc", { connectionId, database, statements, schema });
+}
+
 export async function executeInTransaction(connectionId: string, database: string, statements: string[], schema?: string): Promise<QueryResult> {
   return post("/api/query/execute-in-transaction", { connectionId, database, statements, schema });
 }

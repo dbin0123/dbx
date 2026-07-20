@@ -171,6 +171,7 @@ export const executeQuery = forward("executeQuery");
 export const executeMulti = forward("executeMulti");
 export const executeBatch = forward("executeBatch");
 export const executeScript = forward("executeScript");
+export const executeScriptWith2pc = forward("executeScriptWith2pc");
 export const executeInTransaction = forward("executeInTransaction");
 export const beginManualTransaction = forward("beginManualTransaction");
 export const executeInManualTransaction = forward("executeInManualTransaction");
