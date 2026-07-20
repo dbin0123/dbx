@@ -384,12 +384,9 @@ pub struct FnParticipant {
     id: String,
     name: String,
     role: String,
-    prepare_fn:
-        Box<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>,
-    commit_fn:
-        Box<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>,
-    rollback_fn:
-        Box<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>,
+    prepare_fn: Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>,
+    commit_fn: Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>,
+    rollback_fn: Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>,
 }
 
 impl FnParticipant {
@@ -486,14 +483,17 @@ mod tests {
             self
         }
 
+        #[allow(dead_code)]
         fn prepare_was_called(&self) -> bool {
             *self.prepare_called.lock().unwrap()
         }
 
+        #[allow(dead_code)]
         fn commit_was_called(&self) -> bool {
             *self.commit_called.lock().unwrap()
         }
 
+        #[allow(dead_code)]
         fn rollback_was_called(&self) -> bool {
             *self.rollback_called.lock().unwrap()
         }
@@ -616,7 +616,7 @@ mod tests {
         };
         coordinator.save_log(&log).await.unwrap();
 
-        let result = coordinator.recover("tx_recover_preparing", &[p1.clone()]).await;
+        let result = coordinator.recover("tx_recover_preparing", &[Arc::clone(&p1)]).await;
 
         assert!(result.is_ok());
         let recovered = result.unwrap();
@@ -642,7 +642,7 @@ mod tests {
         };
         coordinator.save_log(&log).await.unwrap();
 
-        let result = coordinator.recover("tx_recover_committing", &[p1.clone()]).await;
+        let result = coordinator.recover("tx_recover_committing", &[Arc::clone(&p1)]).await;
 
         assert!(result.is_ok());
         let recovered = result.unwrap();

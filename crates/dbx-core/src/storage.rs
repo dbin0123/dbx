@@ -98,6 +98,7 @@ pub fn maybe_import_user_data_db(
     Ok(DataDbImportResult::Imported)
 }
 
+#[derive(Clone)]
 pub struct Storage {
     db: SqliteHandle,
 }
