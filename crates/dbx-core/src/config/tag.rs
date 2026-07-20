@@ -9,18 +9,13 @@ use std::collections::{HashMap, HashSet};
 /// - `Strict` — same key filtering as `Block`, but additionally checks that tag *values*
 ///   match the base-layer values. Any value mismatch (or blocked key) is reported as a
 ///   violation, and **all** violations (including value mismatches) count as blocking.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TagPolicy {
+    #[default]
     Allow,
     Block,
     Strict,
-}
-
-impl Default for TagPolicy {
-    fn default() -> Self {
-        TagPolicy::Allow
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,16 +70,11 @@ pub struct TagValidationResult {
     pub violations: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TagValidator {
     pub whitelist: TagInheritanceWhitelist,
+    #[serde(default)]
     pub strict_mode: bool,
-}
-
-impl Default for TagValidator {
-    fn default() -> Self {
-        Self { whitelist: TagInheritanceWhitelist::default(), strict_mode: false }
-    }
 }
 
 impl TagValidator {
