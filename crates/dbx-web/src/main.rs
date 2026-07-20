@@ -374,6 +374,7 @@ async fn main() {
         .route("/query/execute-batch", post(routes::query::execute_batch))
         .route("/query/execute-script", post(routes::query::execute_script))
         .route("/query/execute-in-transaction", post(routes::query::execute_in_transaction))
+        .route("/query/execute-script-2pc", post(routes::query::execute_script_with_2pc))
         .route("/query/analyze-sql-references", post(routes::query::analyze_sql_references))
         .route("/query/find-statement-at-cursor", post(routes::query::find_statement_at_cursor))
         .route("/query/prepare-pagination-plan", post(routes::query::prepare_query_pagination_execution_plan))

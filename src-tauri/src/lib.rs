@@ -1172,6 +1172,7 @@ pub fn run() {
             commands::query::execute_batch,
             commands::query::execute_script,
             commands::query::execute_in_transaction,
+            commands::query::execute_script_with_2pc,
             commands::query::begin_manual_transaction,
             commands::query::execute_in_manual_transaction,
             commands::query::commit_manual_transaction,

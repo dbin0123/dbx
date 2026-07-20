@@ -492,6 +492,67 @@ pub async fn execute_in_transaction(
     Ok(Json(result))
 }
 
+pub async fn execute_script_with_2pc(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<ExecuteBatchRequest>,
+) -> Result<Json<dbx_core::two_phase_commit::TransactionLog>, AppError> {
+    tracing::debug!(connection_id = %req.connection_id, "execute_script_with_2pc");
+    use dbx_core::state_persistence::LocalBackend;
+    use dbx_core::two_phase_commit::{FnParticipant, Participant, TwoPhaseCommit};
+    use std::sync::Arc as StdArc;
+
+    let storage = state.app.storage.clone();
+    let backend = StdArc::new(LocalBackend::new(storage));
+    let coordinator = TwoPhaseCommit::new(backend);
+
+    let mut participants: Vec<StdArc<dyn Participant>> = Vec::new();
+    for (i, stmt) in req.statements.iter().enumerate() {
+        let cid = req.connection_id.clone();
+        let db = req.database.clone();
+        let sql = stmt.clone();
+        let sch = req.schema.clone();
+        let app_state = state.app.clone();
+
+        let participant = FnParticipant::new(
+            format!("stmt_{i}"),
+            format!("Statement {i}"),
+            "database".to_string(),
+            move || {
+                let cid = cid.clone();
+                let db = db.clone();
+                let app_state = app_state.clone();
+                Box::pin(async move {
+                    dbx_core::query::execute_statements(&app_state, &cid, &db, &[sql.clone()], sch.as_deref(), None)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| format!("Prepare error: {e}"))
+                })
+            },
+            move || {
+                let cid = cid.clone();
+                let db = db.clone();
+                let app_state = app_state.clone();
+                Box::pin(async move {
+                    dbx_core::query::execute_statements(&app_state, &cid, &db, &[sql.clone()], sch.as_deref(), None)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| format!("Commit error: {e}"))
+                })
+            },
+            || Box::pin(async { Ok(()) }),
+        );
+        participants.push(StdArc::new(participant));
+    }
+
+    let tx_id = format!("2pc_{}", uuid::Uuid::new_v4());
+    let log = coordinator
+        .execute(&tx_id, &participants, serde_json::json!({"source": "execute_script_with_2pc"}))
+        .await
+        .map_err(AppError)?;
+
+    Ok(Json(log))
+}
+
 pub async fn analyze_sql_references(
     Json(req): Json<AnalyzeSqlReferencesRequest>,
 ) -> Result<Json<dbx_core::sql_analysis::SqlReferenceAnalysis>, AppError> {
