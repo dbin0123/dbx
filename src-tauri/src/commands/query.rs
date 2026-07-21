@@ -253,12 +253,6 @@ pub async fn execute_script_with_2pc(
 
     let mut participants: Vec<Arc<dyn dbx_core::two_phase_commit::Participant>> = Vec::new();
     for (i, stmt) in parsed.iter().enumerate() {
-        let cid_prepare = connection_id.clone();
-        let db_prepare = database.clone();
-        let sql_prepare = stmt.clone();
-        let sch_prepare = schema.clone();
-        let app_prepare = app.clone();
-
         let cid_commit = connection_id.clone();
         let db_commit = database.clone();
         let sql_commit = stmt.clone();
@@ -269,21 +263,7 @@ pub async fn execute_script_with_2pc(
             format!("stmt_{i}"),
             format!("Statement {i}"),
             "database".to_string(),
-            move || {
-                Box::pin({
-                    let cid = cid_prepare.clone();
-                    let db = db_prepare.clone();
-                    let sql = sql_prepare.clone();
-                    let sch = sch_prepare.clone();
-                    let app = app_prepare.clone();
-                    async move {
-                        dbx_core::query::execute_statements(&app, &cid, &db, &[sql], sch.as_deref(), None)
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| format!("Prepare error: {e}"))
-                    }
-                })
-            },
+            || Box::pin(async { Ok(()) }),
             move || {
                 Box::pin({
                     let cid = cid_commit.clone();
