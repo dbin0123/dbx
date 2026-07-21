@@ -237,8 +237,22 @@ pub async fn execute_script_with_2pc(
     let backend = Arc::new(LocalBackend::new(Arc::new(app.storage.clone())));
     let coordinator = TwoPhaseCommit::new(backend);
 
+    let db_type = {
+        let configs = app.configs.read().await;
+        configs.get(&connection_id).map(|c| c.db_type)
+    };
+
+    // Split each user-provided statement into individual SQL statements
+    let parsed: Vec<String> = statements
+        .iter()
+        .flat_map(|s| {
+            db_type.map_or_else(|| vec![s.clone()], |dt| dbx_core::sql::split_sql_statements_for_database(s, dt))
+        })
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+
     let mut participants: Vec<Arc<dyn dbx_core::two_phase_commit::Participant>> = Vec::new();
-    for (i, stmt) in statements.iter().enumerate() {
+    for (i, stmt) in parsed.iter().enumerate() {
         let cid_prepare = connection_id.clone();
         let db_prepare = database.clone();
         let sql_prepare = stmt.clone();

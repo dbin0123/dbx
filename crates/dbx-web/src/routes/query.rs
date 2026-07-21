@@ -504,8 +504,22 @@ pub async fn execute_script_with_2pc(
     let backend = Arc::new(LocalBackend::new(Arc::new(app.storage.clone())));
     let coordinator = TwoPhaseCommit::new(backend);
 
+    let db_type = {
+        let configs = app.configs.read().await;
+        configs.get(&req.connection_id).map(|c| c.db_type)
+    };
+
+    let parsed: Vec<String> = req
+        .statements
+        .iter()
+        .flat_map(|s| {
+            db_type.map_or_else(|| vec![s.clone()], |dt| dbx_core::sql::split_sql_statements_for_database(s, dt))
+        })
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+
     let mut participants: Vec<Arc<dyn Participant>> = Vec::new();
-    for (i, stmt) in req.statements.iter().enumerate() {
+    for (i, stmt) in parsed.iter().enumerate() {
         let cid_prepare = req.connection_id.clone();
         let db_prepare = req.database.clone();
         let sql_prepare = stmt.clone();
