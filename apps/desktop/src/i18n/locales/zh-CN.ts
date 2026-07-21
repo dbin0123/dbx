@@ -3249,7 +3249,6 @@ export default withEnglishFallback({
     rollbackMode: "回滚",
     deployMixed: "部署部分完成，部分变更已提交，其余已回滚。",
     deployRolledBack: "所有变更已回滚。",
-    deployFailed: "部署失败。",
     deployMixedTitle: "部分已部署",
     deployRolledBackTitle: "已回滚",
     deployMixedWarning: "部分语句已提交但其他语句失败了。数据库可能处于不一致状态，请在重试前检查事务日志并手动处理。",

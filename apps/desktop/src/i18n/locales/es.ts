@@ -3057,7 +3057,6 @@ export default withEnglishFallback({
     rollbackMode: "Reversión",
     deployMixed: "Despliegue parcialmente completado. Algunos cambios confirmados, otros revertidos.",
     deployRolledBack: "Todos los cambios han sido revertidos.",
-    deployFailed: "Despliegue fallido.",
     deployMixedTitle: "Parcialmente Desplegado",
     deployRolledBackTitle: "Revertido",
     deployMixedWarning: "Algunas declaraciones se confirmaron mientras que otras fallaron. La base de datos puede estar en un estado inconsistente. Revise el registro de transacciones y tome medidas correctivas manuales antes de reintentar.",

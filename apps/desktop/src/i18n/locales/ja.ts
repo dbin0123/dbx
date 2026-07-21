@@ -3056,7 +3056,6 @@ export default withEnglishFallback({
     rollbackMode: "ロールバック",
     deployMixed: "デプロイが部分的に完了しました。一部の変更はコミットされ、その他はロールバックされました。",
     deployRolledBack: "すべての変更がロールバックされました。",
-    deployFailed: "デプロイに失敗しました。",
     deployMixedTitle: "部分的にデプロイ",
     deployRolledBackTitle: "ロールバック済み",
     deployMixedWarning: "一部のステートメントがコミットされましたが、他のステートメントが失敗しました。データベースが不整合な状態にある可能性があります。再試行前にトランザクションログを確認し、手動で修正してください。",

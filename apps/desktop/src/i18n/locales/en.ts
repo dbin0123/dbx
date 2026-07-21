@@ -3279,7 +3279,6 @@ export default {
     rollbackMode: "Rollback",
     deployMixed: "Deployment partially completed. Some changes committed, others rolled back.",
     deployRolledBack: "All changes have been rolled back.",
-    deployFailed: "Deployment failed.",
     deployMixedTitle: "Partially Deployed",
     deployRolledBackTitle: "Rolled Back",
     deployMixedWarning: "Some statements committed while others failed. The database may be in an inconsistent state. Review the transaction log and take manual corrective action before retrying.",

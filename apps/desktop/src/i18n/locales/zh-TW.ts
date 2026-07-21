@@ -2874,7 +2874,6 @@ export default withEnglishFallback({
     rollbackMode: "回溯",
     deployMixed: "部署部分完成，部分變更已提交，其餘已回溯。",
     deployRolledBack: "所有變更已回溯。",
-    deployFailed: "部署失敗。",
     deployMixedTitle: "部分已部署",
     deployRolledBackTitle: "已回溯",
     deployMixedWarning: "部分語句已提交但其他語句失敗了。資料庫可能處於不一致狀態，請在重試前檢查交易日誌並手動處理。",
