@@ -39,7 +39,6 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           token: ${{ secrets.I18N_BOT_TOKEN || secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-          allow-unsafe-pr-checkout: true
 
       - name: Fetch base branch
         env:
