@@ -3114,6 +3114,7 @@ export default withEnglishFallback({
       sequenceLastValues: "Compare sequence last values",
       compareColumnOrder: "Compare column order",
       detectRenames: "Detectar renombrados",
+      detectTableRenames: "Detectar renombrados de tabla",
       enableRollback: "Habilitar reversión",
       advancedSection: "Avanzado",
       renameThreshold: "Umbral de renombrado",

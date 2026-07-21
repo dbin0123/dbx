@@ -152,7 +152,7 @@ function getItemClasses(state: "checked" | "unchecked" | "indeterminate"): strin
         <div class="col-span-2 pt-3 pb-1 text-xs font-medium text-muted-foreground border-t mt-2">{{ t("schemaDiff.options.advancedSection") }}</div>
 
         <label class="pt-2 text-xs font-medium text-muted-foreground" for="schema-diff-rename-threshold">{{ t("schemaDiff.options.renameThreshold") }}</label>
-        <div v-if="localOptions.detectRenames" class="flex items-center gap-2 pt-1">
+        <div v-if="localOptions.detectRenames || localOptions.detectTableRenames" class="flex items-center gap-2 pt-1">
           <input id="schema-diff-rename-threshold" type="range" min="0" max="1" step="0.05" v-model.number="localOptions.renameThreshold" class="flex-1 h-1.5 accent-primary cursor-pointer" />
           <span class="text-xs font-mono w-10 text-right">{{ localOptions.renameThreshold.toFixed(2) }}</span>
         </div>

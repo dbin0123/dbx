@@ -3113,6 +3113,7 @@ export default withEnglishFallback({
       sequenceLastValues: "シーケンス最終値を比較",
       compareColumnOrder: "列順序を比較",
       detectRenames: "名前変更を検出",
+      detectTableRenames: "テーブル名変更を検出",
       enableRollback: "ロールバックを有効化",
       advancedSection: "詳細設定",
       renameThreshold: "名前変更しきい値",

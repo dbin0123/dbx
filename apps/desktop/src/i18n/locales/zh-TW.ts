@@ -2931,6 +2931,7 @@ export default withEnglishFallback({
       sequenceLastValues: "比較序列最後值",
       compareColumnOrder: "比較欄位順序",
       detectRenames: "檢測重新命名",
+      detectTableRenames: "檢測表重新命名",
       enableRollback: "啟用回溯",
       advancedSection: "進階選項",
       renameThreshold: "重新命名閾值",

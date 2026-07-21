@@ -3336,6 +3336,7 @@ export default {
       sequenceLastValues: "Compare sequence last values",
       compareColumnOrder: "Compare column order",
       detectRenames: "Detect renames",
+      detectTableRenames: "Detect table renames",
       enableRollback: "Enable rollback",
       advancedSection: "Advanced",
       renameThreshold: "Rename threshold",

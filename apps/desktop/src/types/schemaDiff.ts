@@ -22,6 +22,7 @@ export interface SchemaDiffCompareOptions {
   tableFilterPriority: SchemaDiffTableFilterPriority;
   detectRenames: boolean;
   renameThreshold: number;
+  detectTableRenames: boolean;
   enableRollback: boolean;
   batchPatterns: string;
   sourceDialect: string;
@@ -88,6 +89,7 @@ export const DEFAULT_POSTGRES_OPTIONS: SchemaDiffCompareOptions = {
   tableFilterPriority: "exclude",
   detectRenames: false,
   renameThreshold: 0.5,
+  detectTableRenames: false,
   enableRollback: false,
   batchPatterns: "",
   sourceDialect: "",
@@ -118,6 +120,7 @@ export const DEFAULT_MYSQL_OPTIONS: SchemaDiffCompareOptions = {
   tableFilterPriority: "exclude",
   detectRenames: false,
   renameThreshold: 0.5,
+  detectTableRenames: false,
   enableRollback: false,
   batchPatterns: "",
   sourceDialect: "",

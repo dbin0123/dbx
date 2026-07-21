@@ -453,6 +453,7 @@ async function handleCompare() {
       cascadeDelete: opts?.cascadeDelete ?? false,
       compareColumnOrder: opts.compareColumnOrder,
       detectRenames: opts?.detectRenames ?? false,
+      detectTableRenames: opts?.detectTableRenames ?? false,
       renameThreshold: opts?.renameThreshold ?? 0.5,
       enableRollback: opts?.enableRollback ?? false,
       batchPatterns: opts?.batchPatterns

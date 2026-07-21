@@ -3306,6 +3306,7 @@ export default withEnglishFallback({
       sequenceLastValues: "比较序列最后值",
       compareColumnOrder: "比较字段顺序",
       detectRenames: "检测重命名",
+      detectTableRenames: "检测表重命名",
       enableRollback: "启用回滚",
       advancedSection: "高级选项",
       renameThreshold: "重命名阈值",

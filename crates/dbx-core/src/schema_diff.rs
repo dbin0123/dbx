@@ -297,6 +297,8 @@ pub struct SchemaDiffPreparationOptions {
     #[serde(default)]
     pub detect_renames: bool,
     #[serde(default)]
+    pub detect_table_renames: bool,
+    #[serde(default)]
     pub rename_threshold: f64,
     #[serde(default)]
     pub enable_rollback: bool,
@@ -725,9 +727,10 @@ impl DependencyGraph {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RenameCandidate {
-    pub removed_name: String,
-    pub added_name: String,
+    pub source_name: String,
+    pub target_name: String,
     pub score: f64,
     pub column_jaccard: f64,
     pub type_similarity: f64,
@@ -783,23 +786,27 @@ pub fn detect_renames(
         target_details.iter().map(|d| (d.name.as_str(), d)).collect();
 
     let mut candidates = Vec::new();
-    for removed_name in removed {
-        let Some(removed_detail) = target_detail_map.get(removed_name.as_str()) else { continue };
-        for added_name in added {
-            let Some(added_detail) = source_detail_map.get(added_name.as_str()) else { continue };
+    for target_name in removed {
+        let Some(target_detail) = target_detail_map.get(target_name.as_str()) else { continue };
+        for source_name in added {
+            let Some(source_detail) = source_detail_map.get(source_name.as_str()) else { continue };
 
-            let col_names_added: HashSet<String> = added_detail.columns.iter().map(|c| c.name.clone()).collect();
-            let col_names_removed: HashSet<String> = removed_detail.columns.iter().map(|c| c.name.clone()).collect();
-            let column_jaccard = jaccard_similarity(&col_names_removed, &col_names_added);
+            let col_names_source: HashSet<String> = source_detail.columns.iter().map(|c| c.name.clone()).collect();
+            let col_names_target: HashSet<String> = target_detail.columns.iter().map(|c| c.name.clone()).collect();
+            let column_jaccard = jaccard_similarity(&col_names_target, &col_names_source);
 
-            let type_sim = column_type_similarity(&removed_detail.columns, &added_detail.columns);
+            if column_jaccard < threshold {
+                continue;
+            }
+
+            let type_sim = column_type_similarity(&target_detail.columns, &source_detail.columns);
 
             let score = column_jaccard * 0.6 + type_sim * 0.4;
 
             if score >= threshold {
                 candidates.push(RenameCandidate {
-                    removed_name: removed_name.clone(),
-                    added_name: added_name.clone(),
+                    source_name: source_name.clone(),
+                    target_name: target_name.clone(),
                     score,
                     column_jaccard,
                     type_similarity: type_sim,
@@ -811,14 +818,14 @@ pub fn detect_renames(
     candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut final_candidates = Vec::new();
-    let mut used_removed: HashSet<String> = HashSet::new();
-    let mut used_added: HashSet<String> = HashSet::new();
+    let mut used_target: HashSet<String> = HashSet::new();
+    let mut used_source: HashSet<String> = HashSet::new();
 
     for c in &candidates {
-        if !used_removed.contains(&c.removed_name) && !used_added.contains(&c.added_name) {
+        if !used_target.contains(&c.target_name) && !used_source.contains(&c.source_name) {
             final_candidates.push(c.clone());
-            used_removed.insert(c.removed_name.clone());
-            used_added.insert(c.added_name.clone());
+            used_target.insert(c.target_name.clone());
+            used_source.insert(c.source_name.clone());
         }
     }
 
@@ -1037,10 +1044,9 @@ impl RollbackGraph {
         let mut rollback_nodes = Vec::new();
         let consistency_issues = Vec::new();
 
-        let rename_map: HashMap<&str, &RenameCandidate> =
-            renames.iter().map(|r| (r.removed_name.as_str(), r)).collect();
+        let rename_map: HashMap<&str, &RenameCandidate> = renames.iter().map(|r| (r.target_name.as_str(), r)).collect();
         let rename_reverse: HashMap<&str, &str> =
-            renames.iter().map(|r| (r.added_name.as_str(), r.removed_name.as_str())).collect();
+            renames.iter().map(|r| (r.source_name.as_str(), r.target_name.as_str())).collect();
 
         let order_map: HashMap<&str, usize> =
             dep_graph.topological_order.iter().enumerate().map(|(i, name)| (name.as_str(), i)).collect();
@@ -1056,7 +1062,7 @@ impl RollbackGraph {
                 }
             } else if diff.diff_type == "removed" {
                 if let Some(rc) = rename_map.get(diff.name.as_str()) {
-                    (Some(diff.name.clone()), Some(rc.added_name.clone()), Some(rc.score))
+                    (Some(diff.name.clone()), Some(rc.source_name.clone()), Some(rc.score))
                 } else {
                     (None, None, None)
                 }
@@ -1588,6 +1594,7 @@ impl Default for SchemaDiffPreparationOptions {
             cascade_delete: false,
             compare_column_order: false,
             detect_renames: false,
+            detect_table_renames: false,
             rename_threshold: 0.5,
             enable_rollback: false,
             batch_patterns: Vec::new(),
@@ -1681,7 +1688,7 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
         diff_schema(&options)
     };
 
-    let rename_candidates = if options.detect_renames {
+    let rename_candidates = if options.detect_renames && options.detect_table_renames {
         let removed: Vec<String> = diffs.iter().filter(|d| d.diff_type == "removed").map(|d| d.name.clone()).collect();
         let added: Vec<String> = diffs.iter().filter(|d| d.diff_type == "added").map(|d| d.name.clone()).collect();
         let candidates = detect_renames(
@@ -1692,21 +1699,21 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
             options.rename_threshold,
         );
 
-        let removed_renamed: HashSet<&str> = candidates.iter().map(|r| r.removed_name.as_str()).collect();
-        let added_renamed: HashSet<&str> = candidates.iter().map(|r| r.added_name.as_str()).collect();
+        let target_renamed: HashSet<&str> = candidates.iter().map(|r| r.target_name.as_str()).collect();
+        let source_renamed: HashSet<&str> = candidates.iter().map(|r| r.source_name.as_str()).collect();
 
         diffs.retain(|d| {
-            !((d.diff_type == "removed" && removed_renamed.contains(d.name.as_str()))
-                || (d.diff_type == "added" && added_renamed.contains(d.name.as_str())))
+            !((d.diff_type == "removed" && target_renamed.contains(d.name.as_str()))
+                || (d.diff_type == "added" && source_renamed.contains(d.name.as_str())))
         });
 
         for c in &candidates {
-            let source_detail = options.source_details.iter().find(|d| d.name == c.removed_name);
-            let target_detail = options.target_details.iter().find(|d| d.name == c.added_name);
+            let source_detail = options.source_details.iter().find(|d| d.name == c.source_name);
+            let target_detail = options.target_details.iter().find(|d| d.name == c.target_name);
             diffs.push(TableDiff {
                 diff_type: "renamed".to_string(),
                 object_type: Some("table".to_string()),
-                name: c.removed_name.clone(),
+                name: c.source_name.clone(),
                 columns: None,
                 indexes: None,
                 foreign_keys: None,
@@ -5241,8 +5248,8 @@ mod tests {
         );
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].removed_name, "users_new");
-        assert_eq!(candidates[0].added_name, "users_old");
+        assert_eq!(candidates[0].source_name, "users_old");
+        assert_eq!(candidates[0].target_name, "users_new");
         assert!(candidates[0].score >= 0.5);
     }
 
@@ -5864,6 +5871,7 @@ mod tests {
             cascade_delete: false,
             compare_column_order: false,
             detect_renames: true,
+            detect_table_renames: true,
             rename_threshold: 0.5,
             ..Default::default()
         };
@@ -6106,6 +6114,7 @@ mod tests {
             cascade_delete: false,
             compare_column_order: false,
             detect_renames: true,
+            detect_table_renames: false,
             rename_threshold: 0.5,
             enable_rollback: false,
             source_dialect: Some(DialectKind::Mysql),
@@ -6455,8 +6464,8 @@ mod tests {
         }];
         let candidates = detect_renames(&removed, &added, &source_details, &target_details, 0.5);
         assert_eq!(candidates.len(), 1, "should detect table rename");
-        assert_eq!(candidates[0].removed_name, "old_table");
-        assert_eq!(candidates[0].added_name, "new_table");
+        assert_eq!(candidates[0].source_name, "new_table");
+        assert_eq!(candidates[0].target_name, "old_table");
     }
 
     // -- 45. Column rename detection: greedy matching avoids conflicts --
@@ -7234,6 +7243,7 @@ mod tests {
             cascade_delete: false,
             compare_column_order: false,
             detect_renames: false,
+            detect_table_renames: false,
             rename_threshold: 0.5,
             enable_rollback: false,
             source_dialect: Some(source_kind),

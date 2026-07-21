@@ -3112,6 +3112,7 @@ export default withEnglishFallback({
       sequenceLastValues: "Confronta ultimi valori sequenza",
       compareColumnOrder: "Confronta ordine colonne",
       detectRenames: "Rileva ridenominazioni",
+      detectTableRenames: "Rileva ridenominazioni tabelle",
       enableRollback: "Abilita rollback",
       advancedSection: "Avanzate",
       renameThreshold: "Soglia ridenominazione",
