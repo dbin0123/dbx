@@ -38,6 +38,7 @@ import type {
   SavedSqlLibrary,
   SshConfigHostEntry,
   TunnelProfile,
+  TransactionLog,
 } from "@/types/database";
 import { isTauriCommandUnavailable, normalizeConnectionTestResult } from "@/lib/connection/connectionDatabaseInfo";
 import type { CollectionInfo } from "@/types/database";

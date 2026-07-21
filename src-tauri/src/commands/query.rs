@@ -225,15 +225,13 @@ pub async fn execute_in_transaction(
 /// Execute multiple SQL statements across multiple databases using TwoPhaseCommit.
 /// Each participant is a single statement; if all prepare successfully they all commit,
 /// otherwise they roll back and report Mixed status.
-#[tauri::command]
-pub async fn execute_script_with_2pc(
-    state: State<'_, Arc<AppState>>,
+pub async fn execute_script_with_2pc_core(
+    app: Arc<AppState>,
     connection_id: String,
     database: String,
     statements: Vec<String>,
     schema: Option<String>,
 ) -> Result<dbx_core::two_phase_commit::TransactionLog, String> {
-    let app: Arc<AppState> = (*state).clone();
     let backend = Arc::new(LocalBackend::new(Arc::new(app.storage.clone())));
     let coordinator = TwoPhaseCommit::new(backend);
 
@@ -242,7 +240,6 @@ pub async fn execute_script_with_2pc(
         configs.get(&connection_id).map(|c| c.db_type)
     };
 
-    // Split each user-provided statement into individual SQL statements
     let parsed: Vec<String> = statements
         .iter()
         .flat_map(|s| {
@@ -286,6 +283,18 @@ pub async fn execute_script_with_2pc(
 
     let tx_id = format!("2pc_{}", uuid::Uuid::new_v4());
     coordinator.execute(&tx_id, &participants, serde_json::json!({"source": "execute_script_with_2pc"})).await
+}
+
+#[tauri::command]
+pub async fn execute_script_with_2pc(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    database: String,
+    statements: Vec<String>,
+    schema: Option<String>,
+) -> Result<dbx_core::two_phase_commit::TransactionLog, String> {
+    let app: Arc<AppState> = (*state).clone();
+    execute_script_with_2pc_core(app, connection_id, database, statements, schema).await
 }
 
 #[tauri::command]
@@ -718,8 +727,8 @@ mod tests {
     #[tokio::test]
     async fn execute_script_with_2pc_returns_transaction_log() {
         let state = test_app_state().await;
-        let result = execute_script_with_2pc(
-            tauri::State::from(&state),
+        let result = execute_script_with_2pc_core(
+            state,
             "conn-1".to_string(),
             "testdb".to_string(),
             vec!["SELECT 1".to_string()],
@@ -727,14 +736,12 @@ mod tests {
         )
         .await;
 
-        // Expect failure because no real connection exists, but we test the 2PC flow works
         match result {
             Ok(log) => {
                 assert!(!log.transaction_id.is_empty());
                 assert!(!log.participants.is_empty());
             }
             Err(e) => {
-                // Expected when no real DB connection
                 assert!(!e.is_empty());
             }
         }
@@ -743,14 +750,8 @@ mod tests {
     #[tokio::test]
     async fn execute_script_with_2pc_empty_statements_succeeds() {
         let state = test_app_state().await;
-        let result = execute_script_with_2pc(
-            tauri::State::from(&state),
-            "conn-empty".to_string(),
-            "testdb".to_string(),
-            vec![],
-            None,
-        )
-        .await;
+        let result =
+            execute_script_with_2pc_core(state, "conn-empty".to_string(), "testdb".to_string(), vec![], None).await;
 
         match result {
             Ok(log) => {

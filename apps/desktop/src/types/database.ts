@@ -569,6 +569,21 @@ export interface QueryResultRun {
   tableMeta?: QueryTab["tableMeta"];
 }
 
+export interface ParticipantInfo {
+  id: string;
+  name: string;
+  role: string;
+}
+
+export interface TransactionLog {
+  transaction_id: string;
+  status: string;
+  participants: ParticipantInfo[];
+  created_at: string;
+  updated_at: string;
+  metadata: unknown;
+}
+
 export interface SqlTextSpan {
   start_line: number;
   start_column: number;

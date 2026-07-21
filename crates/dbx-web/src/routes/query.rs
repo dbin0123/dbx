@@ -898,7 +898,7 @@ mod tests {
     use axum::extract::State as AxumState;
     use dbx_core::storage::Storage;
     use std::collections::{HashMap, HashSet};
-    use tokio::sync::Mutex;
+    use tokio::sync::{Mutex, RwLock};
 
     async fn test_web_state() -> (Arc<WebState>, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("dbx-web-query-test-{}", uuid::Uuid::new_v4()));

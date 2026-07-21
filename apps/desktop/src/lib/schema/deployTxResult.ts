@@ -20,5 +20,5 @@ export function buildDeployTxResult(txLog: any, t: (key: string, params?: Record
   if (status === "rolled_back") {
     return { success: false, status, message: t("diff.deployRolledBack") };
   }
-  return { success: false, status, message: t("diff.deployFailed", { status: status || "unknown" }) };
+  return { success: false, status: status || "unknown", message: t("diff.deployFailed", { status: status || "unknown" }) };
 }

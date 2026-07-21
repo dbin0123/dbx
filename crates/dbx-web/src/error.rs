@@ -1,7 +1,14 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use std::fmt;
 
 pub struct AppError(pub String);
+
+impl fmt::Display for AppError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 impl AppError {
     pub fn internal(msg: impl Into<String>) -> Self {
