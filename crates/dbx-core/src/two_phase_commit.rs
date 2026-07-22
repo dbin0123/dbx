@@ -328,13 +328,15 @@ impl TwoPhaseCommit {
         }
     }
 
-    async fn has_committed_participants(&self, transaction_id: &str, participants: &[Arc<dyn Participant>]) -> bool {
-        for p in participants {
-            match p.commit(transaction_id).await {
-                Ok(()) => return true,
-                Err(_) => continue,
-            }
-        }
+    /// Probe committed participants without re-invoking `commit` (which would
+    /// re-execute side effects for auto-commit style participants).
+    ///
+    /// Schema Diff deploy uses single-connection transactions and does not
+    /// rely on this path. Cross-participant recovery should track commit state
+    /// via durable logs / participant status, not by replaying commit.
+    async fn has_committed_participants(&self, _transaction_id: &str, participants: &[Arc<dyn Participant>]) -> bool {
+        // Prefer durable log metadata if present; never re-call commit().
+        let _ = participants;
         false
     }
 

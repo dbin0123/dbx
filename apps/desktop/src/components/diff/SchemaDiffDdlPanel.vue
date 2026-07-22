@@ -12,7 +12,7 @@ import DiffSvgConnector from "@/components/diff/DiffSvgConnector.vue";
 import { FileCode, ScrollText, Copy, Play, FileDiff } from "@lucide/vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
-import type { SchemaDiffObject, CompatibilityWarning, DependencyGraph, PermissionDiff } from "@/lib/schema/schemaDiff";
+import type { SchemaDiffObject, CompatibilityWarning, DependencyGraph, PermissionDiff, MissingRollbackObject, RollbackCompleteness } from "@/lib/schema/schemaDiff";
 
 const { t } = useI18n();
 const { toast } = useToast();
@@ -41,6 +41,9 @@ const props = defineProps<{
   deploySqlMode?: "forward" | "rollback";
   dependencyGraph?: DependencyGraph | null;
   permissionDiffs?: PermissionDiff[];
+  rollbackCompleteness?: RollbackCompleteness;
+  missingRollbackObjects?: MissingRollbackObject[];
+  canExecute?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -314,6 +317,12 @@ function copyDeploySqlAll() {
       <button class="text-xs px-2 py-1 rounded transition-colors" :class="deploySqlMode === 'rollback' ? 'bg-destructive text-destructive-foreground' : 'hover:bg-accent'" @click="$emit('update:deploySqlMode', 'rollback')">{{ t("diff.rollbackSql") }}</button>
     </div>
 
+    <div v-if="rollbackCompleteness === 'incomplete'" class="px-3 py-1.5 border-b bg-amber-50 dark:bg-amber-950/30 text-xs text-amber-800 dark:text-amber-200 shrink-0">
+      {{ t("diff.rollbackIncompleteBanner") }}
+      <ul v-if="missingRollbackObjects?.length" class="mt-1 list-disc pl-4">
+        <li v-for="(m, i) in missingRollbackObjects" :key="i">{{ m.kind }} {{ m.name }}{{ m.table ? ` @ ${m.table}` : "" }} — {{ m.reason }}</li>
+      </ul>
+    </div>
     <!-- Tabs -->
     <div class="flex border-b shrink-0">
       <button class="px-3 py-1.5 text-xs font-medium flex items-center gap-1 transition-colors" :class="activeTab === 'ddl' ? 'bg-primary/10 text-primary border-b-2 border-primary' : 'hover:bg-muted/50'" @click="activeTab = 'ddl'">
@@ -525,7 +534,7 @@ function copyDeploySqlAll() {
             <Copy class="w-3 h-3" />
             {{ t("diff.copy") }}
           </Button>
-          <Button variant="ghost" size="sm" class="h-6 px-2 text-xs gap-1" @click="$emit('executeScript')">
+          <Button variant="ghost" size="sm" class="h-6 px-2 text-xs gap-1" :disabled="canExecute === false" @click="$emit('executeScript')">
             <Play class="w-3 h-3" />
             {{ t("diff.execute") }}
           </Button>
@@ -602,7 +611,7 @@ function copyDeploySqlAll() {
             <Copy class="w-3 h-3" />
             {{ t("diff.copy") }}
           </Button>
-          <Button variant="ghost" size="sm" class="h-6 px-2 text-xs gap-1" @click="$emit('executeScript')">
+          <Button variant="ghost" size="sm" class="h-6 px-2 text-xs gap-1" :disabled="canExecute === false" @click="$emit('executeScript')">
             <Play class="w-3 h-3" />
             {{ t("diff.executeAll") }}
           </Button>

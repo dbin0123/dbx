@@ -2527,6 +2527,108 @@ fn is_agent_execute_batch_unsupported(error: &str) -> bool {
     lower.contains("execute_batch") && (lower.contains("unknown method") || lower.contains("method not found"))
 }
 
+/// Deploy result for Schema Diff: single-connection transactional execution.
+/// On statement failure the transaction is rolled back by the underlying path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaDiffDeployResult {
+    pub transaction_id: String,
+    pub status: String,
+    pub participants: Vec<crate::two_phase_commit::ParticipantInfo>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub executed_count: usize,
+    pub statement_count: usize,
+    pub error: Option<String>,
+    pub metadata: serde_json::Value,
+}
+
+/// Execute Schema Diff deploy SQL as one real single-connection transaction.
+///
+/// - Uses [`execute_statements_in_transaction`] so partial success rolls back.
+/// - Returns a structured result (never re-executes statements to probe status).
+/// - Comment-only / empty scripts succeed as `committed` with zero statements.
+pub async fn execute_schema_diff_deploy(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    statements: &[String],
+    schema: Option<&str>,
+) -> SchemaDiffDeployResult {
+    let tx_id = format!("deploy_{}", uuid::Uuid::new_v4());
+    let now = chrono::Utc::now().to_rfc3339();
+    let db_type = connection_database_type(state, connection_id).await;
+
+    let parsed: Vec<String> = statements
+        .iter()
+        .flat_map(|s| {
+            db_type.map_or_else(|| split_sql_statements(s), |dt| crate::sql::split_sql_statements_for_database(s, dt))
+        })
+        .map(|s| s.trim().to_string())
+        .filter(|s| {
+            !s.is_empty()
+                && !s.lines().all(|line| {
+                    let t = line.trim();
+                    t.is_empty() || t.starts_with("--")
+                })
+        })
+        .collect();
+
+    let participant = crate::two_phase_commit::ParticipantInfo {
+        id: "connection".to_string(),
+        name: format!("{connection_id}/{database}"),
+        role: "database".to_string(),
+    };
+
+    if parsed.is_empty() {
+        return SchemaDiffDeployResult {
+            transaction_id: tx_id,
+            status: crate::two_phase_commit::TransactionStatus::Committed.as_str().to_string(),
+            participants: vec![participant],
+            created_at: now.clone(),
+            updated_at: now,
+            executed_count: 0,
+            statement_count: 0,
+            error: None,
+            metadata: serde_json::json!({"source": "schema_diff_deploy", "mode": "single_connection_tx"}),
+        };
+    }
+
+    match execute_statements_in_transaction(state, connection_id, database, &parsed, schema).await {
+        Ok(result) => SchemaDiffDeployResult {
+            transaction_id: tx_id,
+            status: crate::two_phase_commit::TransactionStatus::Committed.as_str().to_string(),
+            participants: vec![participant],
+            created_at: now.clone(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            executed_count: parsed.len(),
+            statement_count: parsed.len(),
+            error: None,
+            metadata: serde_json::json!({
+                "source": "schema_diff_deploy",
+                "mode": "single_connection_tx",
+                "affected_rows": result.affected_rows,
+                "execution_time_ms": result.execution_time_ms,
+            }),
+        },
+        Err(e) => SchemaDiffDeployResult {
+            transaction_id: tx_id,
+            status: crate::two_phase_commit::TransactionStatus::RolledBack.as_str().to_string(),
+            participants: vec![participant],
+            created_at: now.clone(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            executed_count: 0,
+            statement_count: parsed.len(),
+            error: Some(e.clone()),
+            metadata: serde_json::json!({
+                "source": "schema_diff_deploy",
+                "mode": "single_connection_tx",
+                "error": e,
+            }),
+        },
+    }
+}
+
 /// Execute multiple SQL statements within a single transaction.
 /// For pooled drivers (Postgres/MySQL), uses the driver transaction API.
 /// For SQLite and already-single-connection drivers (ClickHouse/SqlServer/Agent),

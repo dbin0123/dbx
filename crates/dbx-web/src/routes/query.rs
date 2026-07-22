@@ -511,69 +511,18 @@ pub async fn execute_in_transaction(
 pub async fn execute_script_with_2pc(
     State(state): State<Arc<WebState>>,
     Json(req): Json<ExecuteBatchRequest>,
-) -> Result<Json<dbx_core::two_phase_commit::TransactionLog>, AppError> {
+) -> Result<Json<dbx_core::query::SchemaDiffDeployResult>, AppError> {
     tracing::debug!(connection_id = %req.connection_id, "execute_script_with_2pc");
-    use dbx_core::state_persistence::LocalBackend;
-    use dbx_core::two_phase_commit::{FnParticipant, Participant, TwoPhaseCommit};
-
-    let app = state.app.clone();
-    let backend = Arc::new(LocalBackend::new(Arc::new(app.storage.clone())));
-    let coordinator = TwoPhaseCommit::new(backend);
-
-    let db_type = {
-        let configs = app.configs.read().await;
-        configs.get(&req.connection_id).map(|c| c.db_type)
-    };
-
-    let parsed: Vec<String> = req
-        .statements
-        .iter()
-        .flat_map(|s| {
-            db_type.map_or_else(|| vec![s.clone()], |dt| dbx_core::sql::split_sql_statements_for_database(s, dt))
-        })
-        .filter(|s| !s.trim().is_empty())
-        .collect();
-
-    let mut participants: Vec<Arc<dyn Participant>> = Vec::new();
-    for (i, stmt) in parsed.iter().enumerate() {
-        let cid_commit = req.connection_id.clone();
-        let db_commit = req.database.clone();
-        let sql_commit = stmt.clone();
-        let sch_commit = req.schema.clone();
-        let app_commit = app.clone();
-
-        let participant = FnParticipant::new(
-            format!("stmt_{i}"),
-            format!("Statement {i}"),
-            "database".to_string(),
-            || Box::pin(async { Ok(()) }),
-            move || {
-                Box::pin({
-                    let cid = cid_commit.clone();
-                    let db = db_commit.clone();
-                    let sql = sql_commit.clone();
-                    let sch = sch_commit.clone();
-                    let app = app_commit.clone();
-                    async move {
-                        dbx_core::query::execute_statements(&app, &cid, &db, &[sql], sch.as_deref(), None)
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| format!("Commit error: {e}"))
-                    }
-                })
-            },
-            || Box::pin(async { Ok(()) }),
-        );
-        participants.push(Arc::new(participant));
-    }
-
-    let tx_id = format!("2pc_{}", uuid::Uuid::new_v4());
-    let log = coordinator
-        .execute(&tx_id, &participants, serde_json::json!({"source": "execute_script_with_2pc"}))
-        .await
-        .map_err(AppError)?;
-
-    Ok(Json(log))
+    // Single-connection real transaction (not per-statement auto-commit 2PC).
+    let result = dbx_core::query::execute_schema_diff_deploy(
+        &state.app,
+        &req.connection_id,
+        &req.database,
+        &req.statements,
+        req.schema.as_deref(),
+    )
+    .await;
+    Ok(Json(result))
 }
 
 pub async fn analyze_sql_references(
@@ -944,7 +893,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_script_with_2pc_returns_transaction_log() {
+    async fn execute_script_with_2pc_returns_structured_result() {
         let (state, _dir) = test_web_state().await;
         let req = ExecuteBatchRequest {
             connection_id: "conn-1".to_string(),
@@ -954,17 +903,14 @@ mod tests {
             timeout_secs: None,
         };
 
-        let result = execute_script_with_2pc(AxumState(state), Json(req)).await;
-
-        match result {
-            Ok(Json(log)) => {
-                assert!(!log.transaction_id.is_empty());
-                assert!(!log.participants.is_empty());
-            }
-            Err(e) => {
-                assert!(!e.to_string().is_empty());
-            }
-        }
+        let result = execute_script_with_2pc(AxumState(state), Json(req)).await.unwrap();
+        let log = result.0;
+        assert!(!log.transaction_id.is_empty());
+        assert!(!log.participants.is_empty());
+        assert_eq!(log.status, "rolled_back");
+        assert!(log.error.as_ref().is_some_and(|e| !e.is_empty()));
+        assert_eq!(log.statement_count, 1);
+        assert_eq!(log.executed_count, 0);
     }
 
     #[tokio::test]
@@ -978,14 +924,12 @@ mod tests {
             timeout_secs: None,
         };
 
-        let result = execute_script_with_2pc(AxumState(state), Json(req)).await;
-
-        match result {
-            Ok(Json(log)) => {
-                assert_eq!(log.participants.len(), 0);
-                assert_eq!(log.status, "committed");
-            }
-            Err(_) => {}
-        }
+        let result = execute_script_with_2pc(AxumState(state), Json(req)).await.unwrap();
+        let log = result.0;
+        assert_eq!(log.status, "committed");
+        assert_eq!(log.statement_count, 0);
+        assert_eq!(log.executed_count, 0);
+        assert!(log.error.is_none());
+        assert_eq!(log.participants.len(), 1);
     }
 }

@@ -35,6 +35,8 @@ import {
   type DiffOperationType,
   type DiffObjectKind,
   type SchemaDiffPreparation,
+  type MissingRollbackObject,
+  type RollbackCompleteness,
   type TableSchemaDetail,
   type RenameCandidate,
   type CompatibilityWarning,
@@ -100,10 +102,12 @@ const executing = ref(false);
 const lastDiffResult = ref<SchemaDiffPreparation | null>(null);
 const targetDbVersion = ref<string | null>(null);
 const showResultDialog = ref(false);
-const deployResult = ref<{ success: boolean; status?: string; message: string; affectedRows?: number } | null>(null);
+const deployResult = ref<{ success: boolean; status?: string; message: string; affectedRows?: number; error?: string } | null>(null);
 
 // Phase 4 result fields
 const rollbackSql = ref("");
+const rollbackCompleteness = ref<RollbackCompleteness>("complete");
+const missingRollbackObjects = ref<MissingRollbackObject[]>([]);
 const renameCandidates = ref<RenameCandidate[]>([]);
 const compatibilityWarnings = ref<CompatibilityWarning[]>([]);
 const permissionDiffs = ref<PermissionDiff[]>([]);
@@ -374,6 +378,8 @@ async function handleCompare() {
 
   // Reset Phase 4 state to prevent stale data from previous compares
   rollbackSql.value = "";
+  rollbackCompleteness.value = "complete";
+  missingRollbackObjects.value = [];
   renameCandidates.value = [];
   compatibilityWarnings.value = [];
   permissionDiffs.value = [];
@@ -483,6 +489,8 @@ async function handleCompare() {
 
     // Extract new result fields
     rollbackSql.value = result.rollbackSyncSql ?? "";
+    rollbackCompleteness.value = result.rollbackCompleteness ?? "complete";
+    missingRollbackObjects.value = result.missingRollbackObjects ?? [];
     renameCandidates.value = result.renameCandidates ?? [];
     compatibilityWarnings.value = result.compatibilityWarnings ?? [];
     permissionDiffs.value = result.permissionDiffs ?? [];
@@ -588,6 +596,10 @@ function regenerateDeploySql() {
 }
 
 function switchDeploySqlMode(mode: "forward" | "rollback") {
+  if (mode === "rollback" && rollbackCompleteness.value === "incomplete") {
+    toast(t("diff.rollbackIncompleteBlocked"), 4000);
+    return;
+  }
   deploySqlMode.value = mode;
   if (mode === "rollback" && rollbackSql.value) {
     deploySql.value = rollbackSql.value;
@@ -595,6 +607,13 @@ function switchDeploySqlMode(mode: "forward" | "rollback") {
     regenerateDeploySql();
   }
 }
+
+const canExecuteDeploy = computed(() => {
+  if (deploySqlMode.value === "rollback" && rollbackCompleteness.value === "incomplete") {
+    return false;
+  }
+  return true;
+});
 
 function applyRename(rc: RenameCandidate) {
   let found = false;
@@ -641,6 +660,10 @@ function ignoreRename(index: number) {
 async function handleExecuteScript() {
   if (!deploySql.value || deploySql.value.startsWith("-- ")) {
     toast(t("diff.noObjectsSelected"), 3000);
+    return;
+  }
+  if (deploySqlMode.value === "rollback" && rollbackCompleteness.value === "incomplete") {
+    toast(t("diff.rollbackIncompleteBlocked"), 5000);
     return;
   }
 
@@ -774,6 +797,10 @@ async function handleDeploy() {
 
 async function onConfirmDeploy() {
   showConfirmDialog.value = false;
+  if (deploySqlMode.value === "rollback" && rollbackCompleteness.value === "incomplete") {
+    toast(t("diff.rollbackIncompleteBlocked"), 5000);
+    return;
+  }
   executing.value = true;
   try {
     const targetConnection = store.getConfig(targetConnectionId.value);
@@ -941,6 +968,9 @@ const targetConnectionInfo = computed(() => {
                 :deploy-sql-mode="deploySqlMode"
                 :dependency-graph="dependencyGraph"
                 :permission-diffs="permissionDiffs"
+                :rollback-completeness="rollbackCompleteness"
+                :missing-rollback-objects="missingRollbackObjects"
+                :can-execute="canExecuteDeploy"
                 @update:deploy-sql-mode="switchDeploySqlMode"
                 @execute-script="handleExecuteScript"
               />
@@ -961,6 +991,9 @@ const targetConnectionInfo = computed(() => {
             :deploy-sql-mode="deploySqlMode"
             :compatibility-warnings="compatibilityWarnings"
             :rename-candidates="renameCandidates"
+            :rollback-completeness="rollbackCompleteness"
+            :missing-rollback-objects="missingRollbackObjects"
+            :can-execute="canExecuteDeploy"
             @update:deploy-sql-mode="switchDeploySqlMode"
             @back="step = 'result'"
             @deploy="handleDeploy"

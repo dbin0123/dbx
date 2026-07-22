@@ -3223,6 +3223,8 @@ export default withEnglishFallback({
     rollbackMode: "Rollback",
     deployMixed: "Distribuzione parzialmente completata. Alcune modifiche confermate, altre annullate.",
     deployRolledBack: "Tutte le modifiche sono state annullate.",
+    rollbackIncompleteBlocked: "Rollback incomplete (missing objects). Execution blocked.",
+    rollbackIncompleteBanner: "Rollback incomplete — missing trigger/table DDL.",
     deployMixedTitle: "Parzialmente Distribuito",
     deployRolledBackTitle: "Annullato",
     deployMixedWarning: "Alcune istruzioni sono state confermate mentre altre sono fallite. Il database potrebbe trovarsi in uno stato inconsistente. Controllare il log delle transazioni e intervenire manualmente prima di riprovare.",

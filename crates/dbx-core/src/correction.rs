@@ -476,6 +476,8 @@ mod tests {
             rule_diffs: Vec::new(),
             owner_diffs: Vec::new(),
             rollback_sync_sql: Some("-- Rollback SQL".to_string()),
+            rollback_completeness: crate::schema_diff::RollbackCompleteness::Complete,
+            missing_rollback_objects: Vec::new(),
             rename_candidates: Vec::new(),
             rollback_graph: None,
             compatibility_warnings: Vec::new(),

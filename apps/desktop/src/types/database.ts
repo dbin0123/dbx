@@ -593,6 +593,11 @@ export interface TransactionLog {
   created_at: string;
   updated_at: string;
   metadata: unknown;
+  /** camelCase fields from SchemaDiffDeployResult */
+  transactionId?: string;
+  executedCount?: number;
+  statementCount?: number;
+  error?: string;
 }
 
 export interface SqlTextSpan {

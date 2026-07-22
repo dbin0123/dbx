@@ -322,6 +322,33 @@ pub struct SchemaDiffPreparationOptions {
     pub field_mappings: Vec<FieldMapping>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingRollbackObject {
+    pub kind: String,
+    pub name: String,
+    pub table: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RollbackCompleteness {
+    #[serde(rename = "complete")]
+    Complete,
+    #[serde(rename = "incomplete")]
+    Incomplete,
+}
+
+impl RollbackCompleteness {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Incomplete => "incomplete",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaDiffPreparation {
@@ -337,6 +364,12 @@ pub struct SchemaDiffPreparation {
     pub sync_sql: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollback_sync_sql: Option<String>,
+    /// Whether rollback SQL is complete enough to execute safely.
+    #[serde(default = "default_rollback_complete")]
+    pub rollback_completeness: RollbackCompleteness,
+    /// Objects that could not be reconstructed for rollback (e.g. triggers without body).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_rollback_objects: Vec<MissingRollbackObject>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rename_candidates: Vec<RenameCandidate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -349,6 +382,10 @@ pub struct SchemaDiffPreparation {
     pub permission_sync_sql: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dependency_graph: Option<DependencyGraph>,
+}
+
+fn default_rollback_complete() -> RollbackCompleteness {
+    RollbackCompleteness::Complete
 }
 
 // ============================================================================
@@ -1251,6 +1288,15 @@ pub fn generate_rollback_sync_sql(
     schema: Option<&str>,
     cascade_delete: bool,
 ) -> String {
+    generate_rollback_sync_sql_with_missing(rollback_graph, db_type, schema, cascade_delete).0
+}
+
+pub fn generate_rollback_sync_sql_with_missing(
+    rollback_graph: &RollbackGraph,
+    db_type: DatabaseType,
+    schema: Option<&str>,
+    cascade_delete: bool,
+) -> (String, Vec<MissingRollbackObject>) {
     let rollback_diffs: Vec<TableDiff> = rollback_graph.rollback_nodes.iter().map(|n| n.table_diff.clone()).collect();
     generate_schema_sync_sql_inner(&rollback_diffs, &[], &[], &[], &[], db_type, schema, cascade_delete, None, &[])
 }
@@ -1773,7 +1819,7 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
     let owner_diffs = diff_owners(&options.source_owners, &options.target_owners);
 
     for diff in &mut diffs {
-        let sync_sql = generate_schema_sync_sql_inner(
+        let (sync_sql, _) = generate_schema_sync_sql_inner(
             std::slice::from_ref(diff),
             &[],
             &[],
@@ -1790,7 +1836,7 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
         }
     }
 
-    let sync_sql = generate_schema_sync_sql_inner(
+    let (sync_sql, _) = generate_schema_sync_sql_inner(
         &diffs,
         &function_diffs,
         &sequence_diffs,
@@ -1803,14 +1849,23 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
         &options.field_mappings,
     );
 
-    let rollback_sync_sql = rollback_graph.as_ref().map(|graph| {
-        generate_rollback_sync_sql(
-            graph,
-            options.database_type,
-            options.target_schema.as_deref(),
-            options.cascade_delete,
-        )
-    });
+    let (rollback_sync_sql, missing_rollback_objects) = match &rollback_graph {
+        Some(graph) => {
+            let (sql, missing) = generate_rollback_sync_sql_with_missing(
+                graph,
+                options.database_type,
+                options.target_schema.as_deref(),
+                options.cascade_delete,
+            );
+            (Some(sql), missing)
+        }
+        None => (None, Vec::new()),
+    };
+    let rollback_completeness = if missing_rollback_objects.is_empty() {
+        RollbackCompleteness::Complete
+    } else {
+        RollbackCompleteness::Incomplete
+    };
 
     let permission_diffs = if !options.source_permissions.is_empty() || !options.target_permissions.is_empty() {
         diff_permissions(&options.source_permissions, &options.target_permissions)
@@ -1832,6 +1887,8 @@ pub fn prepare_schema_diff(options: SchemaDiffPreparationOptions) -> SchemaDiffP
         owner_diffs,
         sync_sql,
         rollback_sync_sql,
+        rollback_completeness,
+        missing_rollback_objects,
         rename_candidates,
         rollback_graph,
         compatibility_warnings,
@@ -2916,7 +2973,7 @@ fn generate_create_table_sql(
     source_dialect: Option<DialectKind>,
     field_mappings: &[FieldMapping],
     triggers: &[TriggerInfo],
-) -> String {
+) -> (String, Vec<MissingRollbackObject>) {
     let mut lines = Vec::new();
     let target_dialect = DialectKind::from_database_type(db_type);
     let type_matrix =
@@ -3095,10 +3152,10 @@ fn generate_create_table_sql(
         }
     }
 
-    // Trigger recreation
+    // Trigger recreation — collect structured missing objects (do not rely on SQL comments alone).
+    let mut missing: Vec<MissingRollbackObject> = Vec::new();
     if !triggers.is_empty() {
         lines.push(String::new());
-        let mut incomplete_trigger = false;
         for trigger in triggers {
             let event_desc = if trigger.event.to_uppercase().contains("INSERT") {
                 "INSERT"
@@ -3157,23 +3214,36 @@ fn generate_create_table_sql(
                     };
                     lines.push(create_trigger);
                 } else {
-                    incomplete_trigger = true;
+                    missing.push(MissingRollbackObject {
+                        kind: "trigger".to_string(),
+                        name: trigger.name.clone(),
+                        table: Some(name.to_string()),
+                        reason: "trigger body is empty; cannot reconstruct CREATE TRIGGER".to_string(),
+                    });
                 }
             } else {
-                incomplete_trigger = true;
+                missing.push(MissingRollbackObject {
+                    kind: "trigger".to_string(),
+                    name: trigger.name.clone(),
+                    table: Some(name.to_string()),
+                    reason: "trigger statement/body missing from schema snapshot".to_string(),
+                });
             }
         }
-        if incomplete_trigger {
+        if !missing.is_empty() {
             lines.push(String::new());
             lines.push(format!(
                 "-- WARNING: Rollback DDL is INCOMPLETE — one or more triggers on table '{}' could not be reconstructed.",
                 name
             ));
             lines.push("-- Manual intervention required before executing this rollback script.".to_string());
+            for m in &missing {
+                lines.push(format!("-- missing {}: {} ({})", m.kind, m.name, m.reason));
+            }
         }
     }
 
-    lines.join("\n")
+    (lines.join("\n"), missing)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3201,6 +3271,7 @@ pub fn generate_schema_sync_sql(
         source_dialect,
         field_mappings,
     )
+    .0
 }
 
 fn generate_schema_sync_sql_inner(
@@ -3214,8 +3285,9 @@ fn generate_schema_sync_sql_inner(
     cascade_delete: bool,
     source_dialect: Option<DialectKind>,
     field_mappings: &[FieldMapping],
-) -> String {
+) -> (String, Vec<MissingRollbackObject>) {
     let mut lines = Vec::new();
+    let mut missing_objects: Vec<MissingRollbackObject> = Vec::new();
     let is_mysql = is_mysql_like(db_type);
     let cascade = if cascade_delete { " CASCADE" } else { "" };
 
@@ -3245,7 +3317,7 @@ fn generate_schema_sync_sql_inner(
                         .triggers
                         .as_ref()
                         .map_or_else(Vec::new, |triggers| triggers.iter().filter_map(|t| t.source.clone()).collect());
-                    let generated = generate_create_table_sql(
+                    let (generated, missing) = generate_create_table_sql(
                         &diff.name,
                         diff.columns.as_ref().map_or(&[] as &[ColumnDiff], |columns| columns.as_slice()),
                         diff.indexes.as_ref().map_or(&[] as &[IndexDiff], |indexes| indexes.as_slice()),
@@ -3262,6 +3334,7 @@ fn generate_schema_sync_sql_inner(
                     if !generated.is_empty() {
                         lines.push(generated);
                     }
+                    missing_objects.extend(missing);
                 } else if let Some(ddl) = diff.target_ddl.as_deref() {
                     // Inversion places only the removed target table's native
                     // DDL here, validating that it belongs to the dialect restored.
@@ -3285,7 +3358,7 @@ fn generate_schema_sync_sql_inner(
                         .triggers
                         .as_ref()
                         .map_or_else(Vec::new, |triggers| triggers.iter().filter_map(|t| t.source.clone()).collect());
-                    let gen = generate_create_table_sql(
+                    let (gen, missing) = generate_create_table_sql(
                         &diff.name,
                         cols,
                         diff.indexes.as_ref().map_or(&[] as &[IndexDiff], |v| v.as_slice()),
@@ -3300,6 +3373,7 @@ fn generate_schema_sync_sql_inner(
                     if !gen.is_empty() {
                         lines.push(gen);
                     }
+                    missing_objects.extend(missing);
                 }
             } else if has_structured_snapshot {
                 // Cross-dialect → generate CREATE TABLE from column info
@@ -3311,7 +3385,7 @@ fn generate_schema_sync_sql_inner(
                     .triggers
                     .as_ref()
                     .map_or_else(Vec::new, |triggers| triggers.iter().filter_map(|t| t.source.clone()).collect());
-                let gen = generate_create_table_sql(
+                let (gen, missing) = generate_create_table_sql(
                     &diff.name,
                     diff.columns.as_ref().map_or(&[] as &[ColumnDiff], |v| v.as_slice()),
                     diff.indexes.as_ref().map_or(&[] as &[IndexDiff], |v| v.as_slice()),
@@ -3326,6 +3400,7 @@ fn generate_schema_sync_sql_inner(
                 if !gen.is_empty() {
                     lines.push(gen);
                 }
+                missing_objects.extend(missing);
             }
             continue;
         }
@@ -3685,7 +3760,7 @@ fn generate_schema_sync_sql_inner(
         }
     }
 
-    lines.join("\n").trim().to_string()
+    (lines.join("\n").trim().to_string(), missing_objects)
 }
 
 #[cfg(test)]
@@ -5669,6 +5744,37 @@ mod tests {
         assert!(rollback.contains("-- Recreate table from native target DDL: legacy_table"));
         assert!(rollback.contains("CREATE TABLE \"archive\".\"legacy_table\" (\"id\" bigint PRIMARY KEY);"));
         assert!(!rollback.contains("CREATE TABLE \"archive\".\"legacy_table\" (\n  \n)"), "{rollback}");
+    }
+
+    #[test]
+    fn dropped_table_incomplete_trigger_sets_structured_missing_objects() {
+        let result = rollback_removed_table_sql(
+            DatabaseType::Mysql,
+            None,
+            Some(DialectKind::Mysql),
+            DialectKind::Mysql,
+            "orders",
+            None,
+            TableSchemaDetail {
+                name: "orders".to_string(),
+                columns: vec![column("id", "int", None)],
+                indexes: vec![],
+                foreign_keys: vec![],
+                triggers: vec![crate::types::TriggerInfo {
+                    name: "trg_orders".to_string(),
+                    event: "INSERT".to_string(),
+                    timing: "AFTER".to_string(),
+                    statement: None,
+                }],
+                ddl: None,
+            },
+        );
+
+        assert_eq!(result.rollback_completeness, RollbackCompleteness::Incomplete);
+        assert!(!result.missing_rollback_objects.is_empty());
+        assert_eq!(result.missing_rollback_objects[0].kind, "trigger");
+        assert_eq!(result.missing_rollback_objects[0].name, "trg_orders");
+        assert!(result.missing_rollback_objects[0].table.as_deref() == Some("orders"));
     }
 
     #[test]

@@ -3225,6 +3225,8 @@ export default withEnglishFallback({
     rollbackMode: "Reversión",
     deployMixed: "Despliegue parcialmente completado. Algunos cambios confirmados, otros revertidos.",
     deployRolledBack: "Todos los cambios han sido revertidos.",
+    rollbackIncompleteBlocked: "Rollback incomplete (missing objects). Execution blocked.",
+    rollbackIncompleteBanner: "Rollback incomplete — missing trigger/table DDL.",
     deployMixedTitle: "Parcialmente Desplegado",
     deployRolledBackTitle: "Revertido",
     deployMixedWarning: "Algunas declaraciones se confirmaron mientras que otras fallaron. La base de datos puede estar en un estado inconsistente. Revise el registro de transacciones y tome medidas correctivas manuales antes de reintentar.",

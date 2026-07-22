@@ -9,7 +9,7 @@ import { useTheme } from "@/composables/useTheme";
 import { loadEditorTheme, editorFontTheme } from "@/lib/editor/editorThemes";
 import { createDbxCodeMirrorSqlDialect } from "@/lib/editor/codemirrorSqlDialect";
 import { Splitpanes, Pane } from "splitpanes";
-import type { SchemaDiffObject, DiffOperationType, DiffObjectKind, CompatibilityWarning, RenameCandidate } from "@/lib/schema/schemaDiff";
+import type { SchemaDiffObject, DiffOperationType, DiffObjectKind, CompatibilityWarning, RenameCandidate, MissingRollbackObject, RollbackCompleteness } from "@/lib/schema/schemaDiff";
 import ImpactReportPanel from "@/components/diff/ImpactReportPanel.vue";
 import type { ImpactReport } from "@/types/governance";
 import { ArrowLeft, Copy, Download, Play, Loader2, PlusCircle, XCircle, ArrowRightLeft, Table, Eye, FunctionSquare, ListOrdered, ScrollText, UserCog, ListTree, Link2, Zap, AlertTriangle, ShieldCheck } from "@lucide/vue";
@@ -31,6 +31,9 @@ const props = defineProps<{
   compatibilityWarnings?: CompatibilityWarning[];
   renameCandidates?: RenameCandidate[];
   impactReport?: ImpactReport | null;
+  rollbackCompleteness?: RollbackCompleteness;
+  missingRollbackObjects?: MissingRollbackObject[];
+  canExecute?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -323,6 +326,12 @@ function getObjectIconColor(kind: DiffObjectKind): string {
       </div>
     </div>
 
+    <div v-if="rollbackCompleteness === 'incomplete' && deploySqlMode === 'rollback'" class="px-3 py-1.5 border-b bg-amber-50 dark:bg-amber-950/30 text-xs text-amber-800 dark:text-amber-200 shrink-0">
+      {{ t("diff.rollbackIncompleteBanner") }}
+      <ul v-if="missingRollbackObjects?.length" class="mt-1 list-disc pl-4">
+        <li v-for="(m, i) in missingRollbackObjects" :key="i">{{ m.kind }} {{ m.name }}{{ m.table ? ` @ ${m.table}` : "" }} — {{ m.reason }}</li>
+      </ul>
+    </div>
     <!-- Content -->
     <Splitpanes class="flex-1 min-h-0">
       <Pane size="30" min-size="20">
@@ -371,7 +380,7 @@ function getObjectIconColor(kind: DiffObjectKind): string {
         <Button variant="ghost" size="sm" class="h-7 text-xs" @click="$emit('back')">
           {{ t("diff.cancel") }}
         </Button>
-        <Button size="sm" class="h-7 text-xs gap-1" :disabled="topLevelObjects.length === 0 || executing" @click="handleDeploy">
+        <Button size="sm" class="h-7 text-xs gap-1" :disabled="topLevelObjects.length === 0 || executing || canExecute === false" @click="handleDeploy">
           <Loader2 v-if="executing" class="w-3.5 h-3.5 animate-spin" />
           <Play v-else class="w-3.5 h-3.5" />
           {{ t("diff.deployToServer") }}

@@ -3437,6 +3437,8 @@ export default withEnglishFallback({
     rollbackMode: "回滚",
     deployMixed: "部署部分完成，部分变更已提交，其余已回滚。",
     deployRolledBack: "所有变更已回滚。",
+    rollbackIncompleteBlocked: "回滚 SQL 不完整（存在缺失对象），已禁止执行。",
+    rollbackIncompleteBanner: "回滚不完整 — 缺少触发器/表 DDL。请先补全缺失对象再执行。",
     deployMixedTitle: "部分已部署",
     deployRolledBackTitle: "已回滚",
     deployMixedWarning: "部分语句已提交但其他语句失败了。数据库可能处于不一致状态，请在重试前检查事务日志并手动处理。",

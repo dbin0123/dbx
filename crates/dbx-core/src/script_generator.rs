@@ -1831,6 +1831,8 @@ mod tests {
                 owner_diffs: vec![],
                 sync_sql: String::new(),
                 rollback_sync_sql: None,
+                rollback_completeness: crate::schema_diff::RollbackCompleteness::Complete,
+                missing_rollback_objects: vec![],
                 rename_candidates: vec![],
                 rollback_graph: None,
                 compatibility_warnings: vec![],

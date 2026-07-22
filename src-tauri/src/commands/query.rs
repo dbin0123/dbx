@@ -7,8 +7,6 @@ use dbx_core::db;
 use dbx_core::models::connection::DatabaseType;
 use dbx_core::query_cancel::RunningTaskMetadata;
 use dbx_core::sql::split_sql_statements;
-use dbx_core::state_persistence::LocalBackend;
-use dbx_core::two_phase_commit::{FnParticipant, TwoPhaseCommit};
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -222,7 +220,7 @@ pub async fn execute_in_transaction(
     .await
 }
 
-/// Execute multiple SQL statements across multiple databases using TwoPhaseCommit.
+/// Schema Diff deploy: single-connection real transaction (exact-once on success/failure).
 /// Each participant is a single statement; if all prepare successfully they all commit,
 /// otherwise they roll back and report Mixed status.
 pub async fn execute_script_with_2pc_core(
@@ -231,58 +229,9 @@ pub async fn execute_script_with_2pc_core(
     database: String,
     statements: Vec<String>,
     schema: Option<String>,
-) -> Result<dbx_core::two_phase_commit::TransactionLog, String> {
-    let backend = Arc::new(LocalBackend::new(Arc::new(app.storage.clone())));
-    let coordinator = TwoPhaseCommit::new(backend);
-
-    let db_type = {
-        let configs = app.configs.read().await;
-        configs.get(&connection_id).map(|c| c.db_type)
-    };
-
-    let parsed: Vec<String> = statements
-        .iter()
-        .flat_map(|s| {
-            db_type.map_or_else(|| vec![s.clone()], |dt| dbx_core::sql::split_sql_statements_for_database(s, dt))
-        })
-        .filter(|s| !s.trim().is_empty())
-        .collect();
-
-    let mut participants: Vec<Arc<dyn dbx_core::two_phase_commit::Participant>> = Vec::new();
-    for (i, stmt) in parsed.iter().enumerate() {
-        let cid_commit = connection_id.clone();
-        let db_commit = database.clone();
-        let sql_commit = stmt.clone();
-        let sch_commit = schema.clone();
-        let app_commit = app.clone();
-
-        let participant = FnParticipant::new(
-            format!("stmt_{i}"),
-            format!("Statement {i}"),
-            "database".to_string(),
-            || Box::pin(async { Ok(()) }),
-            move || {
-                Box::pin({
-                    let cid = cid_commit.clone();
-                    let db = db_commit.clone();
-                    let sql = sql_commit.clone();
-                    let sch = sch_commit.clone();
-                    let app = app_commit.clone();
-                    async move {
-                        dbx_core::query::execute_statements(&app, &cid, &db, &[sql], sch.as_deref(), None)
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| format!("Commit error: {e}"))
-                    }
-                })
-            },
-            || Box::pin(async { Ok(()) }),
-        );
-        participants.push(Arc::new(participant));
-    }
-
-    let tx_id = format!("2pc_{}", uuid::Uuid::new_v4());
-    coordinator.execute(&tx_id, &participants, serde_json::json!({"source": "execute_script_with_2pc"})).await
+) -> dbx_core::query::SchemaDiffDeployResult {
+    // Single-connection real transaction (not per-statement auto-commit 2PC).
+    dbx_core::query::execute_schema_diff_deploy(&app, &connection_id, &database, &statements, schema.as_deref()).await
 }
 
 #[tauri::command]
@@ -292,9 +241,9 @@ pub async fn execute_script_with_2pc(
     database: String,
     statements: Vec<String>,
     schema: Option<String>,
-) -> Result<dbx_core::two_phase_commit::TransactionLog, String> {
+) -> Result<dbx_core::query::SchemaDiffDeployResult, String> {
     let app: Arc<AppState> = (*state).clone();
-    execute_script_with_2pc_core(app, connection_id, database, statements, schema).await
+    Ok(execute_script_with_2pc_core(app, connection_id, database, statements, schema).await)
 }
 
 #[tauri::command]
@@ -732,7 +681,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_script_with_2pc_returns_transaction_log() {
+    async fn execute_script_with_2pc_returns_structured_result() {
         let state = test_app_state().await;
         let result = execute_script_with_2pc_core(
             state,
@@ -743,15 +692,13 @@ mod tests {
         )
         .await;
 
-        match result {
-            Ok(log) => {
-                assert!(!log.transaction_id.is_empty());
-                assert!(!log.participants.is_empty());
-            }
-            Err(e) => {
-                assert!(!e.is_empty());
-            }
-        }
+        assert!(!result.transaction_id.is_empty());
+        assert!(!result.participants.is_empty());
+        // No real connection: rolled_back with error, not silent auto-commit success.
+        assert_eq!(result.status, "rolled_back");
+        assert!(result.error.as_ref().is_some_and(|e| !e.is_empty()));
+        assert_eq!(result.statement_count, 1);
+        assert_eq!(result.executed_count, 0);
     }
 
     #[tokio::test]
@@ -760,12 +707,27 @@ mod tests {
         let result =
             execute_script_with_2pc_core(state, "conn-empty".to_string(), "testdb".to_string(), vec![], None).await;
 
-        match result {
-            Ok(log) => {
-                assert_eq!(log.participants.len(), 0);
-                assert_eq!(log.status, dbx_core::two_phase_commit::TransactionStatus::Committed.as_str());
-            }
-            Err(_) => {}
-        }
+        assert_eq!(result.status, "committed");
+        assert_eq!(result.statement_count, 0);
+        assert_eq!(result.executed_count, 0);
+        assert!(result.error.is_none());
+        assert_eq!(result.participants.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn execute_script_with_2pc_comment_only_is_empty_success() {
+        let state = test_app_state().await;
+        let result = execute_script_with_2pc_core(
+            state,
+            "conn-comment".to_string(),
+            "testdb".to_string(),
+            vec!["-- WARNING: incomplete\n-- manual only".to_string()],
+            None,
+        )
+        .await;
+
+        assert_eq!(result.status, "committed");
+        assert_eq!(result.statement_count, 0);
+        assert!(result.error.is_none());
     }
 }

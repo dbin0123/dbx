@@ -259,6 +259,15 @@ export interface DependencyGraph {
   nodes: DependencyNode[];
 }
 
+export interface MissingRollbackObject {
+  kind: string;
+  name: string;
+  table?: string;
+  reason: string;
+}
+
+export type RollbackCompleteness = "complete" | "incomplete";
+
 export interface SchemaDiffPreparation {
   diffs: TableDiff[];
   functionDiffs?: FunctionDiff[];
@@ -267,6 +276,8 @@ export interface SchemaDiffPreparation {
   ownerDiffs?: OwnerDiff[];
   syncSql: string;
   rollbackSyncSql?: string;
+  rollbackCompleteness?: RollbackCompleteness;
+  missingRollbackObjects?: MissingRollbackObject[];
   renameCandidates?: RenameCandidate[];
   rollbackGraph?: unknown;
   compatibilityWarnings?: CompatibilityWarning[];
