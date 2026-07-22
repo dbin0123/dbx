@@ -868,6 +868,7 @@ mod tests {
     use super::*;
     use crate::state::{LoginRateLimit, WebState};
     use axum::extract::State as AxumState;
+    use dbx_core::connection::AppState;
     use dbx_core::storage::Storage;
     use std::collections::{HashMap, HashSet};
     use tokio::sync::{Mutex, RwLock};
@@ -885,6 +886,7 @@ mod tests {
             password_hash: RwLock::new(None),
             sessions: RwLock::new(HashSet::new()),
             sse_channels: RwLock::new(HashMap::new()),
+            table_import_channels: RwLock::new(HashMap::new()),
             sql_file_executions: RwLock::new(HashMap::new()),
             login_rate_limit: Mutex::new(LoginRateLimit { fail_count: 0, locked_until: None }),
             export_files: RwLock::new(HashMap::new()),
@@ -903,7 +905,9 @@ mod tests {
             timeout_secs: None,
         };
 
-        let result = execute_script_with_2pc(AxumState(state), Json(req)).await.unwrap();
+        let result = execute_script_with_2pc(AxumState(state), Json(req))
+            .await
+            .expect("execute_script_with_2pc should return Ok(Json(...))");
         let log = result.0;
         assert!(!log.transaction_id.is_empty());
         assert!(!log.participants.is_empty());
@@ -924,7 +928,7 @@ mod tests {
             timeout_secs: None,
         };
 
-        let result = execute_script_with_2pc(AxumState(state), Json(req)).await.unwrap();
+        let result = execute_script_with_2pc(AxumState(state), Json(req)).await.expect("empty deploy should succeed");
         let log = result.0;
         assert_eq!(log.status, "committed");
         assert_eq!(log.statement_count, 0);

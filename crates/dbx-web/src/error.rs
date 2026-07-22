@@ -2,6 +2,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use std::fmt;
 
+#[derive(Debug)]
 pub struct AppError {
     pub message: String,
     pub status: StatusCode,
@@ -9,7 +10,7 @@ pub struct AppError {
 
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.message)
     }
 }
 
