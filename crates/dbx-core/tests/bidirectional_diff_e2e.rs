@@ -225,6 +225,7 @@ fn bidirectional_diff_with_rename_detection() {
         target_details: vec![detail("user_profiles", vec![col("id", "int"), col("name", "varchar(64)")])],
         database_type: DatabaseType::Postgres,
         detect_renames: true,
+        detect_table_renames: false,
         rename_threshold: 0.5,
         ..Default::default()
     };
