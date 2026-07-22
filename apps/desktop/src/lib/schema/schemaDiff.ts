@@ -218,6 +218,7 @@ export interface SchemaDiffPreparationOptions {
   cascadeDelete?: boolean;
   compareColumnOrder?: boolean;
   detectRenames?: boolean;
+  detectTableRenames?: boolean;
   renameThreshold?: number;
   enableRollback?: boolean;
   batchPatterns?: string[];
