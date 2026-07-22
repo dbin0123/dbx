@@ -109,7 +109,8 @@ export const getAgentJavaRuntimeConfig = forward("getAgentJavaRuntimeConfig");
 export const setAgentJavaRuntimeConfig = forward("setAgentJavaRuntimeConfig");
 export const invalidateAgentRegistryCache = forward("invalidateAgentRegistryCache");
 export const importAgentsFromZip = forward("importAgentsFromZip");
-export const importAgentJar = forward("importAgentJar");
+export const importAgentDriver = forward("importAgentDriver");
+export const importAgentJar = importAgentDriver;
 export async function reinstallJre(jreKey?: string) {
   const backend = await getBackend();
   return backend.reinstallJre(jreKey, useSettingsStore().editorSettings.updateDownloadSource);
@@ -151,6 +152,7 @@ export const listCompletionObjects = forward("listCompletionObjects");
 export const completionAssistantSearch = forward("completionAssistantSearch");
 export const getObjectSource = forward("getObjectSource");
 export const getColumns = forward("getColumns");
+export const getSqlServerColumnMetadata = forward("getSqlServerColumnMetadata");
 export const listDataTypes = forward("listDataTypes");
 export const listIndexes = forward("listIndexes");
 export const listForeignKeys = forward("listForeignKeys");
@@ -194,6 +196,7 @@ export const buildSearchResultWhere = forward("buildSearchResultWhere");
 export const buildRenameObjectSql = forward("buildRenameObjectSql");
 export const buildCreateDatabaseSql = forward("buildCreateDatabaseSql");
 export const buildDuckDbAttachDatabaseSql = forward("buildDuckDbAttachDatabaseSql");
+export const buildSqliteAttachDatabaseSql = forward("buildSqliteAttachDatabaseSql");
 export const buildDropObjectSql = forward("buildDropObjectSql");
 export const buildDropTableSql = forward("buildDropTableSql");
 export const buildDropTableChildObjectSql = forward("buildDropTableChildObjectSql");
@@ -251,6 +254,8 @@ export const saveAiProviderConfig = forward("saveAiProviderConfig");
 export const loadAiProviderConfigs = forward("loadAiProviderConfigs");
 export const loadDesktopSettings = forward("loadDesktopSettings");
 export const saveDesktopSettings = forward("saveDesktopSettings");
+export const loadMcpGlobalPolicy = forward("loadMcpGlobalPolicy");
+export const saveMcpGlobalPolicy = forward("saveMcpGlobalPolicy");
 export const completeAppClose = forward("completeAppClose");
 export const requestAppClose = forward("requestAppClose");
 export const setDriverStoreDir = forward("setDriverStoreDir");
@@ -283,6 +288,13 @@ export const snippetSyncDownload = forward("snippetSyncDownload");
 export const saveAiConversation = forward("saveAiConversation");
 export const loadAiConversations = forward("loadAiConversations");
 export const deleteAiConversation = forward("deleteAiConversation");
+
+// Prompt Templates
+export const loadPromptTemplates = forward("loadPromptTemplates");
+export const savePromptTemplate = forward("savePromptTemplate");
+export const deletePromptTemplate = forward("deletePromptTemplate");
+export const getAiGlobalCustomInstructions = forward("getAiGlobalCustomInstructions");
+export const setAiGlobalCustomInstructions = forward("setAiGlobalCustomInstructions");
 
 // System
 export const listSystemFonts = forward("listSystemFonts");
@@ -328,6 +340,7 @@ export const sortTablesByFkDependency = forward("sortTablesByFkDependency");
 export const previewTableImportFile = forward("previewTableImportFile");
 export const importTableFile = forward("importTableFile");
 export const cancelTableImport = forward("cancelTableImport");
+export const releaseTableImportSource = forward("releaseTableImportSource");
 
 // Database Export
 export const beginDatabaseBackupSnapshot = forward("beginDatabaseBackupSnapshot");
@@ -426,7 +439,16 @@ export const mqListPermissions = forward("mqListPermissions");
 export const mqIssueToken = forward("mqIssueToken");
 export const mqListTokenRecords = forward("mqListTokenRecords");
 export const mqGetBacklog = forward("mqGetBacklog");
+export const mqGetConsumerGroupConfig = forward("mqGetConsumerGroupConfig");
+export const mqAlterConsumerGroupConfig = forward("mqAlterConsumerGroupConfig");
 export const mqGetClusterInfo = forward("mqGetClusterInfo");
+export const mqGetTopicRoute = forward("mqGetTopicRoute");
+export const mqAlterTopicConfig = forward("mqAlterTopicConfig");
+export const mqSkipTopicAccumulation = forward("mqSkipTopicAccumulation");
+export const mqViewMessage = forward("mqViewMessage");
+export const mqQueryMessagesByKey = forward("mqQueryMessagesByKey");
+export const mqQueryMessagesByTopic = forward("mqQueryMessagesByTopic");
+export const mqQueryMessageTrace = forward("mqQueryMessageTrace");
 export const mqRawRequest = forward("mqRawRequest");
 export const mqSendMessage = forward("mqSendMessage");
 
@@ -446,6 +468,7 @@ export const vectorGetCollectionDetail = forward("vectorGetCollectionDetail");
 export const mongoCreateDatabase = forward("mongoCreateDatabase");
 export const mongoDropDatabase = forward("mongoDropDatabase");
 export const mongoDropCollection = forward("mongoDropCollection");
+export const mongoRenameCollection = forward("mongoRenameCollection");
 export const documentFindDocuments = forward("documentFindDocuments");
 export const mongoFindDocuments = forward("mongoFindDocuments");
 export const mongoParseShellCommand = forward("mongoParseShellCommand");
@@ -477,6 +500,8 @@ export const vectorListCollections = forward("vectorListCollections");
 // History
 export const saveHistory = forward("saveHistory");
 export const loadHistory = forward("loadHistory");
+export const searchHistory = forward("searchHistory");
+export const loadHistoryConnectionOptions = forward("loadHistoryConnectionOptions");
 export const loadRedisHistory = forward("loadRedisHistory");
 export const clearHistory = forward("clearHistory");
 export const clearRedisHistory = forward("clearRedisHistory");
@@ -488,7 +513,8 @@ export const installMcpServer = forward("installMcpServer");
 export const checkForUpdates = forward("checkForUpdates");
 export const fetchChangelog = forward("fetchChangelog");
 export const getSystemProxyUrl = forward("getSystemProxyUrl");
-export const downloadAndInstallUpdate = forward("downloadAndInstallUpdate");
+export const downloadUpdate = forward("downloadUpdate");
+export const installDownloadedUpdate = forward("installDownloadedUpdate");
 export const getAppVersion = forward("getAppVersion");
 export const getAppSupportInfo = forward("getAppSupportInfo");
 
@@ -511,6 +537,7 @@ export type {
   AiModelInfo,
   AiChatMessage,
   AiConversation,
+  PromptTemplate,
   AgentDriverInfo,
   DriverStoreUsage,
   DriverStoreUsageItem,
@@ -565,6 +592,12 @@ export type {
   KvDeleteResponse,
   MongoDocumentResult,
   HistoryEntry,
+  HistoryConnectionFilter,
+  HistoryDatabaseFilter,
+  HistoryCursor,
+  HistorySearchRequest,
+  HistorySearchResult,
+  HistoryConnectionOption,
   SqlFileStatus,
   SqlFileRequest,
   SqlFilePreview,
@@ -584,6 +617,7 @@ export type {
   TableImportParseOptions,
   TableImportPreviewRequest,
   TableImportPreview,
+  TableImportPreparedSource,
   TableImportRequest,
   TableImportSummary,
   TableImportProgress,

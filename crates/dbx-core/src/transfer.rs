@@ -344,12 +344,7 @@ pub(crate) fn wrap_dameng_identity_insert_sql(insert_sql: &str, table: &str, sch
 
 pub(crate) fn wrap_dameng_identity_insert_sql_for_table(insert_sql: &str, full_table: &str) -> String {
     let trimmed = insert_sql.trim().trim_end_matches(';').trim();
-    format!(
-        "{};\n{};\n{};",
-        format!("SET IDENTITY_INSERT {full_table} ON"),
-        trimmed,
-        format!("SET IDENTITY_INSERT {full_table} OFF")
-    )
+    format!("SET IDENTITY_INSERT {full_table} ON;\n{trimmed};\nSET IDENTITY_INSERT {full_table} OFF;")
 }
 
 async fn execute_transfer_write_statement(
@@ -2088,6 +2083,63 @@ fn generate_transfer_write_sql(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn generate_insert_typed_sql_batches(
+    columns: &[String],
+    column_types: &[Option<String>],
+    rows: &[Vec<serde_json::Value>],
+    table: &str,
+    schema: &str,
+    db_type: &DatabaseType,
+    requested_max_rows: usize,
+) -> Vec<(String, usize)> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    let max_rows = requested_max_rows.max(1);
+    let max_sql_bytes = match db_type {
+        DatabaseType::CloudflareD1 => crate::db::cloudflare_d1::MAX_SQL_STATEMENT_BYTES,
+        _ => MAX_TRANSFER_WRITE_SQL_BYTES,
+    };
+    let mut statements = Vec::new();
+    let mut start = 0;
+
+    // First honor the row limit, then use binary search to find the largest statement that
+    // also fits the backend byte limit. This avoids generating every intermediate size.
+    while start < rows.len() {
+        let max_end = start.saturating_add(max_rows).min(rows.len());
+        let mut end = max_end;
+        let mut accepted = generate_insert_typed(columns, column_types, &rows[start..max_end], table, schema, db_type);
+
+        if accepted.len() > max_sql_bytes && max_end > start + 1 {
+            end = start + 1;
+            accepted = generate_insert_typed(columns, column_types, &rows[start..end], table, schema, db_type);
+            let mut low = start + 2;
+            let mut high = max_end;
+            while low <= high {
+                let candidate_end = low + (high - low) / 2;
+                let candidate =
+                    generate_insert_typed(columns, column_types, &rows[start..candidate_end], table, schema, db_type);
+                if candidate.len() <= max_sql_bytes {
+                    accepted = candidate;
+                    end = candidate_end;
+                    low = candidate_end + 1;
+                } else {
+                    high = candidate_end - 1;
+                }
+            }
+        }
+
+        if !accepted.is_empty() {
+            statements.push((accepted, end - start));
+        }
+        start = end;
+    }
+
+    statements
+}
+
+#[allow(clippy::too_many_arguments)]
 fn generate_transfer_write_sql_batches(
     mode: &TransferMode,
     columns: &[String],
@@ -2100,6 +2152,21 @@ fn generate_transfer_write_sql_batches(
 ) -> Vec<String> {
     if rows.is_empty() {
         return Vec::new();
+    }
+
+    if matches!(mode, TransferMode::Append | TransferMode::Overwrite) {
+        return generate_insert_typed_sql_batches(
+            columns,
+            column_types,
+            rows,
+            table,
+            schema,
+            db_type,
+            max_transfer_write_rows(db_type, mode),
+        )
+        .into_iter()
+        .map(|(sql, _)| sql)
+        .collect();
     }
 
     let max_rows = max_transfer_write_rows(db_type, mode);
@@ -4139,7 +4206,7 @@ where
                 can_reuse_source_table_ddl(source_db_type, target_db_type, preserves_target_table_name);
             let ddl = if can_reuse_source_ddl {
                 let source_ddl = crate::schema::get_table_ddl_core(
-                    &state,
+                    state,
                     &request.source_connection_id,
                     &request.source_database,
                     &request.source_schema,
@@ -5222,19 +5289,13 @@ mod tests {
 
     #[test]
     fn transfer_create_table_result_treats_existing_table_as_preexisting() {
-        assert_eq!(
-            transfer_create_table_created(
-                Err("ERROR: relation \"items\" already exists (SQLSTATE 42P07)".to_string()),
-                "create"
-            )
-            .unwrap(),
-            false
-        );
-        assert_eq!(
-            transfer_create_table_created(Err("错误: 关系 \"items\" 已经存在".to_string()), "create").unwrap(),
-            false
-        );
-        assert_eq!(transfer_create_table_created(Ok(()), "create").unwrap(), true);
+        assert!(!transfer_create_table_created(
+            Err("ERROR: relation \"items\" already exists (SQLSTATE 42P07)".to_string()),
+            "create"
+        )
+        .unwrap());
+        assert!(!transfer_create_table_created(Err("错误: 关系 \"items\" 已经存在".to_string()), "create").unwrap());
+        assert!(transfer_create_table_created(Ok(()), "create").unwrap());
         assert_eq!(
             transfer_create_table_created(Err("permission denied for schema public".to_string()), "create")
                 .unwrap_err(),

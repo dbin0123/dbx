@@ -106,10 +106,36 @@ class DamengAgentMetadataTest {
 
         List<String> schemas = agent.listSchemas();
 
-        Assertions.assertEquals(List.of("APP", "EMPTY_SCHEMA"), schemas);
+        Assertions.assertEquals(List.of("APP", "EMPTY_SCHEMA", "SYSDBA"), schemas);
         Assertions.assertTrue(sqls.stream().anyMatch(sql -> sql.contains("SYS.SYSOBJECTS") && sql.contains("TYPE$ = 'SCH'")), String.join("\n", sqls));
         Assertions.assertTrue(sqls.stream().noneMatch(sql -> sql.contains("ALL_USERS")), String.join("\n", sqls));
         Assertions.assertTrue(sqls.stream().noneMatch(sql -> sql.contains("ALL_OBJECTS")), String.join("\n", sqls));
+    }
+
+    @Test
+    void listSchemasLeavesSysdbaAvailableForFrontendFiltering() {
+        DamengAgent agent = new DamengAgent();
+        List<String> params = new ArrayList<>();
+        TestSupport.setPrivateConnection(agent, schemaConnection(params));
+
+        List<String> schemas = agent.listSchemas();
+
+        Assertions.assertEquals(List.of("APP", "SYSDBA"), schemas);
+        Assertions.assertTrue(params.isEmpty(), params.toString());
+    }
+
+    @Test
+    void listSchemasFallsBackToAllUsersWithoutSysObjectsPrivilege() {
+        DamengAgent agent = new DamengAgent();
+        List<String> sqls = new ArrayList<>();
+        TestSupport.setPrivateConnection(agent, restrictedSchemaConnection(sqls));
+
+        List<String> schemas = agent.listSchemas();
+
+        Assertions.assertEquals(List.of("APP", "REPORTING", "SYSDBA"), schemas);
+        Assertions.assertEquals(2, sqls.size(), String.join("\n", sqls));
+        Assertions.assertTrue(sqls.get(0).contains("SYS.SYSOBJECTS"), sqls.get(0));
+        Assertions.assertTrue(sqls.get(1).contains("ALL_USERS"), sqls.get(1));
     }
 
     @Test
@@ -508,7 +534,7 @@ class DamengAgentMetadataTest {
                     return dbmsMetadataStatement(dbmsMetadataDdl, dbmsMetadataResultOpen);
                 }
                 if (sql.contains("SYS.SYSOBJECTS") && sql.contains("TYPE$ = 'SCH'")) {
-                    return metadataStatement(List.of(List.of("APP"), List.of("EMPTY_SCHEMA")));
+                    return metadataStatement(List.of(List.of("APP"), List.of("EMPTY_SCHEMA"), List.of("SYSDBA")));
                 }
                 if (sql.contains("ALL_CONS_COLUMNS")) {
                     return metadataStatement(List.of(List.of("ID")));
@@ -685,6 +711,46 @@ class DamengAgentMetadataTest {
                         Arrays.asList("SALES_VIEW", "VIEW", "regular view")
                     ));
                 }
+            }
+            if ("close".equals(name)) {
+                return null;
+            }
+            if ("isClosed".equals(name)) {
+                return false;
+            }
+            return defaultValue(method.getReturnType());
+        });
+    }
+
+    private static Connection restrictedSchemaConnection(List<String> sqls) {
+        return proxy(Connection.class, (method, args) -> {
+            String name = method.getName();
+            if ("prepareStatement".equals(name)) {
+                String sql = (String) args[0];
+                sqls.add(sql);
+                if (sql.contains("SYS.SYSOBJECTS")) {
+                    return failingMetadataStatement("no SYS.SYSOBJECTS privilege");
+                }
+                if (sql.contains("ALL_USERS")) {
+                    return metadataStatement(List.of(List.of("APP"), List.of("REPORTING"), List.of("SYSDBA")));
+                }
+                throw new AssertionError("Unexpected SQL: " + sql);
+            }
+            if ("close".equals(name)) {
+                return null;
+            }
+            if ("isClosed".equals(name)) {
+                return false;
+            }
+            return defaultValue(method.getReturnType());
+        });
+    }
+
+    private static Connection schemaConnection(List<String> params) {
+        return proxy(Connection.class, (method, args) -> {
+            String name = method.getName();
+            if ("prepareStatement".equals(name)) {
+                return metadataStatement(List.of(List.of("APP"), List.of("SYSDBA")), params);
             }
             if ("close".equals(name)) {
                 return null;

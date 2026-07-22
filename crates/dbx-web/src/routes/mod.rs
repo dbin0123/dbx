@@ -11,11 +11,13 @@ pub mod etcd;
 pub mod history;
 pub mod jdbc;
 pub mod layout;
+pub mod mcp_policy;
 pub mod mongo;
 #[cfg(feature = "mq-admin")]
 pub mod mq;
 pub mod nacos;
 pub mod plugins;
+pub mod prompt_template;
 pub mod query;
 pub mod query_result_export;
 pub mod redis;

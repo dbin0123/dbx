@@ -168,6 +168,21 @@ pub(crate) struct SubscriptionReq {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct ConsumerGroupConfigReq {
+    connection_id: String,
+    group_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AlterConsumerGroupConfigReq {
+    connection_id: String,
+    group_id: String,
+    config: serde_json::Value,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PeekMessagesReq {
     connection_id: String,
     topic: dbx_core::mq::TopicRef,
@@ -283,7 +298,7 @@ pub(crate) struct RawRequestReq {
 
 async fn ensure_writable(app: &dbx_core::connection::AppState, conn_id: &str, action: &str) -> Result<(), AppError> {
     if let Some(name) = dbx_core::query::connection_readonly_name(app, conn_id).await {
-        return Err(AppError(format!("Read-only connection '{name}'. {action} is blocked.")));
+        return Err(AppError::from(format!("Read-only connection '{name}'. {action} is blocked.")));
     }
     Ok(())
 }
@@ -295,7 +310,7 @@ pub async fn test_connection(
     Json(req): Json<ConnReq>,
 ) -> Result<Json<dbx_core::mq::MqClusterInfo>, AppError> {
     let result =
-        dbx_core::mq::service::mq_test_connection_core(&state.app, &req.connection_id).await.map_err(AppError)?;
+        dbx_core::mq::service::mq_test_connection_core(&state.app, &req.connection_id).await.map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -303,7 +318,8 @@ pub async fn list_tenants(
     State(state): State<Arc<WebState>>,
     Json(req): Json<ConnReq>,
 ) -> Result<Json<Vec<dbx_core::mq::TenantInfo>>, AppError> {
-    let result = dbx_core::mq::service::mq_list_tenants_core(&state.app, &req.connection_id).await.map_err(AppError)?;
+    let result =
+        dbx_core::mq::service::mq_list_tenants_core(&state.app, &req.connection_id).await.map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -311,8 +327,9 @@ pub async fn get_tenant(
     State(state): State<Arc<WebState>>,
     Json(req): Json<TenantReq>,
 ) -> Result<Json<dbx_core::mq::TenantInfo>, AppError> {
-    let result =
-        dbx_core::mq::service::mq_get_tenant_core(&state.app, &req.connection_id, &req.name).await.map_err(AppError)?;
+    let result = dbx_core::mq::service::mq_get_tenant_core(&state.app, &req.connection_id, &req.name)
+        .await
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -323,7 +340,7 @@ pub async fn create_tenant(
     ensure_writable(&state.app, &req.connection_id, "Create tenant").await?;
     dbx_core::mq::service::mq_create_tenant_core(&state.app, &req.connection_id, &req.name, req.config)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -334,7 +351,7 @@ pub async fn update_tenant(
     ensure_writable(&state.app, &req.connection_id, "Update tenant").await?;
     dbx_core::mq::service::mq_update_tenant_core(&state.app, &req.connection_id, &req.name, req.config)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -345,7 +362,7 @@ pub async fn delete_tenant(
     ensure_writable(&state.app, &req.connection_id, "Delete tenant").await?;
     dbx_core::mq::service::mq_delete_tenant_core(&state.app, &req.connection_id, &req.name, req.force)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -355,7 +372,7 @@ pub async fn list_namespaces(
 ) -> Result<Json<Vec<dbx_core::mq::NamespaceInfo>>, AppError> {
     let result = dbx_core::mq::service::mq_list_namespaces_core(&state.app, &req.connection_id, &req.tenant)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -366,7 +383,7 @@ pub async fn create_namespace(
     ensure_writable(&state.app, &req.connection_id, "Create namespace").await?;
     dbx_core::mq::service::mq_create_namespace_core(&state.app, &req.connection_id, req.ns, req.config)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -377,7 +394,7 @@ pub async fn delete_namespace(
     ensure_writable(&state.app, &req.connection_id, "Delete namespace").await?;
     dbx_core::mq::service::mq_delete_namespace_core(&state.app, &req.connection_id, req.ns, req.force)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -387,7 +404,7 @@ pub async fn get_namespace_policies(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = dbx_core::mq::service::mq_get_namespace_policies_core(&state.app, &req.connection_id, req.ns)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -397,7 +414,7 @@ pub async fn list_topics(
 ) -> Result<Json<Vec<dbx_core::mq::TopicInfo>>, AppError> {
     let result = dbx_core::mq::service::mq_list_topics_core(&state.app, &req.connection_id, req.ns, req.opts)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -408,7 +425,7 @@ pub async fn create_topic(
     ensure_writable(&state.app, &req.connection_id, "Create topic").await?;
     dbx_core::mq::service::mq_create_topic_core(&state.app, &req.connection_id, req.topic, req.partitions)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -419,7 +436,7 @@ pub async fn delete_topic(
     ensure_writable(&state.app, &req.connection_id, "Delete topic").await?;
     dbx_core::mq::service::mq_delete_topic_core(&state.app, &req.connection_id, req.topic, req.force)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -430,7 +447,7 @@ pub async fn update_partitions(
     ensure_writable(&state.app, &req.connection_id, "Update partitions").await?;
     dbx_core::mq::service::mq_update_partitions_core(&state.app, &req.connection_id, req.topic, req.partitions)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -440,7 +457,7 @@ pub async fn get_topic_stats(
 ) -> Result<Json<dbx_core::mq::TopicStats>, AppError> {
     let result = dbx_core::mq::service::mq_get_topic_stats_core(&state.app, &req.connection_id, req.topic)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -450,7 +467,7 @@ pub async fn get_topic_internal_stats(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = dbx_core::mq::service::mq_get_topic_internal_stats_core(&state.app, &req.connection_id, req.topic)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -460,7 +477,7 @@ pub async fn list_subscriptions(
 ) -> Result<Json<Vec<dbx_core::mq::SubscriptionInfo>>, AppError> {
     let result = dbx_core::mq::service::mq_list_subscriptions_core(&state.app, &req.connection_id, req.topic)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -471,7 +488,7 @@ pub async fn create_subscription(
     ensure_writable(&state.app, &req.connection_id, "Create subscription").await?;
     dbx_core::mq::service::mq_create_subscription_core(&state.app, &req.connection_id, req.topic, req.sub, req.pos)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -482,7 +499,7 @@ pub async fn delete_subscription(
     ensure_writable(&state.app, &req.connection_id, "Delete subscription").await?;
     dbx_core::mq::service::mq_delete_subscription_core(&state.app, &req.connection_id, req.topic, req.sub, req.force)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -493,7 +510,7 @@ pub async fn skip_messages(
     ensure_writable(&state.app, &req.connection_id, "Skip messages").await?;
     dbx_core::mq::service::mq_skip_messages_core(&state.app, &req.connection_id, req.topic, req.sub, req.count)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -504,7 +521,7 @@ pub async fn reset_cursor(
     ensure_writable(&state.app, &req.connection_id, "Reset cursor").await?;
     dbx_core::mq::service::mq_reset_cursor_core(&state.app, &req.connection_id, req.topic, req.sub, req.pos)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -515,7 +532,33 @@ pub async fn clear_backlog(
     ensure_writable(&state.app, &req.connection_id, "Clear backlog").await?;
     dbx_core::mq::service::mq_clear_backlog_core(&state.app, &req.connection_id, req.topic, req.sub)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
+    Ok(Json(()))
+}
+
+pub async fn get_consumer_group_config(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<ConsumerGroupConfigReq>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = dbx_core::mq::service::mq_get_consumer_group_config_core(&state.app, &req.connection_id, req.group_id)
+        .await
+        .map_err(AppError::from)?;
+    Ok(Json(result))
+}
+
+pub async fn alter_consumer_group_config(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<AlterConsumerGroupConfigReq>,
+) -> Result<Json<()>, AppError> {
+    ensure_writable(&state.app, &req.connection_id, "Alter consumer group config").await?;
+    dbx_core::mq::service::mq_alter_consumer_group_config_core(
+        &state.app,
+        &req.connection_id,
+        req.group_id,
+        req.config,
+    )
+    .await
+    .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -532,7 +575,7 @@ pub async fn peek_messages(
         req.options,
     )
     .await
-    .map_err(AppError)?;
+    .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -549,7 +592,7 @@ pub async fn expire_messages(
         req.expire_seconds,
     )
     .await
-    .map_err(AppError)?;
+    .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -559,7 +602,7 @@ pub async fn list_producers(
 ) -> Result<Json<Vec<dbx_core::mq::ProducerInfo>>, AppError> {
     let result = dbx_core::mq::service::mq_list_producers_core(&state.app, &req.connection_id, req.topic)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -569,13 +612,15 @@ pub async fn list_consumers(
 ) -> Result<Json<Vec<dbx_core::mq::ConsumerInfo>>, AppError> {
     let result = dbx_core::mq::service::mq_list_consumers_core(&state.app, &req.connection_id, req.topic, req.sub)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
 pub async fn unload_topic(State(state): State<Arc<WebState>>, Json(req): Json<TopicReq>) -> Result<Json<()>, AppError> {
     ensure_writable(&state.app, &req.connection_id, "Unload topic").await?;
-    dbx_core::mq::service::mq_unload_topic_core(&state.app, &req.connection_id, req.topic).await.map_err(AppError)?;
+    dbx_core::mq::service::mq_unload_topic_core(&state.app, &req.connection_id, req.topic)
+        .await
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -586,7 +631,7 @@ pub async fn set_publish_rate(
     ensure_writable(&state.app, &req.connection_id, "Set publish rate").await?;
     dbx_core::mq::service::mq_set_publish_rate_core(&state.app, &req.connection_id, req.scope, req.rate)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -597,7 +642,7 @@ pub async fn set_dispatch_rate(
     ensure_writable(&state.app, &req.connection_id, "Set dispatch rate").await?;
     dbx_core::mq::service::mq_set_dispatch_rate_core(&state.app, &req.connection_id, req.scope, req.rate)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -608,7 +653,7 @@ pub async fn set_subscribe_rate(
     ensure_writable(&state.app, &req.connection_id, "Set subscribe rate").await?;
     dbx_core::mq::service::mq_set_subscribe_rate_core(&state.app, &req.connection_id, req.scope, req.rate)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -619,7 +664,7 @@ pub async fn set_backlog_quota(
     ensure_writable(&state.app, &req.connection_id, "Set backlog quota").await?;
     dbx_core::mq::service::mq_set_backlog_quota_core(&state.app, &req.connection_id, req.scope, req.quota)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -630,7 +675,7 @@ pub async fn set_retention(
     ensure_writable(&state.app, &req.connection_id, "Set retention").await?;
     dbx_core::mq::service::mq_set_retention_core(&state.app, &req.connection_id, req.scope, req.retention)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -640,7 +685,7 @@ pub async fn get_effective_policies(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = dbx_core::mq::service::mq_get_effective_policies_core(&state.app, &req.connection_id, req.scope)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -651,7 +696,7 @@ pub async fn grant_permission(
     ensure_writable(&state.app, &req.connection_id, "Grant permission").await?;
     dbx_core::mq::service::mq_grant_permission_core(&state.app, &req.connection_id, req.scope, req.role, req.actions)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -662,7 +707,7 @@ pub async fn revoke_permission(
     ensure_writable(&state.app, &req.connection_id, "Revoke permission").await?;
     dbx_core::mq::service::mq_revoke_permission_core(&state.app, &req.connection_id, req.scope, req.role)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(()))
 }
 
@@ -672,7 +717,7 @@ pub async fn list_permissions(
 ) -> Result<Json<dbx_core::mq::PermissionMap>, AppError> {
     let result = dbx_core::mq::service::mq_list_permissions_core(&state.app, &req.connection_id, req.scope)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -681,8 +726,9 @@ pub async fn issue_token(
     Json(req): Json<IssueTokenReq>,
 ) -> Result<Json<dbx_core::mq::MqIssuedToken>, AppError> {
     ensure_writable(&state.app, &req.connection_id, "Issue MQ token").await?;
-    let result =
-        dbx_core::mq::service::mq_issue_token_core(&state.app, &req.connection_id, req.req).await.map_err(AppError)?;
+    let result = dbx_core::mq::service::mq_issue_token_core(&state.app, &req.connection_id, req.req)
+        .await
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -692,7 +738,7 @@ pub async fn list_token_records(
 ) -> Result<Json<Vec<dbx_core::mq::MqTokenRecord>>, AppError> {
     let result = dbx_core::mq::service::mq_list_token_records_core(&state.app, &req.connection_id, req.subject)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -702,7 +748,7 @@ pub async fn get_backlog(
 ) -> Result<Json<dbx_core::mq::BacklogStats>, AppError> {
     let result = dbx_core::mq::service::mq_get_backlog_core(&state.app, &req.connection_id, req.topic, req.sub)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -716,8 +762,142 @@ pub async fn get_cluster_info(
     State(state): State<Arc<WebState>>,
     Json(req): Json<ClusterInfoReq>,
 ) -> Result<Json<dbx_core::mq::ClusterInfo>, AppError> {
+    let result = dbx_core::mq::service::mq_get_cluster_info_core(&state.app, &req.connection_id)
+        .await
+        .map_err(AppError::from)?;
+    Ok(Json(result))
+}
+
+pub async fn get_topic_route(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<TopicReq>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = dbx_core::mq::service::mq_get_topic_route_core(&state.app, &req.connection_id, req.topic)
+        .await
+        .map_err(AppError::from)?;
+    Ok(Json(result))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AlterTopicConfigReq {
+    connection_id: String,
+    topic: dbx_core::mq::TopicRef,
+    configs: serde_json::Value,
+}
+
+pub async fn alter_topic_config(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<AlterTopicConfigReq>,
+) -> Result<Json<()>, AppError> {
+    ensure_writable(&state.app, &req.connection_id, "Alter topic config").await?;
+    dbx_core::mq::service::mq_alter_topic_config_core(&state.app, &req.connection_id, req.topic, req.configs)
+        .await
+        .map_err(AppError::from)?;
+    Ok(Json(()))
+}
+
+pub async fn skip_topic_accumulation(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<TopicReq>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    ensure_writable(&state.app, &req.connection_id, "Skip topic accumulation").await?;
+    let result = dbx_core::mq::service::mq_skip_topic_accumulation_core(&state.app, &req.connection_id, req.topic)
+        .await
+        .map_err(AppError::from)?;
+    Ok(Json(result))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ViewMessageReq {
+    connection_id: String,
+    topic: dbx_core::mq::TopicRef,
+    msg_id: String,
+}
+
+pub async fn view_message(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<ViewMessageReq>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = dbx_core::mq::service::mq_view_message_core(&state.app, &req.connection_id, req.topic, req.msg_id)
+        .await
+        .map_err(AppError::from)?;
+    Ok(Json(result))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct QueryMessagesByKeyReq {
+    connection_id: String,
+    topic: dbx_core::mq::TopicRef,
+    key: String,
+    begin: i64,
+    end: i64,
+    max_num: u32,
+}
+
+pub async fn query_messages_by_key(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<QueryMessagesByKeyReq>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = dbx_core::mq::service::mq_query_messages_by_key_core(
+        &state.app,
+        &req.connection_id,
+        req.topic,
+        req.key,
+        req.begin,
+        req.end,
+        req.max_num,
+    )
+    .await
+    .map_err(AppError::from)?;
+    Ok(Json(result))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct QueryMessagesByTopicReq {
+    connection_id: String,
+    topic: dbx_core::mq::TopicRef,
+    begin: i64,
+    end: i64,
+    max_num: u32,
+}
+
+pub async fn query_messages_by_topic(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<QueryMessagesByTopicReq>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = dbx_core::mq::service::mq_query_messages_by_topic_core(
+        &state.app,
+        &req.connection_id,
+        req.topic,
+        req.begin,
+        req.end,
+        req.max_num,
+    )
+    .await
+    .map_err(AppError::from)?;
+    Ok(Json(result))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct QueryMessageTraceReq {
+    connection_id: String,
+    msg_id: String,
+    trace_topic: Option<String>,
+}
+
+pub async fn query_message_trace(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<QueryMessageTraceReq>,
+) -> Result<Json<serde_json::Value>, AppError> {
     let result =
-        dbx_core::mq::service::mq_get_cluster_info_core(&state.app, &req.connection_id).await.map_err(AppError)?;
+        dbx_core::mq::service::mq_query_message_trace_core(&state.app, &req.connection_id, req.msg_id, req.trace_topic)
+            .await
+            .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -728,8 +908,9 @@ pub async fn raw_request(
     if req.req.is_mutating() {
         ensure_writable(&state.app, &req.connection_id, "MQ admin write").await?;
     }
-    let result =
-        dbx_core::mq::service::mq_raw_request_core(&state.app, &req.connection_id, req.req).await.map_err(AppError)?;
+    let result = dbx_core::mq::service::mq_raw_request_core(&state.app, &req.connection_id, req.req)
+        .await
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }
 
@@ -746,7 +927,8 @@ pub async fn send_message(
     State(state): State<Arc<WebState>>,
     Json(req): Json<SendMessageReq>,
 ) -> Result<Json<dbx_core::mq::SendMessageResponse>, AppError> {
-    let result =
-        dbx_core::mq::service::mq_send_message_core(&state.app, &req.connection_id, req.req).await.map_err(AppError)?;
+    let result = dbx_core::mq::service::mq_send_message_core(&state.app, &req.connection_id, req.req)
+        .await
+        .map_err(AppError::from)?;
     Ok(Json(result))
 }

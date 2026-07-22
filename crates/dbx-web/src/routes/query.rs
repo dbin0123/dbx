@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::Json;
 use serde::Deserialize;
 
@@ -137,8 +138,15 @@ pub struct BuildCreateDatabaseSqlRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "duckdb-bundled")]
 pub struct BuildDuckDbAttachDatabaseSqlRequest {
     pub options: dbx_core::db_admin_sql::DuckDbAttachDatabaseSqlOptions,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildSqliteAttachDatabaseSqlRequest {
+    pub options: dbx_core::db_admin_sql::SqliteAttachDatabaseSqlOptions,
 }
 
 #[derive(Deserialize)]
@@ -310,8 +318,10 @@ pub struct BuildDatabaseSqlExportRequest {
 
 pub async fn execute_query(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Json(req): Json<ExecuteQueryRequest>,
 ) -> Result<Json<dbx_core::db::QueryResult>, AppError> {
+    super::mcp_policy::ensure_sql(&state, &headers, &req.connection_id, &req.database, &req.sql).await?;
     let execution_id = req.execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let registered = state.app.running_queries.register_task(
@@ -343,7 +353,7 @@ pub async fn execute_query(
         },
     )
     .await
-    .map_err(AppError)?;
+    .map_err(AppError::from)?;
 
     drop(registered);
     Ok(Json(result))
@@ -351,8 +361,10 @@ pub async fn execute_query(
 
 pub async fn execute_multi(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Json(req): Json<ExecuteQueryRequest>,
 ) -> Result<Json<Vec<dbx_core::query::ExecuteMultiResult>>, AppError> {
+    super::mcp_policy::ensure_sql(&state, &headers, &req.connection_id, &req.database, &req.sql).await?;
     let execution_id = req.execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let registered = state.app.running_queries.register_task(
@@ -384,7 +396,7 @@ pub async fn execute_multi(
         },
     )
     .await
-    .map_err(AppError)?;
+    .map_err(AppError::from)?;
 
     drop(registered);
     Ok(Json(result))
@@ -392,8 +404,12 @@ pub async fn execute_multi(
 
 pub async fn execute_batch(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Json(req): Json<ExecuteBatchRequest>,
 ) -> Result<Json<dbx_core::db::QueryResult>, AppError> {
+    for statement in &req.statements {
+        super::mcp_policy::ensure_sql(&state, &headers, &req.connection_id, &req.database, statement).await?;
+    }
     tracing::debug!(connection_id = %req.connection_id, "execute_batch");
     let result = dbx_core::query::execute_statements(
         &state.app,
@@ -404,7 +420,7 @@ pub async fn execute_batch(
         req.timeout_secs,
     )
     .await
-    .map_err(AppError)?;
+    .map_err(AppError::from)?;
 
     Ok(Json(result))
 }
@@ -429,7 +445,7 @@ pub async fn close_query_session(
         req.client_session_id.as_deref(),
     )
     .await
-    .map_err(AppError)?;
+    .map_err(AppError::from)?;
 
     Ok(Json(serde_json::json!(closed)))
 }
@@ -443,7 +459,7 @@ pub async fn close_client_connection_session(
         .app
         .close_client_session_pool(&req.connection_id, database, &req.client_session_id)
         .await
-        .map_err(AppError)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(serde_json::json!(closed)))
 }
@@ -469,7 +485,7 @@ pub async fn execute_script(
         None,
     )
     .await
-    .map_err(AppError)?;
+    .map_err(AppError::from)?;
 
     Ok(Json(result))
 }
@@ -487,7 +503,7 @@ pub async fn execute_in_transaction(
         req.schema.as_deref(),
     )
     .await
-    .map_err(AppError)?;
+    .map_err(AppError::from)?;
 
     Ok(Json(result))
 }
@@ -563,7 +579,7 @@ pub async fn execute_script_with_2pc(
 pub async fn analyze_sql_references(
     Json(req): Json<AnalyzeSqlReferencesRequest>,
 ) -> Result<Json<dbx_core::sql_analysis::SqlReferenceAnalysis>, AppError> {
-    dbx_core::sql_analysis::analyze_sql_references(&req.sql, req.dialect.as_deref()).map(Json).map_err(AppError)
+    dbx_core::sql_analysis::analyze_sql_references(&req.sql, req.dialect.as_deref()).map(Json).map_err(AppError::from)
 }
 
 pub async fn find_statement_at_cursor(Json(req): Json<FindStatementAtCursorRequest>) -> Json<String> {
@@ -623,7 +639,7 @@ pub async fn get_explain_info(
         req.mode.as_deref(),
     )
     .await
-    .map_err(AppError)?;
+    .map_err(AppError::from)?;
     Ok(Json(plan))
 }
 
@@ -652,17 +668,22 @@ pub async fn build_search_result_where(Json(req): Json<BuildSearchResultWhereReq
 }
 
 pub async fn build_rename_object_sql(Json(req): Json<BuildRenameObjectSqlRequest>) -> Result<Json<String>, AppError> {
-    dbx_core::db_admin_sql::build_rename_object_sql(req.options).map(Json).map_err(AppError)
+    dbx_core::db_admin_sql::build_rename_object_sql(req.options).map(Json).map_err(AppError::from)
 }
 
 pub async fn build_create_database_sql(
     Json(req): Json<BuildCreateDatabaseSqlRequest>,
 ) -> Result<Json<String>, AppError> {
-    dbx_core::db_admin_sql::build_create_database_sql(req.options).map(Json).map_err(AppError)
+    dbx_core::db_admin_sql::build_create_database_sql(req.options).map(Json).map_err(AppError::from)
 }
 
+#[cfg(feature = "duckdb-bundled")]
 pub async fn build_duckdb_attach_database_sql(Json(req): Json<BuildDuckDbAttachDatabaseSqlRequest>) -> Json<String> {
     Json(dbx_core::db_admin_sql::build_duckdb_attach_database_sql(req.options))
+}
+
+pub async fn build_sqlite_attach_database_sql(Json(req): Json<BuildSqliteAttachDatabaseSqlRequest>) -> Json<String> {
+    Json(dbx_core::db_admin_sql::build_sqlite_attach_database_sql(req.options))
 }
 
 pub async fn build_drop_object_sql(Json(req): Json<BuildDropObjectSqlRequest>) -> Json<String> {
@@ -676,7 +697,7 @@ pub async fn build_drop_table_sql(Json(req): Json<BuildTableAdminSqlRequest>) ->
 pub async fn build_drop_table_child_object_sql(
     Json(req): Json<BuildDropTableChildObjectSqlRequest>,
 ) -> Result<Json<String>, AppError> {
-    dbx_core::db_admin_sql::build_drop_table_child_object_sql(req.options).map(Json).map_err(AppError)
+    dbx_core::db_admin_sql::build_drop_table_child_object_sql(req.options).map(Json).map_err(AppError::from)
 }
 
 pub async fn build_empty_table_sql(Json(req): Json<BuildTableAdminSqlRequest>) -> Json<String> {
@@ -692,13 +713,13 @@ pub async fn build_drop_database_sql(Json(req): Json<BuildDatabaseNameSqlRequest
 }
 
 pub async fn build_create_schema_sql(Json(req): Json<BuildSchemaNameSqlRequest>) -> Result<Json<String>, AppError> {
-    dbx_core::db_admin_sql::build_create_schema_sql(req.options).map(Json).map_err(AppError)
+    dbx_core::db_admin_sql::build_create_schema_sql(req.options).map(Json).map_err(AppError::from)
 }
 
 pub async fn build_update_database_properties_sql(
     Json(req): Json<BuildDatabasePropertyEditSqlRequest>,
 ) -> Result<Json<String>, AppError> {
-    dbx_core::db_admin_sql::build_update_database_properties_sql(req.options).map(Json).map_err(AppError)
+    dbx_core::db_admin_sql::build_update_database_properties_sql(req.options).map(Json).map_err(AppError::from)
 }
 
 pub async fn build_drop_schema_sql(Json(req): Json<BuildSchemaNameSqlRequest>) -> Json<String> {
@@ -718,13 +739,13 @@ pub async fn build_copy_table_data_sql(Json(req): Json<BuildCopyTableDataSqlRequ
 pub async fn build_executable_object_source_statements(
     Json(req): Json<BuildExecutableObjectSourceRequest>,
 ) -> Result<Json<Vec<String>>, AppError> {
-    dbx_core::object_source_sql::build_executable_object_source_statements(req.input).map(Json).map_err(AppError)
+    dbx_core::object_source_sql::build_executable_object_source_statements(req.input).map(Json).map_err(AppError::from)
 }
 
 pub async fn build_executable_object_source_sql(
     Json(req): Json<BuildExecutableObjectSourceRequest>,
 ) -> Result<Json<String>, AppError> {
-    dbx_core::object_source_sql::build_executable_object_source_sql(req.input).map(Json).map_err(AppError)
+    dbx_core::object_source_sql::build_executable_object_source_sql(req.input).map(Json).map_err(AppError::from)
 }
 
 pub async fn build_editable_object_source(Json(req): Json<BuildExecutableObjectSourceRequest>) -> Json<String> {
@@ -734,7 +755,9 @@ pub async fn build_editable_object_source(Json(req): Json<BuildExecutableObjectS
 pub async fn build_routine_rename_object_source_statements(
     Json(req): Json<BuildRoutineRenameObjectSourceRequest>,
 ) -> Result<Json<Vec<String>>, AppError> {
-    dbx_core::object_source_sql::build_routine_rename_object_source_statements(req.input).map(Json).map_err(AppError)
+    dbx_core::object_source_sql::build_routine_rename_object_source_statements(req.input)
+        .map(Json)
+        .map_err(AppError::from)
 }
 
 pub async fn build_view_ddl_sql(Json(req): Json<BuildViewDdlRequest>) -> Json<String> {
@@ -759,7 +782,7 @@ pub async fn preview_sqlite_table_structure_change(
     )
     .await
     .map(Json)
-    .map_err(AppError)
+    .map_err(AppError::from)
 }
 
 pub async fn apply_sqlite_table_structure_change(
@@ -775,7 +798,7 @@ pub async fn apply_sqlite_table_structure_change(
     )
     .await
     .map(Json)
-    .map_err(AppError)
+    .map_err(AppError::from)
 }
 
 pub async fn build_create_table_sql(
@@ -849,11 +872,11 @@ pub async fn build_hive_table_properties_sql(Json(req): Json<BuildHiveTablePrope
 pub async fn build_export_insert_statements(
     Json(req): Json<BuildExportInsertStatementsRequest>,
 ) -> Result<Json<Vec<String>>, AppError> {
-    dbx_core::database_export::build_export_insert_statements(req.options).map(Json).map_err(AppError)
+    dbx_core::database_export::build_export_insert_statements(req.options).map(Json).map_err(AppError::from)
 }
 
 pub async fn build_export_sql_insert(Json(req): Json<BuildExportSqlInsertRequest>) -> Result<Json<String>, AppError> {
-    dbx_core::database_export::build_export_sql_insert(req.options).map(Json).map_err(AppError)
+    dbx_core::database_export::build_export_sql_insert(req.options).map(Json).map_err(AppError::from)
 }
 
 pub async fn build_database_sql_export(
@@ -888,7 +911,7 @@ pub async fn build_database_sql_export(
             }
         }
     }
-    dbx_core::database_export::build_database_sql_export(options).map(Json).map_err(AppError)
+    dbx_core::database_export::build_database_sql_export(options).map(Json).map_err(AppError::from)
 }
 
 #[cfg(test)]

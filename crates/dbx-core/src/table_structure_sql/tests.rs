@@ -678,6 +678,130 @@ fn iris_drop_index_includes_table_name() {
 }
 
 #[test]
+fn iris_ignores_comment_changes_but_keeps_supported_column_alters() {
+    let mut renamed = column("DISPLAY_NAME");
+    renamed.data_type = "VARCHAR(40)".to_string();
+    renamed.is_nullable = true;
+    renamed.default_value = "'after'".to_string();
+    renamed.comment = "new description".to_string();
+    renamed.original = Some(ColumnInfo {
+        name: "NAME".to_string(),
+        data_type: "VARCHAR(20)".to_string(),
+        is_nullable: false,
+        column_default: Some("before".to_string()),
+        is_primary_key: false,
+        extra: None,
+        comment: Some("old description".to_string()),
+        ..Default::default()
+    });
+    let mut created_at = column("CREATED_AT");
+    created_at.data_type = "TIMESTAMP".to_string();
+    created_at.default_value = "CURRENT_TIMESTAMP".to_string();
+    created_at.comment = "creation time".to_string();
+
+    let result = build_table_structure_change_sql(TableStructureSqlOptions {
+        database_type: Some(DatabaseType::Iris),
+        schema: Some("SQLUSER".to_string()),
+        table_name: "DBX_ISSUE_1678".to_string(),
+        columns: vec![renamed, created_at],
+        indexes: Vec::new(),
+        foreign_keys: Vec::new(),
+        triggers: Vec::new(),
+        table_comment: Some("new table description".to_string()),
+        original_table_comment: Some("old table description".to_string()),
+    });
+
+    assert_eq!(
+        result.statements,
+        vec![
+            "ALTER TABLE \"SQLUSER\".\"DBX_ISSUE_1678\" ALTER COLUMN \"NAME\" RENAME \"DISPLAY_NAME\";",
+            "ALTER TABLE \"SQLUSER\".\"DBX_ISSUE_1678\" MODIFY (\"DISPLAY_NAME\" VARCHAR(40) DEFAULT 'after' NULL);",
+            "ALTER TABLE \"SQLUSER\".\"DBX_ISSUE_1678\" ADD (\"CREATED_AT\" TIMESTAMP DEFAULT CURRENT_TIMESTAMP);",
+        ]
+    );
+    assert_eq!(
+        result.warnings,
+        vec![
+            "Column comments are not supported for iris from this editor; the comment change for \"NAME\" was ignored.",
+            "Column comments are not supported for iris from this editor; the comment for \"CREATED_AT\" was ignored.",
+            "Table comments are not supported for iris from this editor; the comment change was ignored.",
+        ]
+    );
+    assert!(result.statements.iter().all(|statement| !statement.contains("COMMENT ON")));
+}
+
+#[test]
+fn iris_comment_only_change_returns_warning_without_sql() {
+    let mut name = column("NAME");
+    name.comment = "new description".to_string();
+    name.original = Some(ColumnInfo {
+        name: "NAME".to_string(),
+        data_type: "varchar(255)".to_string(),
+        is_nullable: true,
+        column_default: None,
+        is_primary_key: false,
+        extra: None,
+        comment: Some("old description".to_string()),
+        ..Default::default()
+    });
+
+    let result = build_single_column_alter_sql(SingleColumnAlterSqlOptions {
+        database_type: Some(DatabaseType::Iris),
+        schema: Some("SQLUSER".to_string()),
+        table_name: "DBX_ISSUE_1678".to_string(),
+        column: name,
+    });
+
+    assert!(result.statements.is_empty());
+    assert_eq!(
+        result.warnings,
+        vec![
+            "Column comments are not supported for iris from this editor; the comment change for \"NAME\" was ignored."
+        ]
+    );
+}
+
+#[test]
+fn oracle_compatible_databases_keep_comment_on_sql() {
+    for database_type in [DatabaseType::Oracle, DatabaseType::OceanbaseOracle, DatabaseType::Dameng] {
+        let mut name = column("NAME");
+        name.comment = "new description".to_string();
+        name.original = Some(ColumnInfo {
+            name: "NAME".to_string(),
+            data_type: "varchar(255)".to_string(),
+            is_nullable: true,
+            column_default: None,
+            is_primary_key: false,
+            extra: None,
+            comment: Some("old description".to_string()),
+            ..Default::default()
+        });
+
+        let result = build_table_structure_change_sql(TableStructureSqlOptions {
+            database_type: Some(database_type),
+            schema: Some("APP".to_string()),
+            table_name: "USERS".to_string(),
+            columns: vec![name],
+            indexes: Vec::new(),
+            foreign_keys: Vec::new(),
+            triggers: Vec::new(),
+            table_comment: Some("new table description".to_string()),
+            original_table_comment: Some("old table description".to_string()),
+        });
+
+        assert_eq!(result.warnings, Vec::<String>::new(), "{database_type:?}");
+        assert_eq!(
+            result.statements,
+            vec![
+                "COMMENT ON COLUMN \"APP\".\"USERS\".\"NAME\" IS 'new description';",
+                "COMMENT ON TABLE \"APP\".\"USERS\" IS 'new table description';",
+            ],
+            "{database_type:?}"
+        );
+    }
+}
+
+#[test]
 fn mysql_create_index_with_comment() {
     let mut col = column("name");
     col.data_type = "varchar(120)".to_string();
@@ -1204,6 +1328,31 @@ fn builds_postgres_create_table_with_comments_and_index() {
 }
 
 #[test]
+fn create_table_trims_table_name_whitespace_for_all_statements() {
+    let mut id = column("id");
+    id.data_type = "integer".to_string();
+    let idx = index("idx_users_id", &["id"]);
+
+    let result = build_create_table_sql(TableStructureSqlOptions {
+        database_type: Some(DatabaseType::Mysql),
+        schema: None,
+        table_name: "  users  ".to_string(),
+        columns: vec![id],
+        indexes: vec![idx],
+        foreign_keys: Vec::new(),
+        triggers: Vec::new(),
+        table_comment: None,
+        original_table_comment: None,
+    });
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(
+        result.statements,
+        vec!["CREATE TABLE `users` (\n  `id` integer\n);", "CREATE INDEX `idx_users_id` ON `users` (`id`);",]
+    );
+}
+
+#[test]
 fn warns_for_sqlite_unsafe_column_changes() {
     let mut col = column("name");
     col.data_type = "text".to_string();
@@ -1235,6 +1384,82 @@ fn warns_for_sqlite_unsafe_column_changes() {
         result.warnings,
         vec!["SQLite cannot safely alter existing column \"name\" without rebuilding the table."]
     );
+}
+
+#[test]
+fn qualifies_attached_sqlite_table_and_index_changes() {
+    let mut email = column("email");
+    email.data_type = "text".to_string();
+    let mut old_index = index("idx_users_old", &["email"]);
+    old_index.marked_for_drop = true;
+    old_index.original = Some(IndexInfo {
+        name: "idx_users_old".to_string(),
+        columns: vec!["email".to_string()],
+        is_unique: false,
+        is_primary: false,
+        filter: None,
+        index_type: None,
+        included_columns: None,
+        comment: None,
+    });
+    let email_index = index("idx_users_email", &["email"]);
+
+    let result = build_table_structure_change_sql(TableStructureSqlOptions {
+        database_type: Some(DatabaseType::Sqlite),
+        schema: Some("analytics".to_string()),
+        table_name: "users".to_string(),
+        columns: vec![email],
+        indexes: vec![old_index, email_index],
+        foreign_keys: Vec::new(),
+        triggers: Vec::new(),
+        table_comment: None,
+        original_table_comment: None,
+    });
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(
+        result.statements,
+        vec![
+            "ALTER TABLE \"analytics\".\"users\" ADD COLUMN \"email\" text;",
+            "DROP INDEX \"analytics\".\"idx_users_old\";",
+            "CREATE INDEX \"analytics\".\"idx_users_email\" ON \"users\" (\"email\");",
+        ]
+    );
+
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "ATTACH DATABASE ':memory:' AS analytics;
+             CREATE TABLE main.users(id INTEGER);
+             CREATE TABLE analytics.users(id INTEGER);
+             CREATE INDEX analytics.idx_users_old ON users(id);",
+        )
+        .unwrap();
+    connection.execute_batch(&result.statements.join("\n")).unwrap();
+    let main_columns = connection
+        .prepare("PRAGMA main.table_info('users')")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>("name"))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let attached_columns = connection
+        .prepare("PRAGMA analytics.table_info('users')")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>("name"))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let attached_indexes = connection
+        .prepare("PRAGMA analytics.index_list('users')")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>("name"))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(main_columns, vec!["id"]);
+    assert_eq!(attached_columns, vec!["id", "email"]);
+    assert_eq!(attached_indexes, vec!["idx_users_email"]);
 }
 
 #[test]
@@ -1701,6 +1926,125 @@ fn sqlserver_default_changes_drop_old_constraints_with_isolated_batches() {
         result.statements[3],
         "ALTER TABLE [core].[products] ADD CONSTRAINT [DF_products_active] DEFAULT 1 FOR [active];"
     );
+}
+
+#[test]
+fn sqlserver_type_change_preserves_existing_default_constraint() {
+    let mut check_value = column("check_value");
+    check_value.data_type = "decimal(18,2)".to_string();
+    check_value.is_nullable = false;
+    check_value.default_value = "0".to_string();
+    check_value.original = Some(ColumnInfo {
+        name: "check_value".to_string(),
+        data_type: "int".to_string(),
+        is_nullable: false,
+        column_default: Some("0".to_string()),
+        ..Default::default()
+    });
+
+    let result = build_single_column_alter_sql(SingleColumnAlterSqlOptions {
+        database_type: Some(DatabaseType::SqlServer),
+        schema: Some("dbo".to_string()),
+        table_name: "issue_3714".to_string(),
+        column: check_value,
+    });
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(result.statements.len(), 1);
+    let sql = &result.statements[0];
+    let capture = sql.find("= dc.name").unwrap();
+    let drop = sql.find("DROP CONSTRAINT").unwrap();
+    let alter = sql.find("ALTER COLUMN [check_value] decimal(18,2) NOT NULL").unwrap();
+    let restore = sql.rfind("ADD CONSTRAINT").unwrap();
+    assert!(capture < drop && drop < alter && alter < restore);
+    assert!(sql.contains("= dc.definition"));
+    assert!(sql.contains("QUOTENAME(@dbx_default_sql_"));
+    assert!(sql.contains("+ N' DEFAULT ' + @dbx_default_sql_"));
+    assert!(sql.contains("+ N' FOR [check_value]'"));
+}
+
+#[test]
+fn sqlserver_type_and_default_change_drops_before_alter_and_adds_new_default() {
+    let mut quantity = column("quantity");
+    quantity.data_type = "decimal(12,3)".to_string();
+    quantity.is_nullable = false;
+    quantity.default_value = "1.5".to_string();
+    quantity.original = Some(ColumnInfo {
+        name: "quantity".to_string(),
+        data_type: "int".to_string(),
+        is_nullable: false,
+        column_default: Some("0".to_string()),
+        ..Default::default()
+    });
+
+    let result = build_single_column_alter_sql(SingleColumnAlterSqlOptions {
+        database_type: Some(DatabaseType::SqlServer),
+        schema: Some("dbo".to_string()),
+        table_name: "inventory".to_string(),
+        column: quantity,
+    });
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(result.statements.len(), 3);
+    assert!(result.statements[0].contains("DROP CONSTRAINT"));
+    assert_eq!(result.statements[1], "ALTER TABLE [dbo].[inventory] ALTER COLUMN [quantity] decimal(12,3) NOT NULL;");
+    assert_eq!(
+        result.statements[2],
+        "ALTER TABLE [dbo].[inventory] ADD CONSTRAINT [DF_inventory_quantity] DEFAULT 1.5 FOR [quantity];"
+    );
+}
+
+#[test]
+fn sqlserver_rename_and_nullability_change_restores_default_on_new_column_name() {
+    let mut renamed = column("is_enabled");
+    renamed.data_type = "bit".to_string();
+    renamed.is_nullable = false;
+    renamed.default_value = "1".to_string();
+    renamed.original = Some(ColumnInfo {
+        name: "enabled".to_string(),
+        data_type: "bit".to_string(),
+        is_nullable: true,
+        column_default: Some("1".to_string()),
+        ..Default::default()
+    });
+
+    let result = build_single_column_alter_sql(SingleColumnAlterSqlOptions {
+        database_type: Some(DatabaseType::SqlServer),
+        schema: Some("dbo".to_string()),
+        table_name: "settings".to_string(),
+        column: renamed,
+    });
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(result.statements.len(), 2);
+    assert_eq!(result.statements[0], "EXEC sp_rename '[dbo].[settings].[enabled]', 'is_enabled', 'COLUMN';");
+    assert!(result.statements[1].contains("N'is_enabled', 'ColumnId'"));
+    assert!(result.statements[1].contains("ALTER COLUMN [is_enabled] bit NOT NULL"));
+    assert!(result.statements[1].contains("FOR [is_enabled]"));
+}
+
+#[test]
+fn sqlserver_type_change_without_default_keeps_direct_alter_behavior() {
+    let mut value = column("value");
+    value.data_type = "bigint".to_string();
+    value.is_nullable = false;
+    value.original = Some(ColumnInfo {
+        name: "value".to_string(),
+        data_type: "int".to_string(),
+        is_nullable: false,
+        column_default: None,
+        ..Default::default()
+    });
+
+    let result = build_single_column_alter_sql(SingleColumnAlterSqlOptions {
+        database_type: Some(DatabaseType::SqlServer),
+        schema: Some("dbo".to_string()),
+        table_name: "metrics".to_string(),
+        column: value,
+    });
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(result.statements, vec!["ALTER TABLE [dbo].[metrics] ALTER COLUMN [value] bigint NOT NULL;"]);
 }
 
 #[test]

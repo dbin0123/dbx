@@ -382,11 +382,11 @@ impl SqlStatementSplitter {
             }
 
             match ch {
-                '\'' if !self.in_double_quote && !self.in_backtick && self.previous != Some('\\') => {
+                '\'' if !self.in_double_quote && !self.in_backtick && !has_odd_trailing_backslashes(&self.buffer) => {
                     self.in_single_quote = !self.in_single_quote;
                     self.buffer.push(ch);
                 }
-                '"' if !self.in_single_quote && !self.in_backtick && self.previous != Some('\\') => {
+                '"' if !self.in_single_quote && !self.in_backtick && !has_odd_trailing_backslashes(&self.buffer) => {
                     self.in_double_quote = !self.in_double_quote;
                     self.buffer.push(ch);
                 }
@@ -395,9 +395,9 @@ impl SqlStatementSplitter {
                     self.buffer.push(ch);
                 }
                 ';' if !self.in_single_quote && !self.in_double_quote && !self.in_backtick => {
-                    if self.options.profile.supports_custom_delimiter_commands && self.on_delimiter_line() {
-                        self.buffer.push(ch);
-                    } else if self.custom_delimiter.is_some() {
+                    if (self.options.profile.supports_custom_delimiter_commands && self.on_delimiter_line())
+                        || self.custom_delimiter.is_some()
+                    {
                         self.buffer.push(ch);
                     } else if self.options.profile.supports_mysql_routine_blocks
                         && starts_with_mysql_routine_block(&self.buffer)
@@ -520,6 +520,10 @@ impl SqlStatementSplitter {
         let line = self.buffer[start..].trim_start().as_bytes();
         line.len() >= 9 && line[..9].eq_ignore_ascii_case(b"delimiter")
     }
+}
+
+fn has_odd_trailing_backslashes(sql: &str) -> bool {
+    sql.as_bytes().iter().rev().take_while(|byte| **byte == b'\\').count() % 2 == 1
 }
 
 pub fn split_sql_statements(sql: &str) -> Vec<String> {
@@ -814,11 +818,11 @@ fn split_sql_statement_ranges_with_options(sql: &str, options: SqlParsingOptions
                 in_backtick = !in_backtick;
                 i += ch.len_utf8();
             }
-            ';' if !in_single_quote
-                && !in_double_quote
-                && !in_backtick
-                && custom_delimiter.is_none()
-                && !(options.profile.supports_custom_delimiter_commands && is_on_delimiter_line(sql, start, i)) =>
+            ';' if !(in_single_quote
+                || in_double_quote
+                || in_backtick
+                || custom_delimiter.is_some()
+                || (options.profile.supports_custom_delimiter_commands && is_on_delimiter_line(sql, start, i))) =>
             {
                 let is_mysql_routine =
                     options.profile.supports_mysql_routine_blocks && starts_with_mysql_routine_block(&sql[start..i]);
@@ -1567,6 +1571,7 @@ fn parse_insert_values_tail(tail: &str) -> Option<String> {
     }
 }
 
+#[derive(Default)]
 struct SqlScanner {
     profile: SqlDialectProfile,
     in_single_quote: bool,
@@ -1609,9 +1614,7 @@ impl SqlScanner {
         }
 
         if !self.in_single_quote && !self.in_double_quote && !self.in_backtick {
-            if ch == '-' && next == Some('-') {
-                self.in_line_comment = true;
-            } else if self.profile.supports_hash_line_comments && ch == '#' {
+            if (ch == '-' && next == Some('-')) || (self.profile.supports_hash_line_comments && ch == '#') {
                 self.in_line_comment = true;
             } else if ch == '/' && next == Some('*') {
                 self.in_block_comment = true;
@@ -1644,21 +1647,6 @@ impl SqlScanner {
             || self.in_line_comment
             || self.in_block_comment
             || self.dollar_quote_tag.is_some()
-    }
-}
-
-impl Default for SqlScanner {
-    fn default() -> Self {
-        Self {
-            profile: SqlDialectProfile::default(),
-            in_single_quote: false,
-            in_double_quote: false,
-            in_backtick: false,
-            in_line_comment: false,
-            in_block_comment: false,
-            dollar_quote_tag: None,
-            previous: None,
-        }
     }
 }
 
@@ -1900,6 +1888,10 @@ fn leading_executable_sql_with_options(sql: &str, options: SqlParsingOptions) ->
             i += 1;
         }
 
+        if i >= bytes.len() {
+            break;
+        }
+
         if i + 1 < bytes.len() && bytes[i] == b'-' && bytes[i + 1] == b'-' {
             i += 2;
             while i < bytes.len() && bytes[i] != b'\n' {
@@ -1941,6 +1933,10 @@ fn first_executable_sql_token_with_options(sql: &str, options: SqlParsingOptions
     while i < bytes.len() {
         while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'(') {
             i += 1;
+        }
+
+        if i >= bytes.len() {
+            break;
         }
 
         if i + 1 < bytes.len() && bytes[i] == b'-' && bytes[i + 1] == b'-' {
@@ -2432,6 +2428,21 @@ mod tests {
     }
 
     #[test]
+    fn mysql_split_skips_comment_only_statement() {
+        assert!(split_sql_statements_for_database("-- DBX SQL preview crash reproducer\n\n;", DatabaseType::Mysql)
+            .is_empty());
+    }
+
+    #[test]
+    fn mysql_keyword_detection_skips_comment_only_input() {
+        assert!(!starts_with_executable_sql_keyword_for_database(
+            "-- DBX SQL preview crash reproducer\n\n",
+            &["SELECT"],
+            DatabaseType::Mysql,
+        ));
+    }
+
+    #[test]
     fn decodes_utf8_bom_sql_file_bytes_without_bom_statement_prefix() {
         let sql = decode_sql_file_bytes(b"\xEF\xBB\xBFCREATE TABLE t(id int);").unwrap();
 
@@ -2471,6 +2482,39 @@ mod tests {
                 "-- comment ; ignored\n/* block ; ignored */\nSELECT 1",
             ]
         );
+    }
+
+    #[test]
+    fn closes_mysql_string_after_even_trailing_backslashes() {
+        let sql = r#"CREATE TABLE paths (value varchar(100) COMMENT 'Windows path\\'); DROP TABLE paths;"#;
+
+        assert_eq!(
+            split_sql_statements_for_database(sql, DatabaseType::Mysql),
+            vec![r#"CREATE TABLE paths (value varchar(100) COMMENT 'Windows path\\')"#, "DROP TABLE paths"]
+        );
+    }
+
+    #[test]
+    fn keeps_mysql_string_open_after_odd_trailing_backslashes() {
+        let sql = r#"INSERT INTO notes VALUES ('it\'s; still one value'); SELECT 1;"#;
+
+        assert_eq!(
+            split_sql_statements_for_database(sql, DatabaseType::Mysql),
+            vec![r#"INSERT INTO notes VALUES ('it\'s; still one value')"#, "SELECT 1"]
+        );
+    }
+
+    #[test]
+    fn closes_mysql_string_after_even_trailing_backslashes_across_chunks() {
+        let mut splitter =
+            SqlStatementSplitter::with_options(SqlParsingOptions::for_database_type(DatabaseType::Mysql));
+
+        assert!(splitter.push_chunk("CREATE TABLE paths (value varchar(100) COMMENT 'Windows path\\").is_empty());
+        assert_eq!(
+            splitter.push_chunk("\\'); DROP TABLE paths;"),
+            vec![r#"CREATE TABLE paths (value varchar(100) COMMENT 'Windows path\\')"#, "DROP TABLE paths"]
+        );
+        assert!(splitter.finish().is_empty());
     }
 
     #[test]
