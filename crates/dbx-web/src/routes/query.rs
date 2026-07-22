@@ -866,31 +866,17 @@ pub async fn build_database_sql_export(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{LoginRateLimit, WebState};
+    use crate::state::WebState;
     use axum::extract::State as AxumState;
     use dbx_core::connection::AppState;
     use dbx_core::storage::Storage;
-    use std::collections::{HashMap, HashSet};
-    use tokio::sync::{Mutex, RwLock};
 
     async fn test_web_state() -> (Arc<WebState>, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("dbx-web-query-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
         let app = Arc::new(AppState::new_with_plugin_dir(storage, dir.join("plugins")));
-        let state = Arc::new(WebState {
-            app,
-            data_dir: dir.clone(),
-            public_base_path: "/".to_string(),
-            password_disabled: false,
-            password_hash: RwLock::new(None),
-            sessions: RwLock::new(HashSet::new()),
-            sse_channels: RwLock::new(HashMap::new()),
-            table_import_channels: RwLock::new(HashMap::new()),
-            sql_file_executions: RwLock::new(HashMap::new()),
-            login_rate_limit: Mutex::new(LoginRateLimit { fail_count: 0, locked_until: None }),
-            export_files: RwLock::new(HashMap::new()),
-        });
+        let state = Arc::new(WebState::for_tests(app, dir.clone()));
         (state, dir)
     }
 
