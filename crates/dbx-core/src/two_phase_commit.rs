@@ -167,33 +167,35 @@ impl TwoPhaseCommit {
 
         if all_agreed {
             self.update_status(transaction_id, TransactionStatus::Committing).await?;
-            match self.commit_phase(transaction_id, participants, 2).await {
-                Ok(_results) => {
-                    let log = self.update_status(transaction_id, TransactionStatus::Committed).await?;
-                    let _ = self
-                        .state_machine
-                        .transition(
-                            &format!("2pc_{transaction_id}"),
-                            crate::state_persistence::StateTransition::Completed,
-                        )
-                        .await;
-                    Ok(log)
-                }
-                Err(e) => {
-                    let _ = self.update_status(transaction_id, TransactionStatus::RollingBack).await?;
-                    let _ = self.rollback_phase(transaction_id, participants).await;
+            let commit_results = self.commit_phase(transaction_id, participants, 2).await;
+            let all_committed =
+                participants.is_empty() || (!commit_results.is_empty() && commit_results.iter().all(|r| r.committed));
+            if all_committed {
+                let log = self.update_status(transaction_id, TransactionStatus::Committed).await?;
+                let _ = self
+                    .state_machine
+                    .transition(&format!("2pc_{transaction_id}"), crate::state_persistence::StateTransition::Completed)
+                    .await;
+                Ok(log)
+            } else {
+                let _ = self.update_status(transaction_id, TransactionStatus::RollingBack).await?;
+                let _ = self.rollback_phase(transaction_id, participants).await;
 
-                    let has_committed = self.has_committed_participants(transaction_id, participants).await;
-                    let final_status =
-                        if has_committed { TransactionStatus::Mixed } else { TransactionStatus::RolledBack };
+                // Use commit-phase outcomes only — never re-invoke commit() to probe.
+                let has_committed = commit_results.iter().any(|r| r.committed);
+                let final_status = if has_committed { TransactionStatus::Mixed } else { TransactionStatus::RolledBack };
 
-                    let log = self.update_status(transaction_id, final_status).await?;
-                    let _ = self
-                        .state_machine
-                        .transition(&format!("2pc_{transaction_id}"), crate::state_persistence::StateTransition::Failed)
-                        .await;
-                    Err(format!("Commit phase failed: {e}. Some participants committed. Status: {}", log.status))
-                }
+                let log = self.update_status(transaction_id, final_status).await?;
+                let _ = self
+                    .state_machine
+                    .transition(&format!("2pc_{transaction_id}"), crate::state_persistence::StateTransition::Failed)
+                    .await;
+                let failures: Vec<String> = commit_results
+                    .iter()
+                    .filter(|r| !r.committed)
+                    .map(|r| format!("{}: {}", r.participant_id, r.error.as_deref().unwrap_or("unknown")))
+                    .collect();
+                Err(format!("Commit phase failed: {}. Status: {}", failures.join("; "), log.status))
             }
         } else {
             let _ = self.update_status(transaction_id, TransactionStatus::RollingBack).await?;
@@ -255,12 +257,14 @@ impl TwoPhaseCommit {
         Ok(results)
     }
 
+    /// Run commit for all participants; always returns per-participant outcomes
+    /// (including partial success) so callers can mark Mixed without re-committing.
     async fn commit_phase(
         &self,
         transaction_id: &str,
         participants: &[Arc<dyn Participant>],
         max_retries: u32,
-    ) -> Result<Vec<ParticipantCommitResult>, String> {
+    ) -> Vec<ParticipantCommitResult> {
         let mut results: Vec<ParticipantCommitResult> = Vec::new();
         let mut pending: Vec<&Arc<dyn Participant>> = participants.iter().collect();
 
@@ -301,17 +305,7 @@ impl TwoPhaseCommit {
             }
         }
 
-        let all_committed = results.iter().all(|r| r.committed);
-        if all_committed {
-            Ok(results)
-        } else {
-            let failures: Vec<String> = results
-                .iter()
-                .filter(|r| !r.committed)
-                .map(|r| format!("{}: {}", r.participant_id, r.error.as_deref().unwrap_or("unknown")))
-                .collect();
-            Err(failures.join("; "))
-        }
+        results
     }
 
     async fn rollback_phase(&self, transaction_id: &str, participants: &[Arc<dyn Participant>]) -> Result<(), String> {
@@ -326,18 +320,6 @@ impl TwoPhaseCommit {
         } else {
             Err(errors.join("; "))
         }
-    }
-
-    /// Probe committed participants without re-invoking `commit` (which would
-    /// re-execute side effects for auto-commit style participants).
-    ///
-    /// Schema Diff deploy uses single-connection transactions and does not
-    /// rely on this path. Cross-participant recovery should track commit state
-    /// via durable logs / participant status, not by replaying commit.
-    async fn has_committed_participants(&self, _transaction_id: &str, participants: &[Arc<dyn Participant>]) -> bool {
-        // Prefer durable log metadata if present; never re-call commit().
-        let _ = participants;
-        false
     }
 
     pub async fn recover(
@@ -356,17 +338,26 @@ impl TwoPhaseCommit {
                 self.rollback_phase(transaction_id, participants).await?;
                 self.update_status(transaction_id, TransactionStatus::RolledBack).await
             }
-            TransactionStatus::Committing => match self.commit_phase(transaction_id, participants, 2).await {
-                Ok(_) => self.update_status(transaction_id, TransactionStatus::Committed).await,
-                Err(e) => {
+            TransactionStatus::Committing => {
+                let commit_results = self.commit_phase(transaction_id, participants, 2).await;
+                let all_committed = participants.is_empty()
+                    || (!commit_results.is_empty() && commit_results.iter().all(|r| r.committed));
+                if all_committed {
+                    self.update_status(transaction_id, TransactionStatus::Committed).await
+                } else {
                     self.rollback_phase(transaction_id, participants).await?;
-                    let has_committed = self.has_committed_participants(transaction_id, participants).await;
+                    let has_committed = commit_results.iter().any(|r| r.committed);
                     let final_status =
                         if has_committed { TransactionStatus::Mixed } else { TransactionStatus::RolledBack };
-                    self.update_status(transaction_id, final_status).await.map_err(|_| e.clone())?;
-                    Err(format!("Recovery failed during commit: {e}"))
+                    self.update_status(transaction_id, final_status).await?;
+                    let failures: Vec<String> = commit_results
+                        .iter()
+                        .filter(|r| !r.committed)
+                        .map(|r| format!("{}: {}", r.participant_id, r.error.as_deref().unwrap_or("unknown")))
+                        .collect();
+                    Err(format!("Recovery failed during commit: {}", failures.join("; ")))
                 }
-            },
+            }
             TransactionStatus::RollingBack => {
                 self.rollback_phase(transaction_id, participants).await?;
                 self.update_status(transaction_id, TransactionStatus::RolledBack).await
