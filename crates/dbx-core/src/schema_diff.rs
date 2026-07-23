@@ -2962,6 +2962,61 @@ fn _strip_mysql_ddl(ddl: &str) -> String {
     sql
 }
 
+/// Map a source column type into Microsoft Access (Jet/ACE) SQL types.
+/// Access is not SQL Server: no `IDENTITY`, display widths, or MySQL-only names.
+fn map_type_for_access(source_type: &str) -> String {
+    let trimmed = source_type.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    let (base, params) = match upper.find('(') {
+        Some(i) => {
+            let base = upper[..i].trim().to_string();
+            let end = upper.rfind(')').unwrap_or(upper.len());
+            let params = upper[i + 1..end].trim().to_string();
+            (base, Some(params))
+        }
+        None => (upper, None),
+    };
+
+    match base.as_str() {
+        "BOOL" | "BOOLEAN" | "BIT" | "YESNO" => "YESNO".to_string(),
+        "TINYINT" if params.as_deref() == Some("1") => "YESNO".to_string(),
+        "TINYINT" | "BYTE" => "BYTE".to_string(),
+        "SMALLINT" | "SHORT" => "SMALLINT".to_string(),
+        "MEDIUMINT" | "INT" | "INTEGER" | "INT4" | "LONG" => "INTEGER".to_string(),
+        "BIGINT" | "INT8" => "DECIMAL(20,0)".to_string(),
+        "FLOAT" | "REAL" | "SINGLE" => "SINGLE".to_string(),
+        "DOUBLE" | "DOUBLE PRECISION" => "DOUBLE".to_string(),
+        "DECIMAL" | "NUMERIC" | "NUMBER" | "CURRENCY" => match params {
+            Some(p) if !p.is_empty() => format!("DECIMAL({p})"),
+            _ => "DECIMAL".to_string(),
+        },
+        "VARCHAR" | "CHARACTER VARYING" | "CHAR" | "CHARACTER" | "NVARCHAR" | "NVARCHAR2" | "VARCHAR2" => {
+            let len = params
+                .as_deref()
+                .and_then(|p| p.split(',').next())
+                .and_then(|p| p.trim().parse::<u32>().ok())
+                .unwrap_or(255)
+                .clamp(1, 255);
+            format!("TEXT({len})")
+        }
+        "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "CLOB" | "MEMO" => "LONGTEXT".to_string(),
+        "DATE" | "DATETIME" | "TIMESTAMP" | "TIME" | "YEAR" => "DATETIME".to_string(),
+        "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "BINARY" | "VARBINARY" | "IMAGE" | "OLEOBJECT" => {
+            "OLEOBJECT".to_string()
+        }
+        "JSON" | "JSONB" => "LONGTEXT".to_string(),
+        "UUID" | "UNIQUEIDENTIFIER" | "GUID" => "GUID".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn column_is_auto_increment(col: &ColumnInfo) -> bool {
+    col.extra.as_deref().is_some_and(|extra| {
+        let lower = extra.to_ascii_lowercase();
+        lower.contains("auto_increment") || lower.contains("identity") || lower.contains("serial")
+    })
+}
+
 fn generate_create_table_sql(
     name: &str,
     columns: &[ColumnDiff],
@@ -2982,10 +3037,14 @@ fn generate_create_table_sql(
         if let Some(user_target) = FieldMapping::apply_with_params(field_mappings, source_type, target_dialect) {
             return user_target;
         }
+        if db_type == DatabaseType::Access {
+            return map_type_for_access(source_type);
+        }
         type_matrix.as_ref().map_or_else(|| source_type.to_string(), |m| m.convert_type(source_type).0)
     };
     let table = qualified_name(name, db_type, schema);
     let is_mysql_tgt = is_mysql_like(db_type);
+    let is_access = db_type == DatabaseType::Access;
 
     // Collect column definitions
     let mut col_defs = Vec::new();
@@ -2999,6 +3058,25 @@ fn generate_create_table_sql(
         };
         let col_name = quote_id(&col.name, db_type);
         let mapped_type = map_type(&col.data_type);
+        let is_int = mapped_type.to_ascii_lowercase().contains("int")
+            || mapped_type.to_ascii_lowercase().contains("integer")
+            || mapped_type.to_ascii_lowercase().contains("serial")
+            || mapped_type.eq_ignore_ascii_case("counter")
+            || mapped_type.eq_ignore_ascii_case("byte")
+            || mapped_type.to_ascii_lowercase().starts_with("decimal");
+        let wants_auto = col.is_primary_key && (column_is_auto_increment(col) || is_int);
+
+        // Access AutoNumber is COUNTER, not SQL Server IDENTITY / MySQL display-width types.
+        if is_access && wants_auto && col.is_primary_key {
+            let mut def = format!("{col_name} COUNTER");
+            if !col.is_nullable {
+                def.push_str(" NOT NULL");
+            }
+            col_defs.push(def);
+            pk_cols.push(col_name);
+            continue;
+        }
+
         let mut def = format!("{} {}", col_name, mapped_type);
 
         if !col.is_nullable {
@@ -3006,7 +3084,10 @@ fn generate_create_table_sql(
         }
 
         if let Some(default) = &col.column_default {
-            def.push_str(&format!(" DEFAULT {default}"));
+            // Access COUNTER/identity columns should not carry MySQL-style defaults.
+            if !is_access || !wants_auto {
+                def.push_str(&format!(" DEFAULT {default}"));
+            }
         }
 
         if is_mysql_tgt {
@@ -3015,9 +3096,6 @@ fn generate_create_table_sql(
             }
         }
 
-        let is_int = mapped_type.to_ascii_lowercase().contains("int")
-            || mapped_type.to_ascii_lowercase().contains("integer")
-            || mapped_type.to_ascii_lowercase().contains("serial");
         if col.is_primary_key && is_int {
             match target_dialect {
                 DialectKind::Mysql | DialectKind::ManticoreSearch => {
@@ -3027,7 +3105,7 @@ fn generate_create_table_sql(
                     has_int_pk = true;
                     auto_col_name = Some(col.name.clone());
                 }
-                DialectKind::SqlServer => {
+                DialectKind::SqlServer if !is_access => {
                     def.push_str(" IDENTITY(1,1)");
                 }
                 DialectKind::Oracle => {
@@ -7386,6 +7464,101 @@ mod tests {
             assert!(!sql.contains("ENGINE="), "residual ENGINE= in {tgt:?}: {sql}");
             assert!(!sql.contains("CHARSET"), "residual CHARSET in {tgt:?}: {sql}");
         }
+    }
+
+    #[test]
+    fn mysql_to_access_create_table_uses_access_types_and_counter() {
+        let columns = vec![
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "id".into(),
+                source: Some(ColumnInfo {
+                    name: "id".into(),
+                    data_type: "int(11)".into(),
+                    is_nullable: false,
+                    is_primary_key: true,
+                    extra: Some("auto_increment".into()),
+                    ..Default::default()
+                }),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "name2".into(),
+                source: Some(ColumnInfo {
+                    name: "name2".into(),
+                    data_type: "varchar(120)".into(),
+                    is_nullable: false,
+                    ..Default::default()
+                }),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "del_flag".into(),
+                source: Some(ColumnInfo {
+                    name: "del_flag".into(),
+                    data_type: "tinyint(2)".into(),
+                    is_nullable: false,
+                    ..Default::default()
+                }),
+                target: None,
+                changes: vec![],
+            },
+            ColumnDiff {
+                diff_type: "added".into(),
+                name: "create_at".into(),
+                source: Some(ColumnInfo {
+                    name: "create_at".into(),
+                    data_type: "datetime".into(),
+                    is_nullable: true,
+                    ..Default::default()
+                }),
+                target: None,
+                changes: vec![],
+            },
+        ];
+        let indexes = vec![IndexDiff {
+            diff_type: "added".into(),
+            name: "idx_del_flag".into(),
+            source: Some(IndexInfo {
+                name: "idx_del_flag".into(),
+                columns: vec!["del_flag".into()],
+                is_unique: false,
+                is_primary: false,
+                index_type: None,
+                filter: None,
+                included_columns: None,
+                comment: None,
+            }),
+            target: None,
+            changes: vec![],
+        }];
+        let (sql, missing) = generate_create_table_sql(
+            "tb_user",
+            &columns,
+            &indexes,
+            &[],
+            None,
+            DatabaseType::Access,
+            None,
+            Some(DialectKind::Mysql),
+            &[],
+            &[],
+        );
+        assert!(missing.is_empty(), "{missing:?}");
+        assert!(sql.contains("COUNTER"), "Access PK should use COUNTER: {sql}");
+        assert!(!sql.contains("IDENTITY"), "Access must not emit SQL Server IDENTITY: {sql}");
+        assert!(!sql.contains("int(11)"), "MySQL display width must be stripped: {sql}");
+        assert!(sql.contains("TEXT(120)") || sql.contains("TEXT (120)"), "varchar→TEXT(n): {sql}");
+        assert!(
+            sql.contains("BYTE") || sql.contains("\"del_flag\" BYTE") || sql.to_ascii_uppercase().contains("BYTE"),
+            "tinyint→BYTE: {sql}"
+        );
+        assert!(sql.to_ascii_uppercase().contains("DATETIME"), "datetime stays DATETIME: {sql}");
+        assert!(sql.contains("CREATE INDEX"), "index: {sql}");
     }
 
     fn check_auto_increment(sql: &str, tgt: DialectKind) {
