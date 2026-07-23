@@ -8,6 +8,7 @@ import {
   Upload,
   Trash2,
   ChevronDown,
+  ChevronUp,
   ChevronLeft,
   ChevronRight,
   Search,
@@ -64,6 +65,8 @@ import EnumCellEditor from "@/components/grid/EnumCellEditor.vue";
 import type { QueryResult, ColumnInfo, DatabaseType, ForeignKeyInfo, IndexInfo, TriggerInfo, TableInfoTab } from "@/types/database";
 import { tableObjectSourceKind } from "@/lib/table/tableObjectSourceKind";
 import { tableColumnDefaultDisplayValue } from "@/lib/table/tableColumnDefaultPresentation";
+import { shouldNavigateFromTableInfoColumnClick } from "@/lib/table/tableInfoColumnNavigation";
+import { tableInfoTabForDrawerToggle } from "@/lib/table/tableInfoTabPreference";
 import * as api from "@/lib/backend/api";
 import { formatElapsedSeconds } from "@/lib/common/elapsedTime";
 import { dataGridCellDisplayText, dataGridCellEditorText } from "@/lib/dataGrid/dataGridCellCoercion";
@@ -133,6 +136,7 @@ import { canGoNextDataGridPage, hasCompleteLocalDataGridResult } from "@/lib/dat
 import { dataGridCountQueryOptions } from "@/lib/dataGrid/dataGridQueryOptions";
 import { dataGridBottomScrollTop, dataGridScrollPosition, isDataGridAtScrollBottom, isDataGridNearScrollBottom, shouldCheckInfiniteScrollAfterScroll, type DataGridScrollPosition } from "@/lib/dataGrid/dataGridInfiniteScroll";
 import { CANVAS_DATA_GRID_ROW_HEIGHT, dataGridSearchMatchKey, drawCanvasDataGrid } from "@/lib/dataGrid/canvasDataGridRenderer";
+import { DATA_GRID_DARK_STRIPED_ROW_BG, DATA_GRID_LIGHT_STRIPED_ROW_BG } from "@/lib/dataGrid/dataGridPaintTheme";
 import { createRowLowerTextCache } from "@/lib/dataGrid/dataGridRowLowerText";
 import { dataGridPreviewLabelKey, dataGridSaveActionMode, dataGridSaveToolbarState } from "@/lib/dataGrid/dataGridSaveUi";
 import type { QueryEditabilityReason } from "@/lib/sql/sqlAnalysis";
@@ -286,6 +290,8 @@ interface DataGridProps {
   pageLimit?: number;
   countSql?: string;
   totalRowCount?: number;
+  totalRowCountIsExact?: boolean;
+  paginationTotalRowCount?: number;
   totalRowCountLoading?: boolean;
   loading?: boolean;
   cacheKey?: string;
@@ -1755,6 +1761,11 @@ function scrollToTableInfoColumn(columnName: string) {
   const columnIndex = props.result.columns.findIndex((column, index) => matchesTableInfoColumn(column, props.sourceColumns?.[index], columnName));
   scrollToColumnIndex(columnIndex);
 }
+
+function onTableInfoColumnClick(columnName: string) {
+  if (!shouldNavigateFromTableInfoColumnClick(window.getSelection())) return;
+  scrollToTableInfoColumn(columnName);
+}
 function scrollToColumnIndex(columnIndex: number) {
   if (columnIndex < 0 || !displayableColumnIndexes.value.includes(columnIndex)) return;
 
@@ -2362,9 +2373,13 @@ const inferredBackendTotalRowCount = computed(() => {
 });
 const serverKnownTotalRowCount = computed(() => props.totalRowCount ?? manualTotalRowCount.value);
 const displayedTotalRowCount = computed(() => serverKnownTotalRowCount.value ?? inferredBackendTotalRowCount.value);
+const totalRowCountIsExact = computed(() => props.totalRowCountIsExact !== false);
+// A backend can expose an exact display total while deliberately restricting
+// offset pagination to a smaller safe range.
+const paginationTotalRowCount = computed(() => props.paginationTotalRowCount ?? serverKnownTotalRowCount.value);
 // Only a server-confirmed total drives pagination — an inferred total means
 // rows exist that we never fetched, so navigation must stay inside rows.length.
-const hasKnownTotalRowCount = computed(() => typeof serverKnownTotalRowCount.value === "number" && serverKnownTotalRowCount.value >= 0);
+const hasKnownPaginationTotalRowCount = computed(() => typeof paginationTotalRowCount.value === "number" && paginationTotalRowCount.value >= 0);
 // When context=results and the caller hasn't configured server-side
 // pagination (no pageLimit), the backend handed us every row up-front and
 // rowCount IS the total. Without this hint, the "page is full → assume more"
@@ -2390,11 +2405,11 @@ const canGoNextPage = computed(() => {
     pageSize: pageSize.value,
     pageOffset: props.pageOffset,
     currentPage: currentPage.value,
-    totalRowCount: hasKnownTotalRowCount.value ? displayedTotalRowCount.value : undefined,
+    totalRowCount: hasKnownPaginationTotalRowCount.value ? paginationTotalRowCount.value : undefined,
     allRowsLoaded: allRowsLoaded.value,
   });
 });
-const canJumpLastPage = computed(() => canGoNextPage.value && (hasKnownTotalRowCount.value || allRowsLoaded.value || !!props.tableMeta || !!props.countSql));
+const canJumpLastPage = computed(() => canGoNextPage.value && (hasKnownPaginationTotalRowCount.value || allRowsLoaded.value || !!props.tableMeta || !!props.countSql));
 const totalRowCountBusy = computed(() => props.totalRowCountLoading === true || manualTotalRowCountLoading.value);
 const canCalculateTotalRowCount = computed(() => !!props.connectionId && (!!props.tableMeta || !!props.countSql));
 // When a refresh/rollback completes and the current page exceeds the last
@@ -2407,7 +2422,7 @@ watch(
     // and the completion was triggered by a refresh/rollback.
     if (!loading && prevLoading && isRefreshingData.value) {
       isRefreshingData.value = false;
-      const total = displayedTotalRowCount.value;
+      const total = paginationTotalRowCount.value;
       if (!total || total <= 0) return;
       const lastPageNum = Math.max(1, Math.ceil(total / pageSize.value));
       if (currentPage.value <= lastPageNum) return;
@@ -2570,8 +2585,8 @@ function applyCustomPageSize() {
 
 async function lastPage() {
   if (infiniteScrollEnabled.value) return;
-  if (hasKnownTotalRowCount.value) {
-    const total = displayedTotalRowCount.value ?? 0;
+  if (hasKnownPaginationTotalRowCount.value) {
+    const total = paginationTotalRowCount.value ?? 0;
     if (total <= 0) return;
     const lastPageNum = Math.ceil(total / pageSize.value);
     if (lastPageNum <= currentPage.value) return;
@@ -3845,7 +3860,7 @@ const editorThemeAccessor = () => settingsStore.editorSettings.theme;
 const editorAppAppearance = () => (isDark.value ? "dark" : "light") as import("@/lib/app/appTheme").AppThemeAppearance;
 const editorAppPalette = () => themePalette.value;
 const editorFontSize = () => settingsStore.editorSettings.fontSize;
-const editorFontFamily = () => settingsStore.editorSettings.fontFamily;
+const detailEditorFontFamily = () => tableFontFamily.value;
 const SIDE_DETAIL_EDITOR_MIN_HEIGHT = 160;
 const SIDE_DETAIL_EDITOR_MAX_HEIGHT = 360;
 const SIDE_DETAIL_EDITOR_LINE_HEIGHT = 20;
@@ -3873,7 +3888,7 @@ watch(valueEditorContainer, async (el) => {
       appAppearance: editorAppAppearance,
       appPalette: editorAppPalette,
       fontSize: editorFontSize,
-      fontFamily: editorFontFamily,
+      fontFamily: detailEditorFontFamily,
     });
     await valueDetailEditor.create(el, detailEditValue.value, activeCellDetail.value?.type);
   } else if (!el && valueDetailEditor) {
@@ -4328,9 +4343,7 @@ function dataGridRowStyle(item: RowItem): CSSProperties {
           ? "rgb(51, 51, 55)"
           : "rgb(243, 243, 243)"
         : item.displayIndex % 2 === 1
-          ? dark
-            ? "rgb(32, 32, 34)"
-            : "rgb(248, 248, 248)"
+          ? `var(--data-grid-row-muted-bg, ${dark ? DATA_GRID_DARK_STRIPED_ROW_BG : DATA_GRID_LIGHT_STRIPED_ROW_BG})`
           : dark
             ? "rgb(19, 20, 22)"
             : "rgb(255, 255, 255)";
@@ -4752,7 +4765,7 @@ function canvasCellContentOverflows(item: RowItem, actualColIdx: number, visible
   const displayText = formatCellCached(item.data[actualColIdx], actualColIdx);
   const editText = cellEditorTextForValue(item.data[actualColIdx], actualColIdx);
   if (editText.includes("\n") || editText.includes("\r") || editText.length > displayText.length) return true;
-  const textWidth = measureCellTextWidth(displayText, `400 13px ${settingsStore.editorSettings.fontFamily}`);
+  const textWidth = measureCellTextWidth(displayText, `400 ${tableFontSize.value}px ${tableFontFamily.value}`);
   return textWidth > Math.max(0, cellWidth - 24);
 }
 
@@ -4865,7 +4878,7 @@ const canvasDetailButtonStyle = computed(() => {
   const edgeGap = 6;
   return {
     left: `${Math.max(DATA_GRID_ROW_NUM_WIDTH, cell.rect.left + cell.rect.width - actionWidth - edgeGap)}px`,
-    top: `${cell.rect.top + 2}px`,
+    top: `${cell.rect.top + cell.rect.height / 2}px`,
   };
 });
 
@@ -5794,6 +5807,9 @@ function prepareDataCellMouseDown(item: RowItem, actualColIdx: number) {
     pendingQuickEntryDraftCellFocus.value = { rowId: item.id, col: actualColIdx };
   } else {
     pendingQuickEntryDraftCellFocus.value = null;
+    if (editing && (editing.rowId !== item.id || editing.col !== actualColIdx)) {
+      void commitEditFromCellBlur();
+    }
   }
 }
 
@@ -6672,9 +6688,60 @@ function clampCellDetailPanelSize(value: number, layout = cellDetailPanelLayout.
 // Table info drawers are tied to a single grid instance. Keeping this state
 // module-global leaks the drawer into other kept-alive tabs.
 const showTableInfo = ref(false);
-const activeTableInfoTab = ref<TableInfoTab>("ddl");
+const activeTableInfoTab = ref<TableInfoTab>(settingsStore.editorSettings.tableInfoActiveTab);
 const ddlContent = ref("");
 const ddlPreRef = ref<HTMLPreElement | null>(null);
+const ddlSearchMatchCount = ref(0);
+const ddlSearchMatchIndex = ref(0);
+
+function scrollDdlSearchMatchIntoView(match: HTMLElement) {
+  const pre = ddlPreRef.value;
+  if (!pre) return;
+
+  const preRect = pre.getBoundingClientRect();
+  const matchRect = match.getBoundingClientRect();
+  pre.scrollTop += matchRect.top - preRect.top - (pre.clientHeight - matchRect.height) / 2;
+  pre.scrollLeft += matchRect.left - preRect.left - (pre.clientWidth - matchRect.width) / 2;
+}
+
+function syncDdlSearchMatches(scrollToActive = false) {
+  const pre = ddlPreRef.value;
+  if (!pre || activeTableInfoTab.value !== "ddl" || !searchQuery.value) {
+    ddlSearchMatchCount.value = 0;
+    ddlSearchMatchIndex.value = 0;
+    return;
+  }
+
+  const matches = Array.from(pre.querySelectorAll<HTMLElement>("mark.ddl-search-match"));
+  ddlSearchMatchCount.value = matches.length;
+  if (matches.length === 0) {
+    ddlSearchMatchIndex.value = 0;
+    return;
+  }
+
+  ddlSearchMatchIndex.value = Math.min(ddlSearchMatchIndex.value, matches.length - 1);
+  matches.forEach((match, index) => match.classList.toggle("ddl-search-match-active", index === ddlSearchMatchIndex.value));
+  const activeMatch = matches[ddlSearchMatchIndex.value];
+  if (scrollToActive && activeMatch) scrollDdlSearchMatchIntoView(activeMatch);
+}
+
+function navigateDdlSearch(delta: -1 | 1) {
+  const count = ddlSearchMatchCount.value;
+  if (count === 0) return;
+  ddlSearchMatchIndex.value = (ddlSearchMatchIndex.value + delta + count) % count;
+  syncDdlSearchMatches(true);
+}
+
+function onTableInfoSearchKeydown(e: KeyboardEvent) {
+  if (e.key === "Escape") {
+    searchQuery.value = "";
+    return;
+  }
+  if (e.key !== "Enter" || activeTableInfoTab.value !== "ddl") return;
+  e.preventDefault();
+  navigateDdlSearch(e.shiftKey ? -1 : 1);
+}
+
 function onDdlKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key === "a") {
     e.preventDefault();
@@ -6730,11 +6797,16 @@ watch(activeTableInfoTab, () => {
 });
 
 watch([activeTableInfoTab, ddlLoading], ([tab, loading]) => {
-  if (tab === "ddl" && !loading) {
-    void nextTick(() => {
-      ddlPreRef.value?.focus();
-    });
+  if (tab !== "ddl") return;
+  if (loading) {
+    ddlSearchMatchCount.value = 0;
+    ddlSearchMatchIndex.value = 0;
+    return;
   }
+  void nextTick(() => {
+    ddlPreRef.value?.focus();
+    syncDdlSearchMatches(true);
+  });
 });
 
 watch(
@@ -6834,19 +6906,24 @@ const tableInfoTabListStyle = computed(() => ({
   gridTemplateColumns: `repeat(${tableInfoTabs.value.length}, minmax(0, 1fr))`,
 }));
 
-async function toggleTableInfo(tab: TableInfoTab = activeTableInfoTab.value) {
-  if (showTableInfo.value && activeTableInfoTab.value === tab) {
+async function toggleTableInfo(tab?: TableInfoTab) {
+  // Kept-alive grids retain local state, so only a closed drawer should refresh
+  // from the shared preference; an open drawer keeps its current working tab.
+  const nextTab = tableInfoTabForDrawerToggle(showTableInfo.value, activeTableInfoTab.value, settingsStore.editorSettings.tableInfoActiveTab, tab);
+  if (showTableInfo.value && activeTableInfoTab.value === nextTab) {
     showTableInfo.value = false;
     return;
   }
   showTableInfo.value = true;
-  await selectTableInfoTab(tab);
+  await selectTableInfoTab(nextTab);
 }
 
 async function selectTableInfoTab(tab: TableInfoTab) {
-  const nextTab = tableInfoTabs.value.some((item) => item.id === tab) ? tab : tableInfoTabs.value[0]?.id;
+  const tabSupported = tableInfoTabs.value.some((item) => item.id === tab);
+  const nextTab = tabSupported ? tab : tableInfoTabs.value[0]?.id;
   if (!nextTab) return;
   activeTableInfoTab.value = nextTab;
+  if (tabSupported) settingsStore.updateEditorSettings({ tableInfoActiveTab: tab });
   if (nextTab === "ddl") await fetchDdl();
   else if (nextTab === "indexes") await fetchIndexes();
   else if (nextTab === "foreignKeys") await fetchForeignKeys();
@@ -7196,9 +7273,19 @@ const filteredDdlContent = computed(() => {
   const regex = new RegExp(`(${escaped})`, "gi");
   // Match only text between > and < (text nodes), then replace the search term within those spans
   return html.replace(/>([^<]*)</g, (_, text) => {
-    return `>${text.replace(regex, "<mark>$1</mark>")}<`;
+    return `>${text.replace(regex, '<mark class="ddl-search-match">$1</mark>')}<`;
   });
 });
+
+watch(
+  [filteredDdlContent, searchQuery],
+  async () => {
+    ddlSearchMatchIndex.value = 0;
+    await nextTick();
+    syncDdlSearchMatches(true);
+  },
+  { flush: "post" },
+);
 
 defineExpose({
   useTransaction,
@@ -7657,7 +7744,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
         </div>
         <!-- Truncation warning banner -->
         <div v-if="showTruncationWarning" class="shrink-0 px-3 py-1 bg-amber-500/10 border-b border-amber-500/20 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
-          <span>{{ t("grid.truncatedHint", { count: pageSize }) }}</span>
+          <span>{{ t("grid.truncatedHint", { count: result.rows.length }) }}</span>
         </div>
         <!-- Content area: table + side/bottom detail panes -->
         <div class="flex-1 grid min-h-0 overflow-hidden" :style="contentGridStyle">
@@ -7762,7 +7849,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                     <div
                       v-for="cell in item.values"
                       :key="`${item.id}:${cell.recordIndex}`"
-                      class="relative flex shrink-0 items-center border-r border-border/70 px-2 py-0 font-mono truncate"
+                      class="relative flex shrink-0 items-center border-r border-border/70 px-2 py-0 truncate"
                       :class="{
                         'text-muted-foreground italic': cell.isNull,
                         'cell-selected': transposeCellIsSelected(cell.recordIndex, cell.valueIndex) && !displayItems[cell.recordIndex]?.isDirtyCol[cell.valueIndex],
@@ -7843,7 +7930,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                           <span class="text-muted-foreground/70 italic">{{ draftCellPlaceholder(displayItems[cell.recordIndex], cell.valueIndex) }}</span>
                         </template>
                         <template v-else>{{ firstLineCellDisplayValue(cell.display) }}</template>
-                        <div v-if="cellDetailButtonVisible(cell.recordIndex, cell.valueIndex)" class="absolute right-2 top-0.5 flex items-center gap-1">
+                        <div v-if="cellDetailButtonVisible(cell.recordIndex, cell.valueIndex)" class="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
                           <LightDropdownMenu
                             v-if="canQuickDownloadCellValue(cell.recordIndex, cell.valueIndex)"
                             :items="binaryCellDownloadMenuItems"
@@ -7994,7 +8081,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                               <Code2 class="h-3.5 w-3.5" />
                             </button>
                           </PopoverTrigger>
-                          <PopoverContent align="start" side="bottom" class="w-[450px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden rounded-xl border bg-popover p-0 text-popover-foreground shadow-xl" @click.stop @keydown.stop>
+                          <PopoverContent align="start" side="bottom" class="w-[450px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden rounded-md border bg-popover p-0 text-popover-foreground shadow-xl" @click.stop @keydown.stop>
                             <div class="border-b bg-muted/40 px-3 py-2">
                               <div class="text-sm font-semibold">
                                 {{ t("grid.columnFormatterFor", { column: col.name }) }}
@@ -8173,7 +8260,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                               <Filter class="h-3.5 w-3.5" />
                             </button>
                           </PopoverTrigger>
-                          <PopoverContent align="start" side="bottom" class="w-[300px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden rounded-xl border bg-popover p-0 text-popover-foreground shadow-xl" @click.stop @keydown.stop>
+                          <PopoverContent align="start" side="bottom" class="w-[300px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden rounded-md border bg-popover p-0 text-popover-foreground shadow-xl" @click.stop @keydown.stop>
                             <div class="border-b bg-muted/40 px-2 py-1.5 text-center text-xs font-semibold">
                               {{ columnFilterPanelTitle(col.name) }}
                             </div>
@@ -8339,7 +8426,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                         @paste.stop="onCellEditTextareaPaste"
                       />
                     </div>
-                    <div v-if="canvasDetailButtonCell" class="absolute pointer-events-auto z-20 flex items-center gap-1" :style="canvasDetailButtonStyle" @mouseenter="keepCanvasDetailHover" @mouseleave="clearCanvasDetailHover">
+                    <div v-if="canvasDetailButtonCell" class="absolute pointer-events-auto z-20 flex -translate-y-1/2 items-center gap-1" :style="canvasDetailButtonStyle" @mouseenter="keepCanvasDetailHover" @mouseleave="clearCanvasDetailHover">
                       <LightDropdownMenu
                         v-if="canvasDetailButtonCell.canQuickDownload"
                         :items="binaryCellDownloadMenuItems"
@@ -8501,7 +8588,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                           <span class="text-muted-foreground/70 italic">{{ draftCellPlaceholder(item, col.actualColIdx) }}</span>
                         </template>
                         <template v-else>{{ firstLineCellDisplayValue(formatCellCached(item.data[col.actualColIdx], col.actualColIdx)) }}</template>
-                        <div v-if="cellDetailButtonVisible(item.displayIndex, col.actualColIdx)" class="absolute right-2 top-0.5 flex items-center gap-1">
+                        <div v-if="cellDetailButtonVisible(item.displayIndex, col.actualColIdx)" class="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
                           <LightDropdownMenu
                             v-if="canQuickDownloadCellValue(item.displayIndex, col.actualColIdx)"
                             :items="binaryCellDownloadMenuItems"
@@ -8545,7 +8632,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                 <div ref="gridVerticalScrollbarThumbRef" class="data-grid-vertical-scrollbar__thumb" />
               </div>
               <div v-if="loading" class="absolute inset-0 z-20 bg-background/50 flex items-center justify-center">
-                <div class="flex items-center gap-2 px-3 py-1.5 rounded-md bg-background border shadow-sm text-xs text-muted-foreground">
+                <div class="flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
                   <Loader2 class="w-3.5 h-3.5 animate-spin" />
                   <span>{{ formatElapsedSeconds(loadingElapsed) }}s</span>
                 </div>
@@ -8554,7 +8641,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
           </div>
           <!-- Table Info Drawer -->
           <div v-if="showTableInfo" class="table-info-drawer relative col-start-2 row-start-1 border-l flex flex-col bg-background min-w-0" :class="[{ 'row-span-2': cellDetailPanelIsBottom }, { 'ddl-drawer-resizing': isResizingDdl }]" :style="ddlDrawerStyle" @contextmenu="onDrawerContextMenu">
-            <div class="absolute left-0 top-0 bottom-0 z-20 w-1.5 -translate-x-1/2 cursor-col-resize hover:bg-primary/30" @mousedown.prevent="onDdlResizeStart" />
+            <div class="absolute left-0 top-0 bottom-0 z-20 w-1.5 -translate-x-1/2 cursor-col-resize" @mousedown.prevent="onDdlResizeStart" />
             <div class="flex items-center gap-2 px-3 py-1.5 border-b shrink-0 bg-muted/20 h-9">
               <TableProperties class="w-3.5 h-3.5 text-muted-foreground" />
               <span class="text-xs font-medium flex-1 min-w-0 truncate">{{ tableMeta?.tableName }}</span>
@@ -8596,12 +8683,25 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
             </div>
 
             <div class="px-2 py-1.5 border-b shrink-0 bg-background">
-              <div class="relative">
-                <Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-                <input v-model="searchQuery" :placeholder="t('grid.tableInfoSearch')" class="w-full h-7 pl-7 pr-6 text-xs bg-muted/50 rounded border border-border focus:outline-none focus:border-primary/50" @keydown.escape="searchQuery = ''" />
-                <button v-if="searchQuery" class="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" @click="searchQuery = ''">
-                  <X class="w-3 h-3" />
-                </button>
+              <div class="flex min-w-0 items-center gap-1">
+                <div class="relative min-w-0 flex-1">
+                  <Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                  <input v-model="searchQuery" :placeholder="t('grid.tableInfoSearch')" class="w-full h-7 pl-7 pr-6 text-xs bg-muted/50 rounded border border-border focus:outline-none focus:border-primary/50" @keydown="onTableInfoSearchKeydown" />
+                  <button v-if="searchQuery" type="button" class="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" @click="searchQuery = ''">
+                    <X class="w-3 h-3" />
+                  </button>
+                </div>
+                <template v-if="activeTableInfoTab === 'ddl'">
+                  <span class="w-9 shrink-0 text-center text-[11px] tabular-nums text-muted-foreground">
+                    {{ searchQuery ? (ddlSearchMatchCount > 0 ? `${ddlSearchMatchIndex + 1}/${ddlSearchMatchCount}` : "0") : "" }}
+                  </span>
+                  <Button variant="ghost" size="icon" class="h-7 w-7 shrink-0" :title="t('editor.search.prevMatch')" :aria-label="t('editor.search.prevMatch')" :disabled="ddlSearchMatchCount === 0" @click="navigateDdlSearch(-1)">
+                    <ChevronUp class="h-3.5 w-3.5" />
+                  </Button>
+                  <Button variant="ghost" size="icon" class="h-7 w-7 shrink-0" :title="t('editor.search.nextMatch')" :aria-label="t('editor.search.nextMatch')" :disabled="ddlSearchMatchCount === 0" @click="navigateDdlSearch(1)">
+                    <ChevronDown class="h-3.5 w-3.5" />
+                  </Button>
+                </template>
               </div>
             </div>
 
@@ -8627,12 +8727,12 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                     role="button"
                     tabindex="0"
                     :title="column.name"
-                    @click="scrollToTableInfoColumn(column.name)"
+                    @click="onTableInfoColumnClick(column.name)"
                     @keydown.enter.prevent="scrollToTableInfoColumn(column.name)"
                     @keydown.space.prevent="scrollToTableInfoColumn(column.name)"
                   >
                     <td class="px-3 py-2 text-muted-foreground w-8">{{ index + 1 }}</td>
-                    <td class="px-3 py-2 font-medium">
+                    <td class="cursor-text select-text px-3 py-2 font-medium">
                       <span class="inline-flex items-center gap-1.5">
                         <KeyRound v-if="column.is_primary_key" class="h-3 w-3 text-amber-500" />
                         {{ column.name }}
@@ -8913,8 +9013,8 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
     <div v-if="!isErrorResult" class="grid grid-cols-[max-content_minmax(0,1fr)_max-content] items-center gap-2 px-3 py-1 border-t text-xs text-muted-foreground bg-muted/30 shrink-0">
       <div class="flex min-w-0 items-center gap-2 overflow-hidden">
         <span v-if="hasData" class="shrink-0">
-          {{ t("grid.totalRows", { count: result.rows.length }) }}
-          <span v-if="typeof displayedTotalRowCount === 'number' && displayedTotalRowCount >= 0" class="text-muted-foreground/70">{{ t("grid.totalRowCount", { count: displayedTotalRowCount }) }}</span>
+          {{ t(showTruncationWarning ? "grid.loadedRows" : "grid.totalRows", { count: result.rows.length }) }}
+          <span v-if="typeof displayedTotalRowCount === 'number' && displayedTotalRowCount >= 0" class="text-muted-foreground/70">{{ t(totalRowCountIsExact === false ? "grid.totalRowCountAtLeast" : "grid.totalRowCount", { count: displayedTotalRowCount }) }}</span>
           <span v-else-if="totalRowCountBusy" class="text-muted-foreground/70">
             {{ t("grid.totalRowCountLoading") }}
           </span>
@@ -9060,7 +9160,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
 @reference "../../styles/globals.css";
 
 [data-grid-root] {
-  --data-grid-row-muted-bg: rgb(248, 248, 248);
+  --data-grid-row-muted-bg: rgb(240, 240, 240);
   --data-grid-row-new-bg: rgb(243, 243, 243);
   --data-grid-row-deleted-bg: rgb(255, 244, 244);
   --data-grid-cell-active-bg: rgb(232, 232, 232);
@@ -9086,7 +9186,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
 
 [data-grid-root].data-grid--dark,
 :global(.dark) [data-grid-root] {
-  --data-grid-row-muted-bg: rgb(32, 32, 34);
+  --data-grid-row-muted-bg: rgb(40, 40, 43);
   --data-grid-row-new-bg: rgb(51, 51, 55);
   --data-grid-row-deleted-bg: rgb(55, 31, 32);
   --data-grid-cell-active-bg: rgb(64, 64, 64);
@@ -9112,7 +9212,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
 
 @supports (background: color-mix(in oklab, white 50%, transparent)) {
   [data-grid-root] {
-    --data-grid-row-muted-bg: color-mix(in oklab, var(--muted) 30%, transparent);
+    --data-grid-row-muted-bg: color-mix(in oklab, var(--muted) 99%, var(--foreground));
     --data-grid-row-new-bg: color-mix(in oklab, var(--primary) 5%, transparent);
     --data-grid-row-deleted-bg: color-mix(in oklab, var(--destructive) 5%, transparent);
     --data-grid-cell-active-bg: color-mix(in oklab, var(--primary) 15%, transparent);
@@ -9266,6 +9366,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
 .data-grid-header-row,
 .data-grid-transpose-header,
 .data-grid-transpose-row {
+  font-family: var(--dbx-data-grid-font-family);
   font-size: var(--dbx-table-font-size, 13px);
 }
 
@@ -9499,7 +9600,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
   background-color: var(--background);
   background-color: color-mix(in oklab, var(--background) 96%, var(--primary) 4%);
   border: 1px solid color-mix(in oklab, var(--primary) 62%, var(--border));
-  border-radius: 6px;
+  border-radius: var(--dbx-radius-fixed-6);
   z-index: 90;
   box-shadow:
     0 28px 72px rgb(0 0 0 / 34%),
@@ -9703,5 +9804,17 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
 .ddl-code :deep(.ddl-str) {
   color: rgb(213 111 44);
   color: oklch(0.65 0.15 50);
+}
+
+.ddl-code :deep(.ddl-search-match) {
+  border-radius: 2px;
+  background: var(--data-grid-cell-search-bg);
+  color: inherit;
+  padding: 0;
+}
+
+.ddl-code :deep(.ddl-search-match-active) {
+  background: var(--data-grid-cell-current-search-bg);
+  outline: 1px solid var(--data-grid-cell-current-search-border);
 }
 </style>

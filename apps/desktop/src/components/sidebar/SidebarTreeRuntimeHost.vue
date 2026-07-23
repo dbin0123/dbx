@@ -681,10 +681,10 @@ function runRowClickAction(clickDetail: number) {
   if (!shouldRunTreeNodeRowAction(action, clickDetail)) return;
   if (action === "open-data") {
     scheduleOpenData(node);
+  } else if (action === "open-source") {
+    openObjectSourceDialog(false);
   } else if (isDocumentBrowserTreeNode(node.type)) {
     openMongoTreeData(node);
-  } else if (node.type === "procedure" || node.type === "function" || node.type === "trigger" || node.type === "sequence" || node.type === "package" || node.type === "package-body" || node.type === "type" || node.type === "type-body") {
-    openObjectSourceDialog(false);
   } else if (action === "toggle") {
     toggle();
   }
@@ -2837,23 +2837,6 @@ async function confirmPasteTable() {
   }
 }
 
-function copyTableToClipboard() {
-  const node = activeNode.value;
-  if (node.type !== "table" || !node.connectionId || !node.database) return;
-  connectionStore.treeClipboard = {
-    kind: "table-copy",
-    tables: [
-      {
-        connectionId: node.connectionId,
-        database: node.database,
-        schema: node.schema,
-        tableName: node.label,
-      },
-    ],
-  };
-  toast(t("contextMenu.pasteTableClipboardUpdated"), 2000);
-}
-
 function openPasteTableDialog() {
   const clipboard = connectionStore.treeClipboard;
   if (clipboard?.kind !== "table-copy" || !canPasteTreeClipboardToCurrentNode()) {
@@ -3939,7 +3922,8 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     if (isTableNotView.value) {
       items.push({ label: "", separator: true });
       items.push({ label: t("contextMenu.duplicateStructure"), action: duplicateStructure, icon: CopyPlus });
-      items.push({ label: t("contextMenu.copyTable"), action: copyTableToClipboard, icon: Copy });
+      // Keep menu copy aligned with keyboard copy so frozen multi-selection and single-row fallback stay compatible.
+      items.push({ label: t("contextMenu.copyTable"), action: copySelectedNames, icon: Copy });
       if (supportsTruncate.value) {
         destructiveActions.push({
           label: truncateMenuLabel(t("contextMenu.truncateTable")),

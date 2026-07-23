@@ -283,7 +283,7 @@ When building the frontend yourself with an absolute asset base, set
 
 - [Node.js](https://nodejs.org/) >= 18
 - [pnpm](https://pnpm.io/)
-- [Rust](https://www.rust-lang.org/tools/install) >= 1.77
+- [Rust](https://www.rust-lang.org/tools/install) >= 1.88
 
 #### System Dependencies
 
@@ -312,6 +312,8 @@ make
 ```
 
 `make` installs root dependencies when needed and starts the local Tauri desktop development environment.
+
+Development builds can run alongside an installed DBX instance and share its local data, including connections and history. Avoid changing the same connection or global setting in both windows at once.
 
 > [!TIP]
 > DuckDB compilation takes a while. If you're not working on DuckDB features,

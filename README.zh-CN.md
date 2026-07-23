@@ -283,7 +283,7 @@ environment:
 
 - [Node.js](https://nodejs.org/) >= 18
 - [pnpm](https://pnpm.io/)
-- [Rust](https://www.rust-lang.org/tools/install) >= 1.77
+- [Rust](https://www.rust-lang.org/tools/install) >= 1.88
 
 #### 系统依赖
 
@@ -312,6 +312,8 @@ make
 ```
 
 `make` 会在需要时安装根目录依赖，并启动本地 Tauri 桌面端开发环境。
+
+开发版可与已安装的 DBX 同时运行，并共享本地连接和历史数据。请避免在两个窗口中同时修改同一个连接或全局设置。
 
 > [!TIP]
 > DuckDB 从源码编译较慢。如果不涉及 DuckDB 功能，可以跳过以加速本地构建：
