@@ -12,6 +12,10 @@ const props = defineProps<{
   mappings: FieldMappingEntry[];
   sourceDbType: string;
   targetDbType: string;
+  sourceConnectionId?: string;
+  sourceDatabase?: string;
+  targetConnectionId?: string;
+  targetDatabase?: string;
 }>();
 
 const emit = defineEmits<{
@@ -163,7 +167,16 @@ function handleClose() {
         </Button>
       </div>
 
-      <FieldMappingPanel :mappings="editingMappings" :source-db-type="sourceDbType" :target-db-type="targetDbType" @update:mappings="handleUpdateMappings" />
+      <FieldMappingPanel
+        :mappings="editingMappings"
+        :source-db-type="sourceDbType"
+        :target-db-type="targetDbType"
+        :source-connection-id="sourceConnectionId"
+        :source-database="sourceDatabase"
+        :target-connection-id="targetConnectionId"
+        :target-database="targetDatabase"
+        @update:mappings="handleUpdateMappings"
+      />
 
       <div class="flex items-center justify-between mt-4 pt-3 border-t">
         <div class="flex items-center gap-2">

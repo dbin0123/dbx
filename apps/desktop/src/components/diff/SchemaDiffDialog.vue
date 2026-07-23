@@ -1133,7 +1133,18 @@ const targetConnectionInfo = computed(() => {
       </div>
 
       <!-- Field Mapping Dialog Overlay -->
-      <FieldMappingDialog :open="showFieldMappingDialog" :mappings="activeConfig?.options.fieldMappings ?? []" :source-db-type="sourceDbType" :target-db-type="targetDbType" @update:open="showFieldMappingDialog = $event" @save="handleFieldMappingsUpdate" />
+      <FieldMappingDialog
+        :open="showFieldMappingDialog"
+        :mappings="activeConfig?.options.fieldMappings ?? []"
+        :source-db-type="sourceDbType"
+        :target-db-type="targetDbType"
+        :source-connection-id="sourceConnectionId"
+        :source-database="sourceDatabase"
+        :target-connection-id="targetConnectionId"
+        :target-database="targetDatabase"
+        @update:open="showFieldMappingDialog = $event"
+        @save="handleFieldMappingsUpdate"
+      />
     </DialogContent>
   </Dialog>
 </template>

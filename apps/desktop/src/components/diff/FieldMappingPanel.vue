@@ -6,16 +6,24 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Plus, Trash2, ArrowRight, Wand2 } from "@lucide/vue";
 import SearchableSelect from "@/components/ui/searchable-select/SearchableSelect.vue";
 import { getDataTypeOptions } from "@/lib/table/tableStructureEditorState";
-import { listDialectDataTypes } from "@/lib/backend/api";
+import * as api from "@/lib/backend/api";
+import { useConnectionStore } from "@/stores/connectionStore";
 import { findPreset } from "@/lib/fieldMappingPresets";
 import type { FieldMappingEntry, FieldMappingParamStrategy } from "@/types/schemaDiff";
+import type { DatabaseType } from "@/types/database";
 
 const { t } = useI18n();
+const store = useConnectionStore();
 
 const props = defineProps<{
   mappings: FieldMappingEntry[];
   sourceDbType: string;
   targetDbType: string;
+  /** Same source as table structure editor: live types via listDataTypes(connection, database). */
+  sourceConnectionId?: string;
+  sourceDatabase?: string;
+  targetConnectionId?: string;
+  targetDatabase?: string;
 }>();
 
 const emit = defineEmits<{
@@ -32,6 +40,36 @@ const availablePresets = computed(() => {
   const preset = findPreset(props.sourceDbType, props.targetDbType);
   return preset ? [preset] : [];
 });
+
+/** Same merge semantics as TableStructureEditor (local copy; do not touch structure editor code). */
+function mergeDataTypeOptions(primary: readonly string[], fallback: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const option of [...primary, ...fallback]) {
+    const trimmed = option.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+/** Match TableStructureEditor: listDataTypes(connection, database) + getDataTypeOptions(dbType). */
+async function loadTypeOptions(dbType: string, connectionId?: string, database?: string): Promise<string[]> {
+  const fallback = getDataTypeOptions((dbType || undefined) as DatabaseType | undefined);
+  if (!connectionId || !database) {
+    return fallback;
+  }
+  try {
+    await store.ensureConnected(connectionId);
+    const live = await api.listDataTypes(connectionId, database);
+    return mergeDataTypeOptions(live, fallback);
+  } catch {
+    return fallback;
+  }
+}
 
 function levenshtein(a: string, b: string): number {
   const m = a.length,
@@ -84,21 +122,11 @@ function autoGenerateMappings() {
 }
 
 async function loadSourceTypes() {
-  try {
-    const types = await listDialectDataTypes(props.sourceDbType);
-    sourceTypeOptions.value = types.length > 0 ? types : getDataTypeOptions(props.sourceDbType as any);
-  } catch {
-    sourceTypeOptions.value = getDataTypeOptions(props.sourceDbType as any);
-  }
+  sourceTypeOptions.value = await loadTypeOptions(props.sourceDbType, props.sourceConnectionId, props.sourceDatabase);
 }
 
 async function loadTargetTypes() {
-  try {
-    const types = await listDialectDataTypes(props.targetDbType);
-    targetTypeOptions.value = types.length > 0 ? types : getDataTypeOptions(props.targetDbType as any);
-  } catch {
-    targetTypeOptions.value = getDataTypeOptions(props.targetDbType as any);
-  }
+  targetTypeOptions.value = await loadTypeOptions(props.targetDbType, props.targetConnectionId, props.targetDatabase);
 }
 
 function addMapping() {
@@ -124,15 +152,15 @@ function applyPreset(presetId: string) {
 }
 
 watch(
-  () => props.sourceDbType,
+  () => [props.sourceDbType, props.sourceConnectionId, props.sourceDatabase] as const,
   () => {
-    loadSourceTypes();
+    void loadSourceTypes();
   },
 );
 watch(
-  () => props.targetDbType,
+  () => [props.targetDbType, props.targetConnectionId, props.targetDatabase] as const,
   () => {
-    loadTargetTypes();
+    void loadTargetTypes();
   },
 );
 
@@ -144,8 +172,8 @@ watch([sourceTypeOptions, targetTypeOptions, availablePresets], ([src, tgt, pres
 });
 
 onMounted(() => {
-  loadSourceTypes();
-  loadTargetTypes();
+  void loadSourceTypes();
+  void loadTargetTypes();
 });
 </script>
 
