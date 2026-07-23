@@ -225,7 +225,7 @@ fn bidirectional_diff_with_rename_detection() {
         target_details: vec![detail("user_profiles", vec![col("id", "int"), col("name", "varchar(64)")])],
         database_type: DatabaseType::Postgres,
         detect_renames: true,
-        detect_table_renames: false,
+        detect_table_renames: true,
         rename_threshold: 0.5,
         ..Default::default()
     };
@@ -235,7 +235,7 @@ fn bidirectional_diff_with_rename_detection() {
     // With identical column structure, rename should at least produce diffs
     assert!(!result.diffs.is_empty(), "Should detect difference between differently-named tables");
 
-    // With identical column structures and detect_renames=true, rename candidates must be populated
+    // With identical column structures and table rename detection on, candidates must be populated
     assert!(
         !result.rename_candidates.is_empty(),
         "Rename candidates should be detected for identical column structures"
