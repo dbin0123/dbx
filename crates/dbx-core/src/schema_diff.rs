@@ -6,8 +6,12 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::models::connection::DatabaseType;
+use crate::sql_dialect::ddl_profile::profile_for;
 use crate::sql_dialect::descriptor::DialectKind;
 use crate::sql_dialect::inference::{ColumnType, DefaultTypeInferenceEngine, TypeInferenceEngine};
+use crate::sql_dialect::type_rewrite::{
+    apply_auto_inc_to_column_def, rewrite_column_type, type_looks_integer, AutoIncColumnBuild,
+};
 use crate::sql_parser::ast_filter::AstTransmitFilter;
 use crate::types::{
     ColumnInfo, ForeignKeyInfo, FunctionInfo, IndexInfo, OwnerInfo, RuleInfo, SequenceInfo, TableInfo, TriggerInfo,
@@ -2789,16 +2793,11 @@ pub fn diff_owners(source: &[OwnerInfo], target: &[OwnerInfo]) -> Vec<OwnerDiff>
 }
 
 fn quote_id(name: &str, db_type: DatabaseType) -> String {
-    if is_mysql_like(db_type) {
-        format!("`{}`", name.replace('`', "``"))
-    } else if matches!(db_type, DatabaseType::Oracle | DatabaseType::Dameng) {
-        name.to_uppercase()
-    } else {
-        format!("\"{}\"", name.replace('"', "\"\""))
-    }
+    profile_for(db_type).quote_ident(name)
 }
 
 fn column_def(col: &ColumnInfo, db_type: DatabaseType) -> String {
+    let profile = profile_for(db_type);
     let mut definition = format!("{} {}", quote_id(&col.name, db_type), col.data_type);
     if !col.is_nullable {
         definition.push_str(" NOT NULL");
@@ -2806,7 +2805,7 @@ fn column_def(col: &ColumnInfo, db_type: DatabaseType) -> String {
     if let Some(default) = &col.column_default {
         definition.push_str(&format!(" DEFAULT {default}"));
     }
-    if is_mysql_like(db_type) {
+    if profile.inline_column_comment {
         if let Some(comment) = &col.comment {
             definition.push_str(&format!(" COMMENT {}", comment_literal(comment)));
         }
@@ -2962,61 +2961,6 @@ fn _strip_mysql_ddl(ddl: &str) -> String {
     sql
 }
 
-/// Map a source column type into Microsoft Access (Jet/ACE) SQL types.
-/// Access is not SQL Server: no `IDENTITY`, display widths, or MySQL-only names.
-fn map_type_for_access(source_type: &str) -> String {
-    let trimmed = source_type.trim();
-    let upper = trimmed.to_ascii_uppercase();
-    let (base, params) = match upper.find('(') {
-        Some(i) => {
-            let base = upper[..i].trim().to_string();
-            let end = upper.rfind(')').unwrap_or(upper.len());
-            let params = upper[i + 1..end].trim().to_string();
-            (base, Some(params))
-        }
-        None => (upper, None),
-    };
-
-    match base.as_str() {
-        "BOOL" | "BOOLEAN" | "BIT" | "YESNO" => "YESNO".to_string(),
-        "TINYINT" if params.as_deref() == Some("1") => "YESNO".to_string(),
-        "TINYINT" | "BYTE" => "BYTE".to_string(),
-        "SMALLINT" | "SHORT" => "SMALLINT".to_string(),
-        "MEDIUMINT" | "INT" | "INTEGER" | "INT4" | "LONG" => "INTEGER".to_string(),
-        "BIGINT" | "INT8" => "DECIMAL(20,0)".to_string(),
-        "FLOAT" | "REAL" | "SINGLE" => "SINGLE".to_string(),
-        "DOUBLE" | "DOUBLE PRECISION" => "DOUBLE".to_string(),
-        "DECIMAL" | "NUMERIC" | "NUMBER" | "CURRENCY" => match params {
-            Some(p) if !p.is_empty() => format!("DECIMAL({p})"),
-            _ => "DECIMAL".to_string(),
-        },
-        "VARCHAR" | "CHARACTER VARYING" | "CHAR" | "CHARACTER" | "NVARCHAR" | "NVARCHAR2" | "VARCHAR2" => {
-            let len = params
-                .as_deref()
-                .and_then(|p| p.split(',').next())
-                .and_then(|p| p.trim().parse::<u32>().ok())
-                .unwrap_or(255)
-                .clamp(1, 255);
-            format!("TEXT({len})")
-        }
-        "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "CLOB" | "MEMO" => "LONGTEXT".to_string(),
-        "DATE" | "DATETIME" | "TIMESTAMP" | "TIME" | "YEAR" => "DATETIME".to_string(),
-        "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "BINARY" | "VARBINARY" | "IMAGE" | "OLEOBJECT" => {
-            "OLEOBJECT".to_string()
-        }
-        "JSON" | "JSONB" => "LONGTEXT".to_string(),
-        "UUID" | "UNIQUEIDENTIFIER" | "GUID" => "GUID".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn column_is_auto_increment(col: &ColumnInfo) -> bool {
-    col.extra.as_deref().is_some_and(|extra| {
-        let lower = extra.to_ascii_lowercase();
-        lower.contains("auto_increment") || lower.contains("identity") || lower.contains("serial")
-    })
-}
-
 fn generate_create_table_sql(
     name: &str,
     columns: &[ColumnDiff],
@@ -3031,20 +2975,16 @@ fn generate_create_table_sql(
 ) -> (String, Vec<MissingRollbackObject>) {
     let mut lines = Vec::new();
     let target_dialect = DialectKind::from_database_type(db_type);
-    let type_matrix =
-        source_dialect.map(|src| crate::sql_dialect::descriptor::TypeMappingMatrix::for_dialects(src, target_dialect));
+    let profile = profile_for(db_type);
+    // Type rewrite: user mappings → profile type_map → DialectKind matrix → normalize.
+    // Call sites must not branch on individual DatabaseType values.
     let map_type = |source_type: &str| -> String {
         if let Some(user_target) = FieldMapping::apply_with_params(field_mappings, source_type, target_dialect) {
             return user_target;
         }
-        if db_type == DatabaseType::Access {
-            return map_type_for_access(source_type);
-        }
-        type_matrix.as_ref().map_or_else(|| source_type.to_string(), |m| m.convert_type(source_type).0)
+        rewrite_column_type(source_type, db_type, source_dialect)
     };
     let table = qualified_name(name, db_type, schema);
-    let is_mysql_tgt = is_mysql_like(db_type);
-    let is_access = db_type == DatabaseType::Access;
 
     // Collect column definitions
     let mut col_defs = Vec::new();
@@ -3058,71 +2998,68 @@ fn generate_create_table_sql(
         };
         let col_name = quote_id(&col.name, db_type);
         let mapped_type = map_type(&col.data_type);
-        let is_int = mapped_type.to_ascii_lowercase().contains("int")
-            || mapped_type.to_ascii_lowercase().contains("integer")
-            || mapped_type.to_ascii_lowercase().contains("serial")
-            || mapped_type.eq_ignore_ascii_case("counter")
-            || mapped_type.eq_ignore_ascii_case("byte")
-            || mapped_type.to_ascii_lowercase().starts_with("decimal");
-        let wants_auto = col.is_primary_key && (column_is_auto_increment(col) || is_int);
+        let is_int = type_looks_integer(&mapped_type);
+        let auto_build = apply_auto_inc_to_column_def(&profile, &col_name, &mapped_type, col, is_int);
 
-        // Access AutoNumber is COUNTER, not SQL Server IDENTITY / MySQL display-width types.
-        if is_access && wants_auto && col.is_primary_key {
-            let mut def = format!("{col_name} COUNTER");
-            if !col.is_nullable {
-                def.push_str(" NOT NULL");
-            }
-            col_defs.push(def);
-            pk_cols.push(col_name);
-            continue;
-        }
-
-        let mut def = format!("{} {}", col_name, mapped_type);
-
-        if !col.is_nullable {
-            def.push_str(" NOT NULL");
-        }
-
-        if let Some(default) = &col.column_default {
-            // Access COUNTER/identity columns should not carry MySQL-style defaults.
-            if !is_access || !wants_auto {
-                def.push_str(&format!(" DEFAULT {default}"));
-            }
-        }
-
-        if is_mysql_tgt {
-            if let Some(comment) = col.comment.as_deref().filter(|comment| !comment.is_empty()) {
-                def.push_str(&format!(" COMMENT {}", comment_literal(comment)));
-            }
-        }
-
-        if col.is_primary_key && is_int {
-            match target_dialect {
-                DialectKind::Mysql | DialectKind::ManticoreSearch => {
-                    def.push_str(" AUTO_INCREMENT");
+        match auto_build {
+            AutoIncColumnBuild::Complete { def, .. } => {
+                col_defs.push(def);
+                if col.is_primary_key {
+                    pk_cols.push(col_name);
                 }
-                DialectKind::Postgres => {
+                continue;
+            }
+            AutoIncColumnBuild::AppendSuffix { suffix, skip_default, postgres_sequence } => {
+                let mut def = format!("{} {}", col_name, mapped_type);
+                if !col.is_nullable {
+                    def.push_str(" NOT NULL");
+                }
+                if !skip_default {
+                    if let Some(default) = &col.column_default {
+                        def.push_str(&format!(" DEFAULT {default}"));
+                    }
+                }
+                if profile.inline_column_comment {
+                    if let Some(comment) = col.comment.as_deref().filter(|c| !c.is_empty()) {
+                        def.push_str(&format!(" COMMENT {}", comment_literal(comment)));
+                    }
+                }
+                if !suffix.is_empty() {
+                    def.push_str(suffix);
+                }
+                if postgres_sequence {
                     has_int_pk = true;
                     auto_col_name = Some(col.name.clone());
                 }
-                DialectKind::SqlServer if !is_access => {
-                    def.push_str(" IDENTITY(1,1)");
+                col_defs.push(def);
+                if col.is_primary_key {
+                    pk_cols.push(quote_id(&col.name, db_type));
                 }
-                DialectKind::Oracle => {
-                    def.push_str(" GENERATED AS IDENTITY");
-                }
-                _ => {}
             }
-        }
-
-        col_defs.push(def);
-
-        if col.is_primary_key {
-            pk_cols.push(quote_id(&col.name, db_type));
+            AutoIncColumnBuild::Normal { skip_default } => {
+                let mut def = format!("{} {}", col_name, mapped_type);
+                if !col.is_nullable {
+                    def.push_str(" NOT NULL");
+                }
+                if !skip_default {
+                    if let Some(default) = &col.column_default {
+                        def.push_str(&format!(" DEFAULT {default}"));
+                    }
+                }
+                if profile.inline_column_comment {
+                    if let Some(comment) = col.comment.as_deref().filter(|c| !c.is_empty()) {
+                        def.push_str(&format!(" COMMENT {}", comment_literal(comment)));
+                    }
+                }
+                col_defs.push(def);
+                if col.is_primary_key {
+                    pk_cols.push(quote_id(&col.name, db_type));
+                }
+            }
         }
     }
 
-    if db_type == DatabaseType::Sqlite {
+    if profile.foreign_keys_inline_in_create {
         for fk_diff in foreign_keys {
             let Some(fk) = &fk_diff.source else {
                 continue;
@@ -3184,9 +3121,9 @@ fn generate_create_table_sql(
         lines.push(String::new());
     }
 
-    // Foreign Keys
+    // Foreign Keys (skipped when already inlined into CREATE TABLE via profile)
     for fk_diff in foreign_keys {
-        if db_type == DatabaseType::Sqlite {
+        if profile.foreign_keys_inline_in_create {
             continue;
         }
         let Some(fk) = &fk_diff.source else {
@@ -3207,7 +3144,7 @@ fn generate_create_table_sql(
         lines.push(String::new());
     }
 
-    // Column comments
+    // Column comments (ANSI COMMENT ON … when profile does not use inline COMMENT)
     for col_diff in columns {
         let Some(col) = &col_diff.source else {
             continue;
@@ -3216,7 +3153,7 @@ fn generate_create_table_sql(
             if !comment.is_empty() {
                 let col_name = quote_id(&col.name, db_type);
                 let esc_comment = comment.replace('\'', "''");
-                if !is_mysql_tgt {
+                if !profile.inline_column_comment {
                     lines.push(format!("COMMENT ON COLUMN {}.{} IS '{}';", table, col_name, esc_comment));
                 }
             }

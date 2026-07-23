@@ -1,0 +1,313 @@
+//! Target-database DDL profile: how to *write* SQL for a concrete [`DatabaseType`].
+//!
+//! Profiles are data + small enums. Call sites must not branch on individual databases;
+//! they only consult profile fields (quote style, auto-increment form, type map, …).
+
+use crate::models::connection::DatabaseType;
+
+/// Identifier quoting style for generated DDL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuoteStyle {
+    /// MySQL-family: `name`
+    Backtick,
+    /// PostgreSQL / Access / most ANSI: "name"
+    DoubleQuote,
+    /// SQL Server: [name]
+    Brackets,
+    /// Oracle-style unquoted uppercase
+    UnquotedUpper,
+}
+
+/// How auto-increment / identity is expressed on the target database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoIncSyntax {
+    /// No special auto-increment DDL.
+    None,
+    /// Append a fixed suffix to the column definition (e.g. ` AUTO_INCREMENT`, ` IDENTITY(1,1)`).
+    Suffix(&'static str),
+    /// Replace the mapped type with this type name for auto PK columns (e.g. Access `COUNTER`).
+    ReplaceTypeWith(&'static str),
+    /// PostgreSQL-style sequence + DEFAULT nextval (handled by generator after CREATE).
+    PostgresSequence,
+}
+
+/// Static type rewrite rule: source base type (uppercase, no params) → target template.
+/// Target may use `{}` for a single length/precision placeholder (first param only).
+#[derive(Debug, Clone, Copy)]
+pub struct TypeMapEntry {
+    pub source_base: &'static str,
+    pub target_template: &'static str,
+}
+
+/// DDL generation profile for one [`DatabaseType`].
+#[derive(Debug, Clone, Copy)]
+pub struct DdlDialectProfile {
+    pub database_type: DatabaseType,
+    pub quote: QuoteStyle,
+    pub auto_inc: AutoIncSyntax,
+    /// When false, display widths like `INT(11)` are stripped if no type_map hit.
+    pub supports_display_width: bool,
+    /// Cap for length params when applying `{}` templates (e.g. Access TEXT max 255).
+    pub max_varchar_len: Option<u32>,
+    /// MySQL-style inline `COMMENT '...'` on columns.
+    pub inline_column_comment: bool,
+    /// SQLite-style: emit FOREIGN KEY clauses inside CREATE TABLE.
+    pub foreign_keys_inline_in_create: bool,
+    /// Data-driven base-type rewrites for this target (empty → rely on matrix / normalize only).
+    pub type_map: &'static [TypeMapEntry],
+}
+
+impl DdlDialectProfile {
+    pub fn lookup_type(&self, source_base_upper: &str) -> Option<&'static str> {
+        self.type_map.iter().find(|e| e.source_base.eq_ignore_ascii_case(source_base_upper)).map(|e| e.target_template)
+    }
+
+    pub fn quote_ident(&self, name: &str) -> String {
+        match self.quote {
+            QuoteStyle::Backtick => format!("`{}`", name.replace('`', "``")),
+            QuoteStyle::DoubleQuote => format!("\"{}\"", name.replace('"', "\"\"")),
+            QuoteStyle::Brackets => format!("[{}]", name.replace(']', "]]")),
+            QuoteStyle::UnquotedUpper => name.to_uppercase(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Type maps (data only — no per-database logic at call sites)
+// ---------------------------------------------------------------------------
+
+const ACCESS_TYPE_MAP: &[TypeMapEntry] = &[
+    TypeMapEntry { source_base: "BOOL", target_template: "YESNO" },
+    TypeMapEntry { source_base: "BOOLEAN", target_template: "YESNO" },
+    TypeMapEntry { source_base: "BIT", target_template: "YESNO" },
+    TypeMapEntry { source_base: "YESNO", target_template: "YESNO" },
+    TypeMapEntry { source_base: "TINYINT", target_template: "BYTE" },
+    TypeMapEntry { source_base: "BYTE", target_template: "BYTE" },
+    TypeMapEntry { source_base: "SMALLINT", target_template: "SMALLINT" },
+    TypeMapEntry { source_base: "SHORT", target_template: "SMALLINT" },
+    TypeMapEntry { source_base: "MEDIUMINT", target_template: "INTEGER" },
+    TypeMapEntry { source_base: "INT", target_template: "INTEGER" },
+    TypeMapEntry { source_base: "INTEGER", target_template: "INTEGER" },
+    TypeMapEntry { source_base: "INT4", target_template: "INTEGER" },
+    TypeMapEntry { source_base: "LONG", target_template: "INTEGER" },
+    TypeMapEntry { source_base: "BIGINT", target_template: "DECIMAL(20,0)" },
+    TypeMapEntry { source_base: "INT8", target_template: "DECIMAL(20,0)" },
+    TypeMapEntry { source_base: "FLOAT", target_template: "SINGLE" },
+    TypeMapEntry { source_base: "REAL", target_template: "SINGLE" },
+    TypeMapEntry { source_base: "SINGLE", target_template: "SINGLE" },
+    TypeMapEntry { source_base: "DOUBLE", target_template: "DOUBLE" },
+    TypeMapEntry { source_base: "DOUBLE PRECISION", target_template: "DOUBLE" },
+    TypeMapEntry { source_base: "DECIMAL", target_template: "DECIMAL({})" },
+    TypeMapEntry { source_base: "NUMERIC", target_template: "DECIMAL({})" },
+    TypeMapEntry { source_base: "NUMBER", target_template: "DECIMAL({})" },
+    TypeMapEntry { source_base: "CURRENCY", target_template: "CURRENCY" },
+    TypeMapEntry { source_base: "VARCHAR", target_template: "TEXT({})" },
+    TypeMapEntry { source_base: "CHARACTER VARYING", target_template: "TEXT({})" },
+    TypeMapEntry { source_base: "CHAR", target_template: "TEXT({})" },
+    TypeMapEntry { source_base: "CHARACTER", target_template: "TEXT({})" },
+    TypeMapEntry { source_base: "NVARCHAR", target_template: "TEXT({})" },
+    TypeMapEntry { source_base: "NVARCHAR2", target_template: "TEXT({})" },
+    TypeMapEntry { source_base: "VARCHAR2", target_template: "TEXT({})" },
+    TypeMapEntry { source_base: "TEXT", target_template: "LONGTEXT" },
+    TypeMapEntry { source_base: "TINYTEXT", target_template: "LONGTEXT" },
+    TypeMapEntry { source_base: "MEDIUMTEXT", target_template: "LONGTEXT" },
+    TypeMapEntry { source_base: "LONGTEXT", target_template: "LONGTEXT" },
+    TypeMapEntry { source_base: "CLOB", target_template: "LONGTEXT" },
+    TypeMapEntry { source_base: "MEMO", target_template: "LONGTEXT" },
+    TypeMapEntry { source_base: "DATE", target_template: "DATETIME" },
+    TypeMapEntry { source_base: "DATETIME", target_template: "DATETIME" },
+    TypeMapEntry { source_base: "TIMESTAMP", target_template: "DATETIME" },
+    TypeMapEntry { source_base: "TIME", target_template: "DATETIME" },
+    TypeMapEntry { source_base: "YEAR", target_template: "SMALLINT" },
+    TypeMapEntry { source_base: "BLOB", target_template: "OLEOBJECT" },
+    TypeMapEntry { source_base: "TINYBLOB", target_template: "OLEOBJECT" },
+    TypeMapEntry { source_base: "MEDIUMBLOB", target_template: "OLEOBJECT" },
+    TypeMapEntry { source_base: "LONGBLOB", target_template: "OLEOBJECT" },
+    TypeMapEntry { source_base: "BINARY", target_template: "OLEOBJECT" },
+    TypeMapEntry { source_base: "VARBINARY", target_template: "OLEOBJECT" },
+    TypeMapEntry { source_base: "IMAGE", target_template: "OLEOBJECT" },
+    TypeMapEntry { source_base: "JSON", target_template: "LONGTEXT" },
+    TypeMapEntry { source_base: "JSONB", target_template: "LONGTEXT" },
+    TypeMapEntry { source_base: "UUID", target_template: "GUID" },
+    TypeMapEntry { source_base: "UNIQUEIDENTIFIER", target_template: "GUID" },
+    TypeMapEntry { source_base: "GUID", target_template: "GUID" },
+];
+
+const SQLITE_TYPE_MAP: &[TypeMapEntry] = &[
+    TypeMapEntry { source_base: "TINYINT", target_template: "INTEGER" },
+    TypeMapEntry { source_base: "SMALLINT", target_template: "INTEGER" },
+    TypeMapEntry { source_base: "MEDIUMINT", target_template: "INTEGER" },
+    TypeMapEntry { source_base: "INT", target_template: "INTEGER" },
+    TypeMapEntry { source_base: "INTEGER", target_template: "INTEGER" },
+    TypeMapEntry { source_base: "BIGINT", target_template: "INTEGER" },
+    TypeMapEntry { source_base: "FLOAT", target_template: "REAL" },
+    TypeMapEntry { source_base: "DOUBLE", target_template: "REAL" },
+    TypeMapEntry { source_base: "DOUBLE PRECISION", target_template: "REAL" },
+    TypeMapEntry { source_base: "DECIMAL", target_template: "NUMERIC" },
+    TypeMapEntry { source_base: "NUMERIC", target_template: "NUMERIC" },
+    TypeMapEntry { source_base: "VARCHAR", target_template: "TEXT" },
+    TypeMapEntry { source_base: "CHAR", target_template: "TEXT" },
+    TypeMapEntry { source_base: "TEXT", target_template: "TEXT" },
+    TypeMapEntry { source_base: "TINYTEXT", target_template: "TEXT" },
+    TypeMapEntry { source_base: "MEDIUMTEXT", target_template: "TEXT" },
+    TypeMapEntry { source_base: "LONGTEXT", target_template: "TEXT" },
+    TypeMapEntry { source_base: "DATETIME", target_template: "TEXT" },
+    TypeMapEntry { source_base: "TIMESTAMP", target_template: "TEXT" },
+    TypeMapEntry { source_base: "DATE", target_template: "TEXT" },
+    TypeMapEntry { source_base: "BLOB", target_template: "BLOB" },
+    TypeMapEntry { source_base: "JSON", target_template: "TEXT" },
+];
+
+// ---------------------------------------------------------------------------
+// Profile families (shared shapes; registration is the only DatabaseType match)
+// ---------------------------------------------------------------------------
+
+fn mysql_family(db: DatabaseType) -> DdlDialectProfile {
+    DdlDialectProfile {
+        database_type: db,
+        quote: QuoteStyle::Backtick,
+        auto_inc: AutoIncSyntax::Suffix(" AUTO_INCREMENT"),
+        supports_display_width: true,
+        max_varchar_len: Some(65_535),
+        inline_column_comment: true,
+        foreign_keys_inline_in_create: false,
+        type_map: &[],
+    }
+}
+
+fn postgres_family(db: DatabaseType) -> DdlDialectProfile {
+    DdlDialectProfile {
+        database_type: db,
+        quote: QuoteStyle::DoubleQuote,
+        auto_inc: AutoIncSyntax::PostgresSequence,
+        supports_display_width: false,
+        max_varchar_len: None,
+        inline_column_comment: false,
+        foreign_keys_inline_in_create: false,
+        type_map: &[],
+    }
+}
+
+fn oracle_family(db: DatabaseType) -> DdlDialectProfile {
+    DdlDialectProfile {
+        database_type: db,
+        quote: QuoteStyle::UnquotedUpper,
+        auto_inc: AutoIncSyntax::Suffix(" GENERATED AS IDENTITY"),
+        supports_display_width: false,
+        max_varchar_len: Some(4000),
+        inline_column_comment: false,
+        foreign_keys_inline_in_create: false,
+        type_map: &[],
+    }
+}
+
+fn sqlserver_family(db: DatabaseType) -> DdlDialectProfile {
+    DdlDialectProfile {
+        database_type: db,
+        quote: QuoteStyle::DoubleQuote,
+        auto_inc: AutoIncSyntax::Suffix(" IDENTITY(1,1)"),
+        supports_display_width: false,
+        max_varchar_len: None,
+        inline_column_comment: false,
+        foreign_keys_inline_in_create: false,
+        type_map: &[],
+    }
+}
+
+fn sqlite_family(db: DatabaseType) -> DdlDialectProfile {
+    DdlDialectProfile {
+        database_type: db,
+        quote: QuoteStyle::DoubleQuote,
+        auto_inc: AutoIncSyntax::None,
+        supports_display_width: false,
+        max_varchar_len: None,
+        inline_column_comment: false,
+        foreign_keys_inline_in_create: true,
+        type_map: SQLITE_TYPE_MAP,
+    }
+}
+
+fn access_profile() -> DdlDialectProfile {
+    DdlDialectProfile {
+        database_type: DatabaseType::Access,
+        quote: QuoteStyle::DoubleQuote,
+        auto_inc: AutoIncSyntax::ReplaceTypeWith("COUNTER"),
+        supports_display_width: false,
+        max_varchar_len: Some(255),
+        inline_column_comment: false,
+        foreign_keys_inline_in_create: false,
+        type_map: ACCESS_TYPE_MAP,
+    }
+}
+
+fn conservative_ansi(db: DatabaseType) -> DdlDialectProfile {
+    DdlDialectProfile {
+        database_type: db,
+        quote: QuoteStyle::DoubleQuote,
+        auto_inc: AutoIncSyntax::None,
+        supports_display_width: false,
+        max_varchar_len: None,
+        inline_column_comment: false,
+        foreign_keys_inline_in_create: false,
+        type_map: &[],
+    }
+}
+
+/// Resolve DDL profile for a concrete target database type.
+///
+/// This is the **only** place that maps [`DatabaseType`] → profile data.
+/// Generators must not re-match on individual databases afterward.
+pub fn profile_for(db_type: DatabaseType) -> DdlDialectProfile {
+    use DatabaseType::*;
+    match db_type {
+        // MySQL family
+        Mysql | Doris | StarRocks | Goldendb | Sundb | Databend | Gbase | ManticoreSearch => mysql_family(db_type),
+
+        // PostgreSQL family
+        Postgres | Redshift | Gaussdb | Kingbase | Highgo | Vastbase | OpenGauss | Kwdb | Firebird | Vertica
+        | Exasol => postgres_family(db_type),
+
+        // Oracle family
+        Oracle | Dameng | OceanbaseOracle | Yashandb | Xugu | Iris => oracle_family(db_type),
+
+        // SQL Server (not Access)
+        SqlServer => sqlserver_family(db_type),
+
+        // Access: own profile (must not inherit SqlServer IDENTITY)
+        Access => access_profile(),
+
+        // SQLite family
+        Sqlite | Rqlite | Turso | CloudflareD1 => sqlite_family(db_type),
+
+        DuckDb | H2 | ClickHouse | Questdb | SapHana | Teradata | Snowflake | Trino | PrestoSql | Hive | Spark
+        | Db2 | Informix | Bigquery | Kylin | Oscar | Tdengine | Iotdb | Databricks | Jdbc => {
+            conservative_ansi(db_type)
+        }
+
+        // Non-tabular / not applicable for relational CREATE TABLE
+        Redis | MongoDb | Elasticsearch | Qdrant | Milvus | Weaviate | ChromaDb | Neo4j | Cassandra | Etcd
+        | ZooKeeper | Nacos | InfluxDb | MessageQueue => conservative_ansi(db_type),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn access_profile_is_not_sqlserver_identity() {
+        let access = profile_for(DatabaseType::Access);
+        let mssql = profile_for(DatabaseType::SqlServer);
+        assert!(matches!(access.auto_inc, AutoIncSyntax::ReplaceTypeWith("COUNTER")));
+        assert!(matches!(mssql.auto_inc, AutoIncSyntax::Suffix(s) if s.contains("IDENTITY")));
+        assert!(access.lookup_type("VARCHAR").is_some());
+        assert!(mssql.type_map.is_empty());
+    }
+
+    #[test]
+    fn quote_styles() {
+        assert_eq!(profile_for(DatabaseType::Mysql).quote_ident("a`b"), "`a``b`");
+        assert_eq!(profile_for(DatabaseType::Access).quote_ident(r#"a"b"#), "\"a\"\"b\"");
+        assert_eq!(profile_for(DatabaseType::Oracle).quote_ident("emp"), "EMP");
+    }
+}

@@ -1,4 +1,5 @@
 mod capabilities;
+pub mod ddl_profile;
 pub mod descriptor;
 pub mod dialect_loader;
 pub mod dialect_types;
@@ -7,6 +8,7 @@ pub mod hot_reload;
 mod identifiers;
 pub mod inference;
 mod table_select;
+pub mod type_rewrite;
 mod types;
 
 #[cfg(test)]
@@ -19,6 +21,7 @@ pub use capabilities::{
     firebird_rows_clause, is_schema_aware, pagination_strategy, table_pagination_strategy, uses_fetch_first,
     uses_oracle_row_id, uses_single_row_insert_statements, PaginationContext, TablePaginationStrategy,
 };
+pub use ddl_profile::{profile_for, AutoIncSyntax, DdlDialectProfile, QuoteStyle, TypeMapEntry};
 pub use descriptor::{
     dialect_check, dialect_check_all, DialectCapabilityDescriptor, DialectInfo, DialectKind, TypeConversionRule,
     TypeMappingMatrix, CAP_ADD_COLUMN, CAP_ALTER_EXISTING_COLUMN, CAP_ALTER_OWNER, CAP_ALTER_PRIMARY_KEY,
@@ -34,6 +37,10 @@ pub use identifiers::{
 pub(crate) use identifiers::{parse_sqlserver_linked_schema_ref, qualified_transfer_table, quote_transfer_identifier};
 pub use table_select::{build_count_table_sql, build_table_data_select_sql, build_table_select_sql};
 pub(crate) use table_select::{quote_table_data_identifier, table_data_qualified_table_name};
+pub use type_rewrite::{
+    apply_auto_inc_to_column_def, column_is_auto_increment, rewrite_column_type, split_type_base_params,
+    type_looks_integer, AutoIncColumnBuild,
+};
 pub use types::*;
 
 /// Resolve a dialect descriptor for the given kind.
