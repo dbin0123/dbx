@@ -281,47 +281,6 @@ pub fn select_strategy(
     }
 }
 
-fn is_mysql_like(db_type: DatabaseType) -> bool {
-    matches!(
-        db_type,
-        DatabaseType::Mysql
-            | DatabaseType::Doris
-            | DatabaseType::StarRocks
-            | DatabaseType::Goldendb
-            | DatabaseType::Sundb
-            | DatabaseType::Databend
-            | DatabaseType::Gbase
-    )
-}
-
-fn is_postgres_like(db_type: DatabaseType) -> bool {
-    matches!(
-        db_type,
-        DatabaseType::Postgres
-            | DatabaseType::Gaussdb
-            | DatabaseType::Kwdb
-            | DatabaseType::OpenGauss
-            | DatabaseType::Highgo
-            | DatabaseType::Vastbase
-            | DatabaseType::Kingbase
-            | DatabaseType::Redshift
-            | DatabaseType::Vertica
-            | DatabaseType::Exasol
-    )
-}
-
-fn is_sqlite(db_type: DatabaseType) -> bool {
-    matches!(db_type, DatabaseType::Sqlite | DatabaseType::Rqlite | DatabaseType::Turso)
-}
-
-fn is_sqlserver(db_type: DatabaseType) -> bool {
-    matches!(db_type, DatabaseType::SqlServer | DatabaseType::Access)
-}
-
-fn is_clickhouse(db_type: DatabaseType) -> bool {
-    matches!(db_type, DatabaseType::ClickHouse)
-}
-
 fn strip_leading_comments(s: &str) -> &str {
     let mut pos = 0;
     for line in s.lines() {
@@ -420,32 +379,30 @@ fn upper_first_word(s: &str) -> &str {
 }
 
 fn wrap_if_not_exists(sql: &str, db_type: DatabaseType) -> String {
+    use crate::sql_dialect::ddl_profile::profile_for;
+    let profile = profile_for(db_type);
     let upper = sql.trim_start().to_uppercase();
 
     if upper.starts_with("CREATE TABLE") {
-        if is_sqlite(db_type) || is_mysql_like(db_type) || is_clickhouse(db_type) {
-            if upper.contains("IF NOT EXISTS") {
-                return sql.to_string();
-            }
-            let idx = sql.find("CREATE TABLE").unwrap_or(0) + "CREATE TABLE".len();
-            let (prefix, suffix) = sql.split_at(idx);
-            format!("{prefix} IF NOT EXISTS{suffix}")
-        } else if is_postgres_like(db_type) || is_sqlserver(db_type) {
-            sql.to_string()
-        } else {
-            sql.to_string()
+        if !profile.create_table_if_not_exists {
+            return sql.to_string();
         }
-    } else if upper.starts_with("CREATE INDEX") || upper.starts_with("CREATE UNIQUE INDEX") {
         if upper.contains("IF NOT EXISTS") {
             return sql.to_string();
         }
-        if is_postgres_like(db_type) || is_sqlite(db_type) || is_sqlserver(db_type) {
-            let idx = sql.find("CREATE").unwrap_or(0) + "CREATE".len();
-            let (prefix, suffix) = sql.split_at(idx);
-            format!("{prefix} IF NOT EXISTS{suffix}")
-        } else {
-            sql.to_string()
+        let idx = sql.find("CREATE TABLE").unwrap_or(0) + "CREATE TABLE".len();
+        let (prefix, suffix) = sql.split_at(idx);
+        format!("{prefix} IF NOT EXISTS{suffix}")
+    } else if upper.starts_with("CREATE INDEX") || upper.starts_with("CREATE UNIQUE INDEX") {
+        if !profile.create_index_if_not_exists {
+            return sql.to_string();
         }
+        if upper.contains("IF NOT EXISTS") {
+            return sql.to_string();
+        }
+        let idx = sql.find("CREATE").unwrap_or(0) + "CREATE".len();
+        let (prefix, suffix) = sql.split_at(idx);
+        format!("{prefix} IF NOT EXISTS{suffix}")
     } else if upper.starts_with("DROP TABLE") {
         if upper.contains("IF EXISTS") {
             return sql.to_string();
@@ -477,6 +434,8 @@ fn wrap_if_not_exists(sql: &str, db_type: DatabaseType) -> String {
 }
 
 fn wrap_create_or_replace(sql: &str, db_type: DatabaseType) -> String {
+    use crate::sql_dialect::ddl_profile::profile_for;
+    let profile = profile_for(db_type);
     let upper = sql.trim_start().to_uppercase();
 
     if upper.starts_with("CREATE VIEW") {
@@ -490,7 +449,7 @@ fn wrap_create_or_replace(sql: &str, db_type: DatabaseType) -> String {
         if upper.contains("OR REPLACE") || upper.contains("IF NOT EXISTS") {
             return sql.to_string();
         }
-        if is_postgres_like(db_type) {
+        if profile.create_function_or_replace {
             let idx = sql.find("CREATE").unwrap_or(0) + "CREATE".len();
             let (prefix, suffix) = sql.split_at(idx);
             format!("{prefix} OR REPLACE{suffix}")
@@ -503,13 +462,16 @@ fn wrap_create_or_replace(sql: &str, db_type: DatabaseType) -> String {
 }
 
 fn wrap_conditional_check(sql: &str, db_type: DatabaseType) -> String {
+    use crate::sql_dialect::ddl_profile::profile_for;
+    let profile = profile_for(db_type);
     let trimmed = sql.trim_start();
     let upper = trimmed.to_uppercase();
     let first_word = upper_first_word(trimmed);
 
     if first_word == "CREATE" && upper.contains("TABLE") {
         let table_name = extract_table_name(trimmed, "TABLE");
-        if is_sqlite(db_type) || is_mysql_like(db_type) {
+        // Prefer engines that expose information_schema-style table catalogs.
+        if profile.create_table_if_not_exists {
             return format!(
                 "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table_name}') THEN 'EXECUTE: {0}' ELSE 'TABLE_EXISTS: {table_name}' END;\n{0}",
                 trimmed.replace('\'', "''"),
@@ -1271,16 +1233,7 @@ pub fn generate_all_dml_clean_sql(schema_diff: &SchemaDiffPreparation, fidelity_
 
 /// Return dialect-appropriate SET lock_timeout statement.
 pub fn lock_timeout_statement(db_type: DatabaseType) -> Option<&'static str> {
-    use crate::models::connection::DatabaseType::*;
-    match db_type {
-        Mysql | Doris | StarRocks | Goldendb | Sundb | Databend | Gbase => Some("SET SESSION lock_wait_timeout = 3;"),
-        Postgres | Gaussdb | Kwdb | OpenGauss | Highgo | Vastbase | Kingbase | Redshift | Vertica | Exasol => {
-            Some("SET lock_timeout = '3s';")
-        }
-        SqlServer | Access => Some("SET LOCK_TIMEOUT 3000;"),
-        Oracle | Dameng | OceanbaseOracle | Iris | Yashandb | Xugu => Some("SET lock_timeout = 3;"),
-        _ => None,
-    }
+    crate::sql_dialect::ddl_profile::profile_for(db_type).lock_timeout_sql
 }
 
 // ============================================================================

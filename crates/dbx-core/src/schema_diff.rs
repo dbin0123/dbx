@@ -3578,37 +3578,44 @@ fn generate_schema_sync_sql_inner(
         }
     }
 
-    // Function diffs
+    // Function diffs — only emit executable SQL when profile supports it
     if !function_diffs.is_empty() {
         lines.push(String::new());
         lines.push("-- Functions".to_string());
         for diff in function_diffs {
             match diff.diff_type.as_str() {
-                "added" => {
+                "added" | "modified" => {
                     if let Some(source) = &diff.source {
-                        lines.push(format!("-- Create function: {}", diff.name));
-                        lines.push(format!(
-                            "CREATE OR REPLACE FUNCTION {} {};",
-                            qualified_name(&diff.name, db_type, schema),
-                            source.definition
-                        ));
+                        if profile.supports_function_ddl {
+                            let verb = if diff.diff_type == "added" { "Create" } else { "Alter" };
+                            lines.push(format!("-- {verb} function: {}", diff.name));
+                            let create_kw = if profile.create_function_or_replace {
+                                "CREATE OR REPLACE FUNCTION"
+                            } else {
+                                "CREATE FUNCTION"
+                            };
+                            lines.push(format!(
+                                "{create_kw} {} {};",
+                                qualified_name(&diff.name, db_type, schema),
+                                source.definition
+                            ));
+                        } else {
+                            lines.push(format!(
+                                "-- Skip function {}: target database does not support function DDL generation",
+                                diff.name
+                            ));
+                        }
                     }
                 }
                 "removed" => {
-                    lines.push(format!("-- Drop function: {}", diff.name));
-                    lines.push(format!(
-                        "DROP FUNCTION IF EXISTS {}{cascade};",
-                        qualified_name(&diff.name, db_type, schema)
-                    ));
-                }
-                "modified" => {
-                    if let Some(source) = &diff.source {
-                        lines.push(format!("-- Alter function: {}", diff.name));
+                    if profile.supports_function_ddl {
+                        lines.push(format!("-- Drop function: {}", diff.name));
                         lines.push(format!(
-                            "CREATE OR REPLACE FUNCTION {} {};",
-                            qualified_name(&diff.name, db_type, schema),
-                            source.definition
+                            "DROP FUNCTION IF EXISTS {}{cascade};",
+                            qualified_name(&diff.name, db_type, schema)
                         ));
+                    } else {
+                        lines.push(format!("-- Skip drop function {}: unsupported on target", diff.name));
                     }
                 }
                 _ => {}
@@ -3624,36 +3631,51 @@ fn generate_schema_sync_sql_inner(
             match diff.diff_type.as_str() {
                 "added" => {
                     if let Some(source) = &diff.source {
-                        lines.push(format!("-- Create sequence: {}", diff.name));
-                        lines.push(format!(
-                            "CREATE SEQUENCE {} AS {} START WITH {} INCREMENT BY {} MINVALUE {} MAXVALUE {} {};",
-                            qualified_name(&diff.name, db_type, schema),
-                            source.data_type,
-                            source.start_value,
-                            source.increment,
-                            source.min_value,
-                            source.max_value,
-                            if source.cycle { "CYCLE" } else { "NO CYCLE" }
-                        ));
+                        if profile.supports_sequence_ddl {
+                            lines.push(format!("-- Create sequence: {}", diff.name));
+                            lines.push(format!(
+                                "CREATE SEQUENCE {} AS {} START WITH {} INCREMENT BY {} MINVALUE {} MAXVALUE {} {};",
+                                qualified_name(&diff.name, db_type, schema),
+                                source.data_type,
+                                source.start_value,
+                                source.increment,
+                                source.min_value,
+                                source.max_value,
+                                if source.cycle { "CYCLE" } else { "NO CYCLE" }
+                            ));
+                        } else {
+                            lines.push(format!(
+                                "-- Skip sequence {}: target database does not support sequence DDL generation",
+                                diff.name
+                            ));
+                        }
                     }
                 }
                 "removed" => {
-                    lines.push(format!("-- Drop sequence: {}", diff.name));
-                    lines.push(format!("DROP SEQUENCE {}{cascade};", qualified_name(&diff.name, db_type, schema)));
+                    if profile.supports_sequence_ddl {
+                        lines.push(format!("-- Drop sequence: {}", diff.name));
+                        lines.push(format!("DROP SEQUENCE {}{cascade};", qualified_name(&diff.name, db_type, schema)));
+                    } else {
+                        lines.push(format!("-- Skip drop sequence {}: unsupported on target", diff.name));
+                    }
                 }
                 "modified" => {
                     if let Some(source) = &diff.source {
-                        lines.push(format!("-- Alter sequence: {}", diff.name));
-                        lines.push(format!(
-                            "ALTER SEQUENCE {} AS {} START WITH {} INCREMENT BY {} MINVALUE {} MAXVALUE {} {};",
-                            qualified_name(&diff.name, db_type, schema),
-                            source.data_type,
-                            source.start_value,
-                            source.increment,
-                            source.min_value,
-                            source.max_value,
-                            if source.cycle { "CYCLE" } else { "NO CYCLE" }
-                        ));
+                        if profile.supports_sequence_ddl {
+                            lines.push(format!("-- Alter sequence: {}", diff.name));
+                            lines.push(format!(
+                                "ALTER SEQUENCE {} AS {} START WITH {} INCREMENT BY {} MINVALUE {} MAXVALUE {} {};",
+                                qualified_name(&diff.name, db_type, schema),
+                                source.data_type,
+                                source.start_value,
+                                source.increment,
+                                source.min_value,
+                                source.max_value,
+                                if source.cycle { "CYCLE" } else { "NO CYCLE" }
+                            ));
+                        } else {
+                            lines.push(format!("-- Skip alter sequence {}: unsupported on target", diff.name));
+                        }
                     }
                 }
                 _ => {}
@@ -3661,11 +3683,15 @@ fn generate_schema_sync_sql_inner(
         }
     }
 
-    // Rule diffs
+    // Rule diffs (PostgreSQL RULE)
     if !rule_diffs.is_empty() {
         lines.push(String::new());
         lines.push("-- Rules".to_string());
         for diff in rule_diffs {
+            if !profile.supports_rule_ddl {
+                lines.push(format!("-- Skip rule {}: target database does not support RULE DDL", diff.name));
+                continue;
+            }
             match diff.diff_type.as_str() {
                 "added" => {
                     if let Some(source) = &diff.source {
@@ -3705,17 +3731,21 @@ fn generate_schema_sync_sql_inner(
         lines.push("-- Owners".to_string());
         for diff in owner_diffs {
             if let (Some(source), Some(_target)) = (&diff.source, &diff.target) {
-                let object_type = match source.object_type.as_str() {
-                    "TABLE" => "TABLE",
-                    "VIEW" => "VIEW",
-                    "SEQUENCE" => "SEQUENCE",
-                    _ => "TABLE",
-                };
-                lines.push(format!(
-                    "ALTER {object_type} {} OWNER TO {};",
-                    qualified_name(&diff.object_name, db_type, schema),
-                    source.owner
-                ));
+                if profile.supports_owner_ddl {
+                    let object_type = match source.object_type.as_str() {
+                        "TABLE" => "TABLE",
+                        "VIEW" => "VIEW",
+                        "SEQUENCE" => "SEQUENCE",
+                        _ => "TABLE",
+                    };
+                    lines.push(format!(
+                        "ALTER {object_type} {} OWNER TO {};",
+                        qualified_name(&diff.object_name, db_type, schema),
+                        source.owner
+                    ));
+                } else {
+                    lines.push(format!("-- Skip OWNER change for {}: unsupported on target", diff.object_name));
+                }
             }
         }
     }

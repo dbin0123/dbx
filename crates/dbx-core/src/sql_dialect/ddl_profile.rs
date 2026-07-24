@@ -120,6 +120,15 @@ pub struct DdlDialectProfile {
     pub grant_uses_mysql_user_syntax: bool,
     /// Emit a comment that FK changes may need table rebuild (SQLite-family).
     pub warn_fk_needs_table_rebuild: bool,
+    pub create_table_if_not_exists: bool,
+    pub create_index_if_not_exists: bool,
+    pub create_function_or_replace: bool,
+    pub supports_function_ddl: bool,
+    pub supports_sequence_ddl: bool,
+    pub supports_rule_ddl: bool,
+    pub supports_owner_ddl: bool,
+    /// Optional session lock-timeout preamble for generated scripts.
+    pub lock_timeout_sql: Option<&'static str>,
     /// Data-driven base-type rewrites for this target (empty → rely on matrix / normalize only).
     pub type_map: &'static [TypeMapEntry],
 }
@@ -253,6 +262,14 @@ fn mysql_family(db: DatabaseType) -> DdlDialectProfile {
         warn_fk_needs_table_rebuild: false,
         alter_uses_modify_column: true,
         alter_batches_clauses: true,
+        create_table_if_not_exists: true,
+        create_index_if_not_exists: false,
+        create_function_or_replace: false,
+        supports_function_ddl: false,
+        supports_sequence_ddl: false,
+        supports_rule_ddl: false,
+        supports_owner_ddl: false,
+        lock_timeout_sql: Some("SET SESSION lock_wait_timeout = 3;"),
         type_map: &[],
     }
 }
@@ -281,6 +298,14 @@ fn postgres_family(db: DatabaseType) -> DdlDialectProfile {
         warn_fk_needs_table_rebuild: false,
         alter_uses_modify_column: false,
         alter_batches_clauses: false,
+        create_table_if_not_exists: false,
+        create_index_if_not_exists: true,
+        create_function_or_replace: true,
+        supports_function_ddl: true,
+        supports_sequence_ddl: true,
+        supports_rule_ddl: true,
+        supports_owner_ddl: true,
+        lock_timeout_sql: Some("SET lock_timeout = '3s';"),
         type_map: &[],
     }
 }
@@ -309,6 +334,14 @@ fn oracle_family(db: DatabaseType) -> DdlDialectProfile {
         warn_fk_needs_table_rebuild: false,
         alter_uses_modify_column: false,
         alter_batches_clauses: false,
+        create_table_if_not_exists: false,
+        create_index_if_not_exists: false,
+        create_function_or_replace: false,
+        supports_function_ddl: true,
+        supports_sequence_ddl: true,
+        supports_rule_ddl: false,
+        supports_owner_ddl: false,
+        lock_timeout_sql: Some("SET lock_timeout = 3;"),
         type_map: &[],
     }
 }
@@ -337,6 +370,14 @@ fn sqlserver_family(db: DatabaseType) -> DdlDialectProfile {
         warn_fk_needs_table_rebuild: false,
         alter_uses_modify_column: false,
         alter_batches_clauses: false,
+        create_table_if_not_exists: false,
+        create_index_if_not_exists: true,
+        create_function_or_replace: false,
+        supports_function_ddl: true,
+        supports_sequence_ddl: true,
+        supports_rule_ddl: false,
+        supports_owner_ddl: false,
+        lock_timeout_sql: Some("SET LOCK_TIMEOUT 3000;"),
         type_map: &[],
     }
 }
@@ -365,6 +406,14 @@ fn sqlite_family(db: DatabaseType) -> DdlDialectProfile {
         warn_fk_needs_table_rebuild: true,
         alter_uses_modify_column: false,
         alter_batches_clauses: false,
+        create_table_if_not_exists: true,
+        create_index_if_not_exists: true,
+        create_function_or_replace: false,
+        supports_function_ddl: false,
+        supports_sequence_ddl: false,
+        supports_rule_ddl: false,
+        supports_owner_ddl: false,
+        lock_timeout_sql: None,
         type_map: SQLITE_TYPE_MAP,
     }
 }
@@ -393,6 +442,14 @@ fn access_profile() -> DdlDialectProfile {
         warn_fk_needs_table_rebuild: false,
         alter_uses_modify_column: false,
         alter_batches_clauses: false,
+        create_table_if_not_exists: false,
+        create_index_if_not_exists: false,
+        create_function_or_replace: false,
+        supports_function_ddl: false,
+        supports_sequence_ddl: false,
+        supports_rule_ddl: false,
+        supports_owner_ddl: false,
+        lock_timeout_sql: None,
         type_map: ACCESS_TYPE_MAP,
     }
 }
@@ -421,6 +478,14 @@ fn h2_profile() -> DdlDialectProfile {
         warn_fk_needs_table_rebuild: false,
         alter_uses_modify_column: false,
         alter_batches_clauses: false,
+        create_table_if_not_exists: false,
+        create_index_if_not_exists: false,
+        create_function_or_replace: false,
+        supports_function_ddl: false,
+        supports_sequence_ddl: false,
+        supports_rule_ddl: false,
+        supports_owner_ddl: false,
+        lock_timeout_sql: None,
         type_map: &[],
     }
 }
@@ -449,8 +514,24 @@ fn conservative_ansi(db: DatabaseType) -> DdlDialectProfile {
         warn_fk_needs_table_rebuild: false,
         alter_uses_modify_column: false,
         alter_batches_clauses: false,
+        create_table_if_not_exists: false,
+        create_index_if_not_exists: false,
+        create_function_or_replace: false,
+        supports_function_ddl: false,
+        supports_sequence_ddl: false,
+        supports_rule_ddl: false,
+        supports_owner_ddl: false,
+        lock_timeout_sql: None,
         type_map: &[],
     }
+}
+
+fn clickhouse_profile() -> DdlDialectProfile {
+    let mut p = conservative_ansi(DatabaseType::ClickHouse);
+    // ClickHouse supports CREATE TABLE IF NOT EXISTS like MySQL/SQLite.
+    p.create_table_if_not_exists = true;
+    p.lock_timeout_sql = None;
+    p
 }
 
 /// Resolve DDL profile for a concrete target database type.
@@ -481,8 +562,10 @@ pub fn profile_for(db_type: DatabaseType) -> DdlDialectProfile {
 
         H2 => h2_profile(),
 
-        DuckDb | ClickHouse | Questdb | SapHana | Teradata | Snowflake | Trino | PrestoSql | Hive | Spark | Db2
-        | Informix | Bigquery | Kylin | Oscar | Tdengine | Iotdb | Databricks | Jdbc => conservative_ansi(db_type),
+        ClickHouse => clickhouse_profile(),
+
+        DuckDb | Questdb | SapHana | Teradata | Snowflake | Trino | PrestoSql | Hive | Spark | Db2 | Informix
+        | Bigquery | Kylin | Oscar | Tdengine | Iotdb | Databricks | Jdbc => conservative_ansi(db_type),
 
         // Non-tabular / not applicable for relational CREATE TABLE
         Redis | MongoDb | Elasticsearch | Qdrant | Milvus | Weaviate | ChromaDb | Neo4j | Cassandra | Etcd
@@ -502,6 +585,11 @@ mod tests {
         assert!(matches!(mssql.auto_inc, AutoIncSyntax::Suffix(s) if s.contains("IDENTITY")));
         assert!(access.lookup_type("VARCHAR").is_some());
         assert!(mssql.type_map.is_empty());
+        // Access must not inherit SQL Server lock-timeout / idempotent flags.
+        assert_eq!(access.lock_timeout_sql, None);
+        assert!(mssql.lock_timeout_sql.is_some());
+        assert!(!access.create_index_if_not_exists);
+        assert!(mssql.create_index_if_not_exists);
     }
 
     #[test]
