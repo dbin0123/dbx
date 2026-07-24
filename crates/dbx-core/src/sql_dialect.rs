@@ -21,7 +21,10 @@ pub use capabilities::{
     firebird_rows_clause, is_schema_aware, pagination_strategy, table_pagination_strategy, uses_fetch_first,
     uses_oracle_row_id, uses_single_row_insert_statements, PaginationContext, TablePaginationStrategy,
 };
-pub use ddl_profile::{profile_for, AutoIncSyntax, DdlDialectProfile, QuoteStyle, TypeMapEntry};
+pub use ddl_profile::{
+    profile_for, AutoIncSyntax, DdlDialectProfile, IndexTypePlacement, QuoteStyle, RenameColumnSyntax, TriggerTemplate,
+    TypeMapEntry,
+};
 pub use descriptor::{
     dialect_check, dialect_check_all, DialectCapabilityDescriptor, DialectInfo, DialectKind, TypeConversionRule,
     TypeMappingMatrix, CAP_ADD_COLUMN, CAP_ALTER_EXISTING_COLUMN, CAP_ALTER_OWNER, CAP_ALTER_PRIMARY_KEY,

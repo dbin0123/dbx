@@ -39,6 +39,45 @@ pub struct TypeMapEntry {
     pub target_template: &'static str,
 }
 
+/// How CREATE INDEX places the index method / type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexTypePlacement {
+    /// No index-type clause.
+    None,
+    /// PostgreSQL: `CREATE INDEX … ON t USING btree (…)`
+    UsingSuffix,
+    /// SQL Server: `CREATE CLUSTERED INDEX …`
+    TypePrefix,
+    /// MySQL: `CREATE INDEX … USING BTREE ON t (…)`
+    UsingBeforeOn,
+}
+
+/// CREATE TRIGGER body shape (templates use `{name}` `{timing}` `{event}` `{table}` `{body}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerTemplate {
+    /// `CREATE TRIGGER {name} {timing} {event} ON {table} FOR EACH ROW BEGIN {body} END;`
+    MysqlStyle,
+    /// `CREATE TRIGGER {name} {timing} {event} ON {table} FOR EACH ROW EXECUTE FUNCTION {body};`
+    PostgresStyle,
+    /// `CREATE TRIGGER {name} ON {table} {timing} {event} AS BEGIN {body} END;`
+    SqlServerStyle,
+    /// Conservative MySQL-like default for unknown engines.
+    GenericRowBody,
+}
+
+/// RENAME COLUMN strategy inside ALTER TABLE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameColumnSyntax {
+    /// `CHANGE COLUMN old new_def` (MySQL)
+    MysqlChangeColumn,
+    /// `RENAME COLUMN old TO new`
+    RenameColumn,
+    /// `ALTER COLUMN old RENAME TO new` (H2)
+    AlterColumnRenameTo,
+    /// `EXEC sp_rename 't.old', 'new', 'COLUMN'`
+    SqlServerSpRename,
+}
+
 /// DDL generation profile for one [`DatabaseType`].
 #[derive(Debug, Clone, Copy)]
 pub struct DdlDialectProfile {
@@ -53,6 +92,28 @@ pub struct DdlDialectProfile {
     pub inline_column_comment: bool,
     /// SQLite-style: emit FOREIGN KEY clauses inside CREATE TABLE.
     pub foreign_keys_inline_in_create: bool,
+    /// `DROP INDEX name ON table` (MySQL) vs `DROP INDEX IF EXISTS name`.
+    pub drop_index_uses_on_table: bool,
+    /// `DROP FOREIGN KEY` (MySQL) vs `DROP CONSTRAINT`.
+    pub drop_fk_as_foreign_key: bool,
+    /// Index method placement.
+    pub index_type_placement: IndexTypePlacement,
+    /// `INCLUDE (cols)` on indexes.
+    pub index_supports_include: bool,
+    /// Partial index `WHERE …`.
+    pub index_supports_filter: bool,
+    /// Index `COMMENT '…'` (MySQL).
+    pub index_supports_comment: bool,
+    /// Table comment: `ALTER TABLE t COMMENT = '…'` vs `COMMENT ON TABLE`.
+    pub table_comment_via_alter: bool,
+    /// Standalone column comment SQL is unsupported (MySQL needs MODIFY COLUMN).
+    pub column_comment_via_modify_only: bool,
+    pub trigger_template: TriggerTemplate,
+    pub rename_column: RenameColumnSyntax,
+    /// MySQL `MODIFY COLUMN` vs ANSI `ALTER COLUMN … TYPE/SET`.
+    pub alter_uses_modify_column: bool,
+    /// Batch multiple alter clauses in one `ALTER TABLE` statement.
+    pub alter_batches_clauses: bool,
     /// Data-driven base-type rewrites for this target (empty → rely on matrix / normalize only).
     pub type_map: &'static [TypeMapEntry],
 }
@@ -171,6 +232,18 @@ fn mysql_family(db: DatabaseType) -> DdlDialectProfile {
         max_varchar_len: Some(65_535),
         inline_column_comment: true,
         foreign_keys_inline_in_create: false,
+        drop_index_uses_on_table: true,
+        drop_fk_as_foreign_key: true,
+        index_type_placement: IndexTypePlacement::UsingBeforeOn,
+        index_supports_include: false,
+        index_supports_filter: false,
+        index_supports_comment: true,
+        table_comment_via_alter: true,
+        column_comment_via_modify_only: true,
+        trigger_template: TriggerTemplate::MysqlStyle,
+        rename_column: RenameColumnSyntax::MysqlChangeColumn,
+        alter_uses_modify_column: true,
+        alter_batches_clauses: true,
         type_map: &[],
     }
 }
@@ -184,6 +257,18 @@ fn postgres_family(db: DatabaseType) -> DdlDialectProfile {
         max_varchar_len: None,
         inline_column_comment: false,
         foreign_keys_inline_in_create: false,
+        drop_index_uses_on_table: false,
+        drop_fk_as_foreign_key: false,
+        index_type_placement: IndexTypePlacement::UsingSuffix,
+        index_supports_include: true,
+        index_supports_filter: true,
+        index_supports_comment: false,
+        table_comment_via_alter: false,
+        column_comment_via_modify_only: false,
+        trigger_template: TriggerTemplate::PostgresStyle,
+        rename_column: RenameColumnSyntax::RenameColumn,
+        alter_uses_modify_column: false,
+        alter_batches_clauses: false,
         type_map: &[],
     }
 }
@@ -197,6 +282,18 @@ fn oracle_family(db: DatabaseType) -> DdlDialectProfile {
         max_varchar_len: Some(4000),
         inline_column_comment: false,
         foreign_keys_inline_in_create: false,
+        drop_index_uses_on_table: false,
+        drop_fk_as_foreign_key: false,
+        index_type_placement: IndexTypePlacement::None,
+        index_supports_include: false,
+        index_supports_filter: false,
+        index_supports_comment: false,
+        table_comment_via_alter: false,
+        column_comment_via_modify_only: false,
+        trigger_template: TriggerTemplate::GenericRowBody,
+        rename_column: RenameColumnSyntax::RenameColumn,
+        alter_uses_modify_column: false,
+        alter_batches_clauses: false,
         type_map: &[],
     }
 }
@@ -210,6 +307,18 @@ fn sqlserver_family(db: DatabaseType) -> DdlDialectProfile {
         max_varchar_len: None,
         inline_column_comment: false,
         foreign_keys_inline_in_create: false,
+        drop_index_uses_on_table: false,
+        drop_fk_as_foreign_key: false,
+        index_type_placement: IndexTypePlacement::TypePrefix,
+        index_supports_include: true,
+        index_supports_filter: true,
+        index_supports_comment: false,
+        table_comment_via_alter: false,
+        column_comment_via_modify_only: false,
+        trigger_template: TriggerTemplate::SqlServerStyle,
+        rename_column: RenameColumnSyntax::SqlServerSpRename,
+        alter_uses_modify_column: false,
+        alter_batches_clauses: false,
         type_map: &[],
     }
 }
@@ -223,6 +332,18 @@ fn sqlite_family(db: DatabaseType) -> DdlDialectProfile {
         max_varchar_len: None,
         inline_column_comment: false,
         foreign_keys_inline_in_create: true,
+        drop_index_uses_on_table: false,
+        drop_fk_as_foreign_key: false,
+        index_type_placement: IndexTypePlacement::None,
+        index_supports_include: false,
+        index_supports_filter: true,
+        index_supports_comment: false,
+        table_comment_via_alter: false,
+        column_comment_via_modify_only: false,
+        trigger_template: TriggerTemplate::GenericRowBody,
+        rename_column: RenameColumnSyntax::RenameColumn,
+        alter_uses_modify_column: false,
+        alter_batches_clauses: false,
         type_map: SQLITE_TYPE_MAP,
     }
 }
@@ -236,7 +357,44 @@ fn access_profile() -> DdlDialectProfile {
         max_varchar_len: Some(255),
         inline_column_comment: false,
         foreign_keys_inline_in_create: false,
+        drop_index_uses_on_table: false,
+        drop_fk_as_foreign_key: false,
+        index_type_placement: IndexTypePlacement::None,
+        index_supports_include: false,
+        index_supports_filter: false,
+        index_supports_comment: false,
+        table_comment_via_alter: false,
+        column_comment_via_modify_only: false,
+        trigger_template: TriggerTemplate::GenericRowBody,
+        rename_column: RenameColumnSyntax::RenameColumn,
+        alter_uses_modify_column: false,
+        alter_batches_clauses: false,
         type_map: ACCESS_TYPE_MAP,
+    }
+}
+
+fn h2_profile() -> DdlDialectProfile {
+    DdlDialectProfile {
+        database_type: DatabaseType::H2,
+        quote: QuoteStyle::DoubleQuote,
+        auto_inc: AutoIncSyntax::None,
+        supports_display_width: false,
+        max_varchar_len: None,
+        inline_column_comment: false,
+        foreign_keys_inline_in_create: false,
+        drop_index_uses_on_table: false,
+        drop_fk_as_foreign_key: false,
+        index_type_placement: IndexTypePlacement::None,
+        index_supports_include: false,
+        index_supports_filter: false,
+        index_supports_comment: false,
+        table_comment_via_alter: false,
+        column_comment_via_modify_only: false,
+        trigger_template: TriggerTemplate::GenericRowBody,
+        rename_column: RenameColumnSyntax::AlterColumnRenameTo,
+        alter_uses_modify_column: false,
+        alter_batches_clauses: false,
+        type_map: &[],
     }
 }
 
@@ -249,6 +407,18 @@ fn conservative_ansi(db: DatabaseType) -> DdlDialectProfile {
         max_varchar_len: None,
         inline_column_comment: false,
         foreign_keys_inline_in_create: false,
+        drop_index_uses_on_table: false,
+        drop_fk_as_foreign_key: false,
+        index_type_placement: IndexTypePlacement::None,
+        index_supports_include: false,
+        index_supports_filter: false,
+        index_supports_comment: false,
+        table_comment_via_alter: false,
+        column_comment_via_modify_only: false,
+        trigger_template: TriggerTemplate::GenericRowBody,
+        rename_column: RenameColumnSyntax::RenameColumn,
+        alter_uses_modify_column: false,
+        alter_batches_clauses: false,
         type_map: &[],
     }
 }
@@ -279,10 +449,10 @@ pub fn profile_for(db_type: DatabaseType) -> DdlDialectProfile {
         // SQLite family
         Sqlite | Rqlite | Turso | CloudflareD1 => sqlite_family(db_type),
 
-        DuckDb | H2 | ClickHouse | Questdb | SapHana | Teradata | Snowflake | Trino | PrestoSql | Hive | Spark
-        | Db2 | Informix | Bigquery | Kylin | Oscar | Tdengine | Iotdb | Databricks | Jdbc => {
-            conservative_ansi(db_type)
-        }
+        H2 => h2_profile(),
+
+        DuckDb | ClickHouse | Questdb | SapHana | Teradata | Snowflake | Trino | PrestoSql | Hive | Spark | Db2
+        | Informix | Bigquery | Kylin | Oscar | Tdengine | Iotdb | Databricks | Jdbc => conservative_ansi(db_type),
 
         // Non-tabular / not applicable for relational CREATE TABLE
         Redis | MongoDb | Elasticsearch | Qdrant | Milvus | Weaviate | ChromaDb | Neo4j | Cassandra | Etcd

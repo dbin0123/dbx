@@ -2822,9 +2822,10 @@ fn qualified_name(name: &str, db_type: DatabaseType, schema: Option<&str>) -> St
 }
 
 fn drop_index_sql(table_name: &str, index_name: &str, db_type: DatabaseType, schema: Option<&str>) -> String {
+    let profile = profile_for(db_type);
     let table = qualified_name(table_name, db_type, schema);
     let index = qualified_name(index_name, db_type, schema);
-    if is_mysql_like(db_type) {
+    if profile.drop_index_uses_on_table {
         format!("DROP INDEX {} ON {table};", quote_id(index_name, db_type))
     } else {
         format!("DROP INDEX IF EXISTS {index};")
@@ -2832,58 +2833,58 @@ fn drop_index_sql(table_name: &str, index_name: &str, db_type: DatabaseType, sch
 }
 
 fn create_index_sql(table_name: &str, index: &IndexInfo, db_type: DatabaseType, schema: Option<&str>) -> String {
+    use crate::sql_dialect::ddl_profile::IndexTypePlacement;
+    let profile = profile_for(db_type);
     let table = qualified_name(table_name, db_type, schema);
     let columns = index.columns.iter().map(|column| quote_id(column, db_type)).collect::<Vec<_>>().join(", ");
     let unique = if index.is_unique { "UNIQUE " } else { "" };
     let index_type = index.index_type.as_deref().unwrap_or_default();
-    let using_clause = if !index_type.is_empty() && db_type == DatabaseType::Postgres {
-        format!(" USING {index_type}")
+    let (type_prefix, using_before_on, using_suffix) = if index_type.is_empty() {
+        (String::new(), String::new(), String::new())
     } else {
-        String::new()
+        match profile.index_type_placement {
+            IndexTypePlacement::None => (String::new(), String::new(), String::new()),
+            IndexTypePlacement::TypePrefix => (format!("{index_type} "), String::new(), String::new()),
+            IndexTypePlacement::UsingBeforeOn => (String::new(), format!(" USING {index_type}"), String::new()),
+            IndexTypePlacement::UsingSuffix => (String::new(), String::new(), format!(" USING {index_type}")),
+        }
     };
-    let type_prefix = if !index_type.is_empty() && db_type == DatabaseType::SqlServer {
-        format!("{index_type} ")
-    } else {
-        String::new()
-    };
-    let mysql_using =
-        if !index_type.is_empty() && is_mysql_like(db_type) { format!(" USING {index_type}") } else { String::new() };
     let included_columns = index.included_columns.clone().unwrap_or_default();
-    let include_clause =
-        if !included_columns.is_empty() && matches!(db_type, DatabaseType::Postgres | DatabaseType::SqlServer) {
-            format!(
-                " INCLUDE ({})",
-                included_columns.iter().map(|column| quote_id(column, db_type)).collect::<Vec<_>>().join(", ")
-            )
-        } else {
-            String::new()
-        };
-    let supports_where = matches!(db_type, DatabaseType::Postgres | DatabaseType::SqlServer | DatabaseType::Sqlite);
-    let filter = if supports_where { index.filter.as_deref().unwrap_or_default() } else { "" };
+    let include_clause = if !included_columns.is_empty() && profile.index_supports_include {
+        format!(
+            " INCLUDE ({})",
+            included_columns.iter().map(|column| quote_id(column, db_type)).collect::<Vec<_>>().join(", ")
+        )
+    } else {
+        String::new()
+    };
+    let filter = if profile.index_supports_filter { index.filter.as_deref().unwrap_or_default() } else { "" };
     let filter_clause = if filter.is_empty() { String::new() } else { format!(" WHERE {filter}") };
     let comment = index.comment.as_deref().unwrap_or("");
-    let comment_clause = if !comment.trim().is_empty() && is_mysql_like(db_type) {
+    let comment_clause = if !comment.trim().is_empty() && profile.index_supports_comment {
         format!(" COMMENT {}", comment_literal(comment))
     } else {
         String::new()
     };
-    if is_mysql_like(db_type) {
+    // MySQL-style puts USING before ON and omits INCLUDE/WHERE placement used by PG/SS.
+    if profile.drop_index_uses_on_table {
         format!(
-            "CREATE {unique}{type_prefix}INDEX {}{mysql_using} ON {table} ({columns}){comment_clause};",
+            "CREATE {unique}{type_prefix}INDEX {}{using_before_on} ON {table} ({columns}){comment_clause};",
             quote_id(&index.name, db_type)
         )
     } else {
         format!(
-            "CREATE {unique}{type_prefix}INDEX {} ON {table}{using_clause} ({columns}){include_clause}{filter_clause};",
+            "CREATE {unique}{type_prefix}INDEX {} ON {table}{using_suffix} ({columns}){include_clause}{filter_clause};",
             quote_id(&index.name, db_type)
         )
     }
 }
 
 fn drop_foreign_key_sql(table_name: &str, fk_name: &str, db_type: DatabaseType, schema: Option<&str>) -> String {
+    let profile = profile_for(db_type);
     let table = qualified_name(table_name, db_type, schema);
     let fk = quote_id(fk_name, db_type);
-    if is_mysql_like(db_type) {
+    if profile.drop_fk_as_foreign_key {
         format!("ALTER TABLE {table} DROP FOREIGN KEY {fk};")
     } else {
         format!("ALTER TABLE {table} DROP CONSTRAINT {fk};")
@@ -2917,21 +2918,50 @@ fn column_comment_sql(
     db_type: DatabaseType,
     schema: Option<&str>,
 ) -> String {
-    if is_mysql_like(db_type) {
-        return format!(
-            "-- Column comment for {column_name}: use ALTER TABLE ... MODIFY COLUMN to set comment in MySQL"
-        );
+    let profile = profile_for(db_type);
+    if profile.column_comment_via_modify_only {
+        return format!("-- Column comment for {column_name}: use ALTER TABLE ... MODIFY COLUMN to set comment");
     }
     let table = qualified_name(table_name, db_type, schema);
     format!("COMMENT ON COLUMN {table}.{} IS {};", quote_id(column_name, db_type), comment_literal(comment))
 }
 
 fn table_comment_sql(table_name: &str, comment: &str, db_type: DatabaseType, schema: Option<&str>) -> String {
+    let profile = profile_for(db_type);
     let table = qualified_name(table_name, db_type, schema);
-    if is_mysql_like(db_type) {
+    if profile.table_comment_via_alter {
         format!("ALTER TABLE {table} COMMENT = {};", comment_literal(comment))
     } else {
         format!("COMMENT ON TABLE {table} IS {};", comment_literal(comment))
+    }
+}
+
+fn create_trigger_sql(
+    profile: &crate::sql_dialect::ddl_profile::DdlDialectProfile,
+    name: &str,
+    timing: &str,
+    event: &str,
+    table: &str,
+    body: &str,
+) -> String {
+    use crate::sql_dialect::ddl_profile::TriggerTemplate;
+    let qname = profile.quote_ident(name);
+    match profile.trigger_template {
+        TriggerTemplate::MysqlStyle => {
+            format!("CREATE TRIGGER {qname} {timing} {event} ON {table} FOR EACH ROW BEGIN\n{body} END;")
+        }
+        TriggerTemplate::PostgresStyle => {
+            format!(
+                "CREATE TRIGGER {qname} {timing} {event} ON {table} FOR EACH ROW EXECUTE FUNCTION {};",
+                body.trim_end_matches(';')
+            )
+        }
+        TriggerTemplate::SqlServerStyle => {
+            format!("CREATE TRIGGER {qname} ON {table} {timing} {event} AS BEGIN {body} END;")
+        }
+        TriggerTemplate::GenericRowBody => {
+            format!("CREATE TRIGGER {qname} {timing} {event} ON {table} FOR EACH ROW BEGIN {body} END;")
+        }
     }
 }
 
@@ -3185,49 +3215,7 @@ fn generate_create_table_sql(
 
             if let Some(stmt) = &trigger.statement {
                 if !stmt.trim().is_empty() {
-                    let create_trigger = match db_type {
-                        DatabaseType::Mysql | DatabaseType::ManticoreSearch => {
-                            format!(
-                                "CREATE TRIGGER {} {} {} ON {} FOR EACH ROW BEGIN\n{} END;",
-                                quote_id(&trigger.name, db_type),
-                                timing,
-                                event_desc,
-                                table,
-                                stmt
-                            )
-                        }
-                        DatabaseType::Postgres => {
-                            format!(
-                                "CREATE TRIGGER {} {} {} ON {} FOR EACH ROW EXECUTE FUNCTION {};",
-                                quote_id(&trigger.name, db_type),
-                                timing,
-                                event_desc,
-                                table,
-                                stmt.trim_end_matches(';')
-                            )
-                        }
-                        DatabaseType::SqlServer => {
-                            format!(
-                                "CREATE TRIGGER {} ON {} {} {} AS BEGIN {} END;",
-                                quote_id(&trigger.name, db_type),
-                                table,
-                                timing,
-                                event_desc,
-                                stmt
-                            )
-                        }
-                        _ => {
-                            format!(
-                                "CREATE TRIGGER {} {} {} ON {} FOR EACH ROW BEGIN {} END;",
-                                quote_id(&trigger.name, db_type),
-                                timing,
-                                event_desc,
-                                table,
-                                stmt
-                            )
-                        }
-                    };
-                    lines.push(create_trigger);
+                    lines.push(create_trigger_sql(&profile, &trigger.name, timing, event_desc, &table, stmt));
                 } else {
                     missing.push(MissingRollbackObject {
                         kind: "trigger".to_string(),
@@ -3303,19 +3291,15 @@ fn generate_schema_sync_sql_inner(
 ) -> (String, Vec<MissingRollbackObject>) {
     let mut lines = Vec::new();
     let mut missing_objects: Vec<MissingRollbackObject> = Vec::new();
-    let is_mysql = is_mysql_like(db_type);
+    let profile = profile_for(db_type);
     let cascade = if cascade_delete { " CASCADE" } else { "" };
 
-    let type_matrix = source_dialect.map(|src| {
-        let target_dialect = DialectKind::from_database_type(db_type);
-        crate::sql_dialect::descriptor::TypeMappingMatrix::for_dialects(src, target_dialect)
-    });
     let map_type = |source_type: &str| -> String {
         let tgt = DialectKind::from_database_type(db_type);
         if let Some(user_target) = FieldMapping::apply_with_params(field_mappings, source_type, tgt) {
             return user_target;
         }
-        type_matrix.as_ref().map_or_else(|| source_type.to_string(), |m| m.convert_type(source_type).0)
+        rewrite_column_type(source_type, db_type, source_dialect)
     };
 
     for diff in diffs {
@@ -3463,7 +3447,7 @@ fn generate_schema_sync_sql_inner(
                     "modified" => {
                         if let Some(source) = &column.source {
                             let mapped = convert_col(source);
-                            if is_mysql {
+                            if profile.alter_uses_modify_column {
                                 if column.changes.iter().any(|change| !change.starts_with("order:")) {
                                     parts.push(format!("  MODIFY COLUMN {}", column_def(&mapped, db_type)));
                                 }
@@ -3491,40 +3475,50 @@ fn generate_schema_sync_sql_inner(
                     }
                     "renamed" => {
                         if let (Some(source), Some(target_col)) = (&column.source, &column.target) {
+                            use crate::sql_dialect::ddl_profile::RenameColumnSyntax;
                             let mapped = convert_col(source);
-                            if is_mysql {
-                                let old_name = quote_id(&target_col.name, db_type);
-                                parts.push(format!("  CHANGE COLUMN {} {}", old_name, column_def(&mapped, db_type)));
-                            } else if db_type == DatabaseType::Postgres {
-                                let old_name = quote_id(&target_col.name, db_type);
-                                let new_name = quote_id(&column.name, db_type);
-                                parts.push(format!("  RENAME COLUMN {old_name} TO {new_name}"));
-                                if source.data_type.to_lowercase() != target_col.data_type.to_lowercase() {
-                                    parts.push(format!("  ALTER COLUMN {new_name} TYPE {}", mapped.data_type));
+                            match profile.rename_column {
+                                RenameColumnSyntax::MysqlChangeColumn => {
+                                    let old_name = quote_id(&target_col.name, db_type);
+                                    parts.push(format!(
+                                        "  CHANGE COLUMN {} {}",
+                                        old_name,
+                                        column_def(&mapped, db_type)
+                                    ));
                                 }
-                                if source.is_nullable != target_col.is_nullable {
-                                    let action = if source.is_nullable { "DROP NOT NULL" } else { "SET NOT NULL" };
-                                    parts.push(format!("  ALTER COLUMN {new_name} {action}"));
+                                RenameColumnSyntax::RenameColumn => {
+                                    let old_name = quote_id(&target_col.name, db_type);
+                                    let new_name = quote_id(&column.name, db_type);
+                                    parts.push(format!("  RENAME COLUMN {old_name} TO {new_name}"));
+                                    if source.data_type.to_lowercase() != target_col.data_type.to_lowercase() {
+                                        parts.push(format!("  ALTER COLUMN {new_name} TYPE {}", mapped.data_type));
+                                    }
+                                    if source.is_nullable != target_col.is_nullable {
+                                        let action = if source.is_nullable { "DROP NOT NULL" } else { "SET NOT NULL" };
+                                        parts.push(format!("  ALTER COLUMN {new_name} {action}"));
+                                    }
                                 }
-                            } else if db_type == DatabaseType::H2 {
-                                let old_name = quote_id(&target_col.name, db_type);
-                                let new_name = quote_id(&column.name, db_type);
-                                parts.push(format!("  ALTER COLUMN {old_name} RENAME TO {new_name}"));
-                                if source.data_type.to_lowercase() != target_col.data_type.to_lowercase() {
-                                    parts.push(format!("  ALTER COLUMN {new_name} SET DATA TYPE {}", mapped.data_type));
+                                RenameColumnSyntax::AlterColumnRenameTo => {
+                                    let old_name = quote_id(&target_col.name, db_type);
+                                    let new_name = quote_id(&column.name, db_type);
+                                    parts.push(format!("  ALTER COLUMN {old_name} RENAME TO {new_name}"));
+                                    if source.data_type.to_lowercase() != target_col.data_type.to_lowercase() {
+                                        parts.push(format!(
+                                            "  ALTER COLUMN {new_name} SET DATA TYPE {}",
+                                            mapped.data_type
+                                        ));
+                                    }
                                 }
-                            } else if db_type == DatabaseType::SqlServer {
-                                let target_table = qualified_name(&diff.name, db_type, schema);
-                                let full_obj_path = format!("{target_table}.{}", quote_id(&target_col.name, db_type));
-                                parts.push(format!(
-                                    "  EXEC sp_rename '{}', '{}', 'COLUMN';",
-                                    full_obj_path.replace('\'', "''"),
-                                    column.name.replace('\'', "''")
-                                ));
-                            } else {
-                                let old_name = quote_id(&target_col.name, db_type);
-                                let new_name = quote_id(&column.name, db_type);
-                                parts.push(format!("  RENAME COLUMN {old_name} TO {new_name}"));
+                                RenameColumnSyntax::SqlServerSpRename => {
+                                    let target_table = qualified_name(&diff.name, db_type, schema);
+                                    let full_obj_path =
+                                        format!("{target_table}.{}", quote_id(&target_col.name, db_type));
+                                    parts.push(format!(
+                                        "  EXEC sp_rename '{}', '{}', 'COLUMN';",
+                                        full_obj_path.replace('\'', "''"),
+                                        column.name.replace('\'', "''")
+                                    ));
+                                }
                             }
                         }
                     }
@@ -3535,7 +3529,7 @@ fn generate_schema_sync_sql_inner(
 
         if !parts.is_empty() {
             lines.push(format!("-- Alter table: {}", diff.name));
-            if is_mysql {
+            if profile.alter_batches_clauses {
                 lines.push(format!("ALTER TABLE {table}"));
                 lines.push(format!("{};", parts.join(",\n")));
             } else {
@@ -3546,7 +3540,7 @@ fn generate_schema_sync_sql_inner(
             lines.push(String::new());
         }
 
-        if !is_mysql {
+        if !profile.column_comment_via_modify_only {
             if let Some(columns) = &diff.columns {
                 for column in columns {
                     if let Some(source) = &column.source {
