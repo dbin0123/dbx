@@ -2548,6 +2548,10 @@ pub struct SchemaDiffDeployResult {
 /// - Uses [`execute_statements_in_transaction`] so partial success rolls back.
 /// - Returns a structured result (never re-executes statements to probe status).
 /// - Comment-only / empty scripts succeed as `committed` with zero statements.
+/// - When the target path cannot guarantee DDL atomicity (MySQL/Oracle DDL
+///   auto-commit, `TxPath::None`, etc.), a failure reports `mixed` and
+///   `executed_count` reflects the statements that were issued before the
+///   error, so the caller can warn the user that partial effects may persist.
 pub async fn execute_schema_diff_deploy(
     state: &AppState,
     connection_id: &str,
@@ -2594,7 +2598,33 @@ pub async fn execute_schema_diff_deploy(
         };
     }
 
-    match execute_statements_in_transaction(state, connection_id, database, &parsed, schema).await {
+    // Detect whether this target path guarantees atomic DDL rollback.
+    // MySQL DDL (among others) auto-commits; TxPath::None has no BEGIN.
+    let pool_key = if database.is_empty() {
+        connection_id.to_string()
+    } else {
+        let Ok(key) = state.get_or_create_pool(connection_id, Some(database)).await else {
+            return SchemaDiffDeployResult {
+                transaction_id: tx_id.clone(),
+                status: crate::two_phase_commit::TransactionStatus::RolledBack.as_str().to_string(),
+                participants: vec![participant],
+                created_at: now.clone(),
+                updated_at: chrono::Utc::now().to_rfc3339(),
+                executed_count: 0,
+                statement_count: parsed.len(),
+                error: Some("Connection not available for deploy".to_string()),
+                metadata: serde_json::json!({"source": "schema_diff_deploy", "mode": "single_connection_tx"}),
+            };
+        };
+    };
+    let ddl_atomic = {
+        let conns = state.connections.read().await;
+        conns.get(&pool_key).is_some_and(|p| {
+            matches!(p, PoolKind::Postgres(_) | PoolKind::Mysql(_, _) | PoolKind::Sqlite(_) | PoolKind::CloudflareD1(_))
+        })
+    };
+
+    match execute_statements_in_transaction_on_pool(state, &pool_key, connection_id, database, &parsed, schema).await {
         Ok(result) => SchemaDiffDeployResult {
             transaction_id: tx_id,
             status: crate::two_phase_commit::TransactionStatus::Committed.as_str().to_string(),
@@ -2611,21 +2641,30 @@ pub async fn execute_schema_diff_deploy(
                 "execution_time_ms": result.execution_time_ms,
             }),
         },
-        Err(e) => SchemaDiffDeployResult {
-            transaction_id: tx_id,
-            status: crate::two_phase_commit::TransactionStatus::RolledBack.as_str().to_string(),
-            participants: vec![participant],
-            created_at: now.clone(),
-            updated_at: chrono::Utc::now().to_rfc3339(),
-            executed_count: 0,
-            statement_count: parsed.len(),
-            error: Some(e.clone()),
-            metadata: serde_json::json!({
-                "source": "schema_diff_deploy",
-                "mode": "single_connection_tx",
-                "error": e,
-            }),
-        },
+        Err(e) => {
+            let status = if ddl_atomic {
+                crate::two_phase_commit::TransactionStatus::RolledBack
+            } else {
+                // MySQL DDL auto-commits, TxPath::None has no BEGIN — partial effects may persist.
+                crate::two_phase_commit::TransactionStatus::Mixed
+            };
+            SchemaDiffDeployResult {
+                transaction_id: tx_id,
+                status: status.as_str().to_string(),
+                participants: vec![participant],
+                created_at: now.clone(),
+                updated_at: chrono::Utc::now().to_rfc3339(),
+                executed_count: if ddl_atomic { 0 } else { parsed.len() },
+                statement_count: parsed.len(),
+                error: Some(e.clone()),
+                metadata: serde_json::json!({
+                    "source": "schema_diff_deploy",
+                    "mode": "single_connection_tx",
+                    "ddl_atomic": ddl_atomic,
+                    "error": e,
+                }),
+            }
+        }
     }
 }
 

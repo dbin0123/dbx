@@ -4,7 +4,7 @@ import { buildDeployTxResult } from "@/lib/schema/deployTxResult";
 const t = (key: string, params?: Record<string, any>) => {
   const fallback: Record<string, string> = {
     "diff.executeSuccess": "Executed successfully",
-    "diff.deployMixed": "Partially deployed",
+    "diff.deployMixed": "Partially deployed (DDL may not be transactional)",
     "diff.deployRolledBack": "Rolled back",
     "diff.deployFailed": "Deployment failed: {status}",
   };

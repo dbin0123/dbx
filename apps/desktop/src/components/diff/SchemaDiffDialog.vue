@@ -667,12 +667,31 @@ async function handleExecuteScript() {
     return;
   }
 
+  await executeDeploySql();
+}
+
+async function executeDeploySql() {
   executing.value = true;
   try {
-    const txLog = await api.executeScriptWith2pc(targetConnectionId.value, targetDatabase.value, [deploySql.value], targetSchema.value);
-    showDeployTxResult(txLog);
+    const targetConnection = store.getConfig(targetConnectionId.value);
+    const failed = await executeWithProductionSqlGuard({
+      connection: targetConnection,
+      database: targetDatabase.value,
+      sql: deploySql.value,
+      source: t("production.sourceSchemaDiff"),
+      execute: async () => {
+        const txLog = await api.executeScriptWith2pc(targetConnectionId.value, targetDatabase.value, [deploySql.value], targetSchema.value);
+        return txLog;
+      },
+    });
+    if (failed === undefined) return;
+    showDeployTxResult(failed);
   } catch (e: any) {
-    toast(e?.message || String(e), 5000);
+    deployResult.value = {
+      success: false,
+      message: e?.message || String(e),
+    };
+    showResultDialog.value = true;
   } finally {
     executing.value = false;
   }
@@ -801,30 +820,8 @@ async function onConfirmDeploy() {
     toast(t("diff.rollbackIncompleteBlocked"), 5000);
     return;
   }
-  executing.value = true;
-  try {
-    const targetConnection = store.getConfig(targetConnectionId.value);
-    const failed = await executeWithProductionSqlGuard({
-      connection: targetConnection,
-      database: targetDatabase.value,
-      sql: deploySql.value,
-      source: t("production.sourceSchemaDiff"),
-      execute: async () => {
-        const txLog = await api.executeScriptWith2pc(targetConnectionId.value, targetDatabase.value, [deploySql.value], targetSchema.value);
-        return txLog;
-      },
-    });
-    if (failed === undefined) return;
-    showDeployTxResult(failed);
-  } catch (e: any) {
-    deployResult.value = {
-      success: false,
-      message: e?.message || String(e),
-    };
-    showResultDialog.value = true;
-  } finally {
-    executing.value = false;
-  }
+
+  await executeDeploySql();
 }
 
 const deployStats = computed(() => {
