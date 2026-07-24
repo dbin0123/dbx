@@ -1489,22 +1489,13 @@ pub fn diff_permissions(source: &[PermissionInfo], target: &[PermissionInfo]) ->
 
 pub fn generate_permission_sync_sql(diffs: &[PermissionDiff], db_type: DatabaseType, schema: Option<&str>) -> String {
     let mut lines: Vec<String> = Vec::new();
-    let is_mysql = matches!(
-        db_type,
-        DatabaseType::Mysql
-            | DatabaseType::Doris
-            | DatabaseType::StarRocks
-            | DatabaseType::Goldendb
-            | DatabaseType::Sundb
-            | DatabaseType::Databend
-            | DatabaseType::Gbase
-    );
+    let profile = profile_for(db_type);
 
     for diff in diffs {
         match diff.diff_type.as_str() {
             "added" => {
                 if let Some(source) = &diff.source {
-                    if is_mysql {
+                    if profile.grant_uses_mysql_user_syntax {
                         let object_path = if let Some(sch) = schema {
                             format!("`{}`.`{}`", sch.replace('`', "``"), source.object_name.replace('`', "``"))
                         } else {
@@ -1534,7 +1525,7 @@ pub fn generate_permission_sync_sql(diffs: &[PermissionDiff], db_type: DatabaseT
             }
             "removed" => {
                 if let Some(target) = &diff.target {
-                    if is_mysql {
+                    if profile.grant_uses_mysql_user_syntax {
                         let object_path = if let Some(sch) = schema {
                             format!("`{}`.`{}`", sch.replace('`', "``"), target.object_name.replace('`', "``"))
                         } else {
@@ -2564,20 +2555,6 @@ pub fn diff_triggers(source: &[TriggerInfo], target: &[TriggerInfo]) -> Vec<Trig
     diffs
 }
 
-fn is_mysql_like(db_type: DatabaseType) -> bool {
-    matches!(
-        db_type,
-        DatabaseType::Mysql
-            | DatabaseType::Doris
-            | DatabaseType::StarRocks
-            | DatabaseType::Goldendb
-            | DatabaseType::Sundb
-            | DatabaseType::Databend
-            | DatabaseType::Gbase
-            | DatabaseType::ManticoreSearch
-    )
-}
-
 /// Normalize a function definition for comparison by:
 /// - Converting CRLF to LF
 /// - Collapsing all whitespace (tabs, multiple spaces) to single spaces
@@ -2965,32 +2942,6 @@ fn create_trigger_sql(
     }
 }
 
-fn _strip_mysql_ddl(ddl: &str) -> String {
-    let mut sql = ddl.to_string();
-    // Remove MySQL-specific clauses
-    let patterns = [
-        r"(?i)\s*ENGINE\s*=\s*\w+",
-        r"(?i)\s*AUTO_INCREMENT\s*=\s*\d+",
-        r"(?i)\s*DEFAULT\s+CHARSET\s*=\s*\w+(?:\s*COLLATE\s*=\s*\w+)?",
-        r"(?i)\s*CHARSET\s*=\s*\w+(?:\s*COLLATE\s*=\s*\w+)?",
-        r"(?i)\s*COLLATE\s*=\s*\w+",
-        r"(?i)\s*ROW_FORMAT\s*=\s*\w+",
-        r"(?i)\s*/\*!.*?\*/",
-        r"(?i)\s*USING\s+BTREE",
-    ];
-    for pat in &patterns {
-        if let Ok(re) = regex::Regex::new(pat) {
-            sql = re.replace_all(&sql, "").to_string();
-        }
-    }
-    // Clean up excess whitespace
-    sql = sql.split_whitespace().collect::<Vec<_>>().join(" ");
-    if sql.ends_with(',') {
-        sql.pop();
-    }
-    sql
-}
-
 fn generate_create_table_sql(
     name: &str,
     columns: &[ColumnDiff],
@@ -3344,10 +3295,10 @@ fn generate_schema_sync_sql_inner(
             } else if is_same_dialect
                 || (source_dialect.is_none()
                     && diff.ddl.is_some()
-                    && (is_mysql_like(db_type) || !has_structured_snapshot))
+                    && (profile.prefers_native_source_ddl || !has_structured_snapshot))
             {
-                // Preserve native MySQL-family DDL when the source is unknown,
-                // or use it as the last fallback when no structured snapshot exists.
+                // Prefer native source DDL when the target profile wants it
+                // (MySQL-family), or as fallback without a structured snapshot.
                 if let Some(ddl) = &diff.ddl {
                     lines.push(format!("-- Create {}: {}", diff.object_type.as_deref().unwrap_or("table"), diff.name));
                     lines.push(format!("{};", ddl));
@@ -3619,10 +3570,10 @@ fn generate_schema_sync_sql_inner(
             lines.push(String::new());
         }
 
-        if db_type == DatabaseType::Sqlite
+        if profile.warn_fk_needs_table_rebuild
             && diff.foreign_keys.as_ref().is_some_and(|foreign_keys| !foreign_keys.is_empty())
         {
-            lines.push(format!("-- SQLite foreign key synchronization may require table rebuild for: {}", diff.name));
+            lines.push(format!("-- Foreign key synchronization may require table rebuild for: {}", diff.name));
             lines.push(String::new());
         }
     }
