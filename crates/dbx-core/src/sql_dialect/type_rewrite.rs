@@ -90,7 +90,7 @@ pub fn strip_display_width_if_needed(source_type: &str, profile: &DdlDialectProf
 
 /// Special-case: TINYINT(1) often means boolean on MySQL-like sources.
 fn tinyint1_as_boolean_key(base: &str, params: Option<&str>) -> Option<&'static str> {
-    if base.eq_ignore_ascii_case("TINYINT") && params.as_deref() == Some("1") {
+    if base.eq_ignore_ascii_case("TINYINT") && params == Some("1") {
         Some("BOOL")
     } else {
         None
@@ -154,7 +154,7 @@ pub fn type_looks_integer(mapped_type: &str) -> bool {
 pub fn apply_auto_inc_to_column_def(
     profile: &DdlDialectProfile,
     quoted_name: &str,
-    mapped_type: &str,
+    _mapped_type: &str,
     col: &ColumnInfo,
     is_integer_like: bool,
 ) -> AutoIncColumnBuild {
