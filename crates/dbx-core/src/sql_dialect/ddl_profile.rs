@@ -636,7 +636,7 @@ pub fn profile_for(db_type: DatabaseType) -> DdlDialectProfile {
 
         // PostgreSQL family
         Postgres | Redshift | Gaussdb | Kingbase | Highgo | Vastbase | OpenGauss | Kwdb | Firebird | Vertica
-        | Exasol => postgres_family(db_type),
+        | Exasol | Uxdb => postgres_family(db_type),
 
         // Oracle family
         Oracle | Dameng | OceanbaseOracle | Yashandb | Xugu | Iris => oracle_family(db_type),
