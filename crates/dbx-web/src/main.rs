@@ -322,6 +322,9 @@ async fn main() {
         .route("/schema/indexes", get(routes::schema::list_indexes))
         .route("/schema/foreign-keys", get(routes::schema::list_foreign_keys))
         .route("/schema/triggers", get(routes::schema::list_triggers))
+        .route("/schema/constraints", get(routes::schema::list_constraints))
+        .route("/schema/partitions", get(routes::schema::list_partitions))
+        .route("/schema/subpartitions", get(routes::schema::list_subpartitions))
         .route("/schema/functions", get(routes::schema::list_functions))
         .route("/schema/sequences", get(routes::schema::list_sequences))
         .route("/schema/rules", get(routes::schema::list_rules))
@@ -609,7 +612,11 @@ async fn main() {
         )
         .route("/export/query-result/cancel", post(routes::query_result_export::cancel_query_result_export))
         // SQL file
-        .route("/sql-file/preview", post(routes::sql_file::preview_sql_file))
+        .route(
+            "/sql-file/preview",
+            post(routes::sql_file::preview_sql_file)
+                .layer(DefaultBodyLimit::max(routes::sql_file::SQL_FILE_UPLOAD_MAX_BYTES.saturating_add(1024 * 1024))),
+        )
         .route("/sql-file/execute", post(routes::sql_file::execute_sql_file))
         .route("/sql-file/progress/{executionId}", get(routes::sql_file::sql_file_progress))
         .route("/sql-file/cancel", post(routes::sql_file::cancel_sql_file))

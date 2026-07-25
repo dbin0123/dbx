@@ -8,6 +8,7 @@ import type {
   LinkedServerInfo,
   CatalogInfo,
   TableInfo,
+  TableNameFilter,
   ObjectInfo,
   CompletionAssistantRequest,
   CompletionAssistantResponse,
@@ -19,6 +20,9 @@ import type {
   IndexInfo,
   ForeignKeyInfo,
   TriggerInfo,
+  ConstraintInfo,
+  PartitionInfo,
+  SubpartitionInfo,
   ExtensionInfo,
   FunctionInfo,
   SequenceInfo,
@@ -434,12 +438,12 @@ export async function restartDriverRuntime(runtimeId: string): Promise<void> {
   await post("/api/agents/runtime/restart", { runtimeId });
 }
 
-export async function installAgent(dbType: string, _source?: UpdateDownloadSource): Promise<void> {
-  await post("/api/agents/install", { dbType });
+export async function installAgent(dbType: string, _source?: UpdateDownloadSource, operationId?: string): Promise<void> {
+  await post("/api/agents/install", { dbType, operationId });
 }
 
-export async function upgradeAllAgents(_source?: UpdateDownloadSource): Promise<UpgradeAllAgentDriversResult> {
-  return post("/api/agents/upgrade-all", {});
+export async function upgradeAllAgents(_source?: UpdateDownloadSource, operationId?: string): Promise<UpgradeAllAgentDriversResult> {
+  return post("/api/agents/upgrade-all", { operationId });
 }
 
 export async function checkAgentUpdateBlockers(_dbTypes: string[]): Promise<AgentUpdateBlocker[]> {
@@ -462,11 +466,12 @@ export async function invalidateAgentRegistryCache(): Promise<void> {
   await post("/api/agents/invalidate-registry-cache", {});
 }
 
-export async function importAgentsFromZip(fileOrPath: string | File): Promise<number> {
+export async function importAgentsFromZip(fileOrPath: string | File, operationId?: string): Promise<number> {
   if (typeof fileOrPath === "string") {
     throw new Error("Offline ZIP import in web mode requires a File object, not a file path");
   }
   const formData = new FormData();
+  if (operationId) formData.append("operationId", operationId);
   formData.append("file", fileOrPath);
   const res = await fetch(apiUrl("/api/agents/import-offline"), { method: "POST", body: formData });
   if (!res.ok) throw new Error(await res.text());
@@ -493,8 +498,8 @@ export async function importAgentDriver(dbType: string, pathOrFile: string | Fil
 
 export const importAgentJar = importAgentDriver;
 
-export async function reinstallJre(jreKey?: string, _source?: UpdateDownloadSource): Promise<void> {
-  await post("/api/agents/reinstall-jre", { jreKey });
+export async function reinstallJre(jreKey?: string, _source?: UpdateDownloadSource, operationId?: string): Promise<void> {
+  await post("/api/agents/reinstall-jre", { jreKey, operationId });
 }
 
 export async function uninstallJre(jreKey: string): Promise<void> {
@@ -622,8 +627,8 @@ export async function listSchemaInfos(connectionId: string, database: string): P
   return schemas.map((name) => ({ name, comment: null }));
 }
 
-export async function listTables(connectionId: string, database: string, schema: string, filter?: string, limit?: number, offset?: number, objectTypes?: SidebarObjectKind[], catalog?: string): Promise<TableInfo[]> {
-  return get(`/api/schema/tables?${qs({ connection_id: connectionId, database, schema, filter, limit, offset, object_types: objectTypes?.join(","), catalog })}`);
+export async function listTables(connectionId: string, database: string, schema: string, filter?: string, limit?: number, offset?: number, objectTypes?: SidebarObjectKind[], catalog?: string, tableNameFilter?: TableNameFilter): Promise<TableInfo[]> {
+  return get(`/api/schema/tables?${qs({ connection_id: connectionId, database, schema, filter, limit, offset, object_types: objectTypes?.join(","), catalog, table_name_filter: tableNameFilter ? JSON.stringify(tableNameFilter) : undefined })}`);
 }
 
 export async function getTableComment(_connectionId: string, _database: string, _schema: string, _table: string, _catalog?: string): Promise<string | null> {
@@ -683,6 +688,18 @@ export async function listForeignKeys(connectionId: string, database: string, sc
 
 export async function listTriggers(connectionId: string, database: string, schema: string, table: string, catalog?: string): Promise<TriggerInfo[]> {
   return get(`/api/schema/triggers?${qs({ connection_id: connectionId, database, schema, table, catalog })}`);
+}
+
+export async function listConstraints(connectionId: string, database: string, schema: string, table: string, catalog?: string): Promise<ConstraintInfo[]> {
+  return get(`/api/schema/constraints?${qs({ connection_id: connectionId, database, schema, table, catalog })}`);
+}
+
+export async function listPartitions(connectionId: string, database: string, schema: string, table: string, catalog?: string): Promise<PartitionInfo[]> {
+  return get(`/api/schema/partitions?${qs({ connection_id: connectionId, database, schema, table, catalog })}`);
+}
+
+export async function listSubpartitions(connectionId: string, database: string, schema: string, table: string, catalog?: string): Promise<SubpartitionInfo[]> {
+  return get(`/api/schema/subpartitions?${qs({ connection_id: connectionId, database, schema, table, catalog })}`);
 }
 
 export async function getTableDdl(connectionId: string, database: string, schema: string, table: string, objectType?: ObjectSourceKind, catalog?: string): Promise<string> {
@@ -1485,6 +1502,10 @@ export async function previewSqlFile(fileOrPath: string | File): Promise<SqlFile
 
 export async function executeSqlFile(request: SqlFileRequest): Promise<void> {
   return post("/api/sql-file/execute", { request });
+}
+
+export async function executeSqlFiles(request: SqlFileRequest, filePaths: string[]): Promise<void> {
+  return post("/api/sql-file/execute", { request, filePaths });
 }
 
 export async function cancelSqlFileExecution(executionId: string): Promise<boolean> {

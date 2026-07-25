@@ -139,6 +139,7 @@ macro_rules! agent_connection_pool_database_type {
         DatabaseType::Dameng
             | DatabaseType::Kingbase
             | DatabaseType::Highgo
+            | DatabaseType::Uxdb
             | DatabaseType::Vastbase
             | DatabaseType::Goldendb
             | DatabaseType::Databend
@@ -1795,6 +1796,11 @@ impl AppState {
         let transport_layers = self.resolved_transport_layers(config).await?;
         if transport_layers.is_empty() {
             return Ok((config.host.clone(), config.port));
+        }
+        if config.uses_oracle_tns() {
+            // A TNS descriptor may contain several failover addresses, so rewriting it
+            // through one local tunnel endpoint would silently break Oracle Net routing.
+            return Err("Oracle TNS connections cannot be combined with SSH, proxy, or HTTP tunnel layers. Remove the transport layer or use Service Name/SID mode.".to_string());
         }
 
         let (remote_host, remote_port) = connection_remote_endpoint(config);
@@ -4973,6 +4979,10 @@ mod tests {
         config.db_type = DatabaseType::Sqlite;
         config.host = db_path.to_string_lossy().to_string();
         config.port = 0;
+        // This exercises a plain SQLite file. The shared MySQL fixture carries
+        // credentials, and a SQLite password intentionally opts into SQLCipher.
+        config.username.clear();
+        config.password.clear();
 
         state.configs.write().await.insert(config.id.clone(), config);
 
@@ -5057,9 +5067,10 @@ mod tests {
         state.get_or_create_pool("sqlite-conn", None).await.unwrap();
         let databases = schema::list_databases_core(&state, "sqlite-conn").await.unwrap();
         assert!(databases.iter().any(|database| database.name == "analytics"));
-        let tables = schema::list_tables_core(&state, "sqlite-conn", "analytics", "analytics", None, None, None, None)
-            .await
-            .unwrap();
+        let tables =
+            schema::list_tables_core(&state, "sqlite-conn", "analytics", "analytics", None, None, None, None, None)
+                .await
+                .unwrap();
         assert!(tables.iter().any(|table| table.name == "events"));
 
         state.connections.write().await.clear();
@@ -5548,6 +5559,20 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
+    async fn oracle_tns_connection_rejects_transport_layers() {
+        let (state, dir) = test_app_state().await;
+        let mut config = mysql_config(Some("DBX_FAILOVER"));
+        config.db_type = DatabaseType::Oracle;
+        config.oracle_connection_type = Some("tns".to_string());
+        config.transport_layers = vec![TransportLayerConfig::Ssh(ssh_layer("tns-tunnel", ""))];
+
+        let error = state.connection_host_port("oracle-tns", &config).await.unwrap_err();
+        assert!(error.contains("cannot be combined with SSH, proxy, or HTTP tunnel"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn resolved_transport_layers_substitutes_shared_profiles() {
         let (state, dir) = test_app_state().await;
 
@@ -5914,9 +5939,10 @@ for line in sys.stdin:
 
         let schemas = schema::list_schemas_core(&state, "kwdb-live", &database).await.unwrap();
         assert!(schemas.iter().any(|schema| schema == test_schema));
-        let tables = schema::list_tables_core(&state, "kwdb-live", &database, test_schema, None, None, None, None)
-            .await
-            .unwrap();
+        let tables =
+            schema::list_tables_core(&state, "kwdb-live", &database, test_schema, None, None, None, None, None)
+                .await
+                .unwrap();
         assert!(tables.iter().any(|table| table.name == "devices" && table.table_type == "BASE TABLE"));
         let columns = schema::get_columns_core(&state, "kwdb-live", &database, test_schema, "devices").await.unwrap();
         let id_column = columns.iter().find(|column| column.name == "id").expect("id column should be listed");
