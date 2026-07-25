@@ -922,4 +922,26 @@ mod tests {
         assert!(log.error.is_none());
         assert_eq!(log.participants.len(), 1);
     }
+
+    #[tokio::test]
+    async fn execute_script_with_2pc_propagates_structured_failure_fields() {
+        let (state, _dir) = test_web_state().await;
+        let req = ExecuteBatchRequest {
+            connection_id: "missing-conn".to_string(),
+            database: "testdb".to_string(),
+            statements: vec!["CREATE TABLE t1 (id INT)".to_string(), "CREATE TABLE t2 (id INT)".to_string()],
+            schema: None,
+            timeout_secs: None,
+        };
+
+        let result = execute_script_with_2pc(AxumState(state), Json(req))
+            .await
+            .expect("deploy endpoint should return structured JSON even on failure");
+        let log = result.0;
+        assert!(log.status == "rolled_back" || log.status == "mixed", "status={}", log.status);
+        assert_eq!(log.statement_count, 2);
+        assert!(log.error.as_ref().is_some_and(|e| !e.is_empty()));
+        // Missing connection cannot have applied statements.
+        assert_eq!(log.executed_count, 0);
+    }
 }

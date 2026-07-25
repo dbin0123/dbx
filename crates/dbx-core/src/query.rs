@@ -33,6 +33,8 @@ use crate::query_execution_sql::is_write_sql;
 #[cfg(feature = "duckdb-bundled")]
 use crate::sql::starts_with_duckdb_result_sql_keyword;
 use crate::sql::{split_sql_batches, split_sql_statements, starts_with_executable_sql_keyword};
+use crate::sql_dialect::{resolve_for_db, CAP_TRANSACTIONAL_DDL};
+use crate::sql_risk::{classify_sql_risk_for_database, SqlRisk};
 
 pub const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 pub const MAX_ROWS: usize = 10000;
@@ -2543,6 +2545,113 @@ pub struct SchemaDiffDeployResult {
     pub metadata: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemaDiffAtomicity {
+    GuaranteedRollback,
+    PartialEffectsPossible,
+}
+
+impl SchemaDiffAtomicity {
+    fn ddl_atomic(self) -> bool {
+        matches!(self, Self::GuaranteedRollback)
+    }
+}
+
+fn database_supports_transactional_ddl(db_type: DatabaseType) -> bool {
+    if resolve_for_db(db_type).has_capability(CAP_TRANSACTIONAL_DDL) {
+        return true;
+    }
+    // SQLite-family DDL is transactional even when dialect registry omits the flag.
+    matches!(db_type, DatabaseType::Sqlite | DatabaseType::Rqlite | DatabaseType::Turso | DatabaseType::CloudflareD1)
+}
+
+fn classify_schema_diff_atomicity(
+    db_type: Option<DatabaseType>,
+    statements: &[String],
+    has_transactional_path: bool,
+) -> SchemaDiffAtomicity {
+    if !has_transactional_path {
+        return SchemaDiffAtomicity::PartialEffectsPossible;
+    }
+
+    let mut contains_ddl = false;
+    for statement in statements {
+        let risk = match db_type {
+            Some(db_type) => classify_sql_risk_for_database(statement, db_type).ok(),
+            None => None,
+        };
+
+        match risk {
+            Some(SqlRisk::Ddl) => {
+                contains_ddl = true;
+            }
+            Some(SqlRisk::Write | SqlRisk::ReadOnly) => {}
+            Some(SqlRisk::Transaction) | None => {
+                return SchemaDiffAtomicity::PartialEffectsPossible;
+            }
+        }
+    }
+
+    if !contains_ddl {
+        return SchemaDiffAtomicity::GuaranteedRollback;
+    }
+
+    match db_type {
+        Some(db_type) if database_supports_transactional_ddl(db_type) => SchemaDiffAtomicity::GuaranteedRollback,
+        _ => SchemaDiffAtomicity::PartialEffectsPossible,
+    }
+}
+
+fn executed_count_before_error(error: &str, statement_count: usize) -> usize {
+    let Some(rest) = error.strip_prefix("Statement ") else {
+        return statement_count;
+    };
+    let digits: String = rest.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+    let Ok(statement_number) = digits.parse::<usize>() else {
+        return statement_count;
+    };
+    statement_number.saturating_sub(1).min(statement_count)
+}
+
+/// Pure failure mapping used by deploy and unit tests.
+fn schema_diff_failure_outcome(
+    atomicity: SchemaDiffAtomicity,
+    error: &str,
+    statement_count: usize,
+) -> (crate::two_phase_commit::TransactionStatus, usize) {
+    if atomicity.ddl_atomic() {
+        (crate::two_phase_commit::TransactionStatus::RolledBack, 0)
+    } else {
+        (crate::two_phase_commit::TransactionStatus::Mixed, executed_count_before_error(error, statement_count))
+    }
+}
+
+fn pool_kind_has_transactional_path(pool: &PoolKind) -> bool {
+    // DuckDb variants always exist (unit stubs when duckdb-bundled is off).
+    match pool {
+        PoolKind::Postgres(_)
+        | PoolKind::Mysql(_, _)
+        | PoolKind::Sqlite(_)
+        | PoolKind::CloudflareD1(_)
+        | PoolKind::ClickHouse(_)
+        | PoolKind::Rqlite(_)
+        | PoolKind::Turso(_)
+        | PoolKind::SqlServer(_)
+        | PoolKind::Agent(_) => true,
+        PoolKind::MessageQueue
+        | PoolKind::Nacos
+        | PoolKind::DuckDb(_)
+        | PoolKind::DuckDbWorker(_)
+        | PoolKind::Redis(_)
+        | PoolKind::MongoDb(_)
+        | PoolKind::Elasticsearch(_)
+        | PoolKind::VectorDb(_)
+        | PoolKind::InfluxDb(_)
+        | PoolKind::ExternalTabular(_)
+        | PoolKind::ExternalDriver { .. } => false,
+    }
+}
+
 /// Execute Schema Diff deploy SQL as one real single-connection transaction.
 ///
 /// - Uses [`execute_statements_in_transaction`] so partial success rolls back.
@@ -2598,31 +2707,31 @@ pub async fn execute_schema_diff_deploy(
         };
     }
 
-    // Detect whether this target path guarantees atomic DDL rollback.
-    // MySQL DDL (among others) auto-commits; TxPath::None has no BEGIN.
     let pool_key = if database.is_empty() {
         connection_id.to_string()
     } else {
-        let Ok(key) = state.get_or_create_pool(connection_id, Some(database)).await else {
-            return SchemaDiffDeployResult {
-                transaction_id: tx_id.clone(),
-                status: crate::two_phase_commit::TransactionStatus::RolledBack.as_str().to_string(),
-                participants: vec![participant],
-                created_at: now.clone(),
-                updated_at: chrono::Utc::now().to_rfc3339(),
-                executed_count: 0,
-                statement_count: parsed.len(),
-                error: Some("Connection not available for deploy".to_string()),
-                metadata: serde_json::json!({"source": "schema_diff_deploy", "mode": "single_connection_tx"}),
-            };
-        };
+        match state.get_or_create_pool(connection_id, Some(database)).await {
+            Ok(key) => key,
+            Err(_) => {
+                return SchemaDiffDeployResult {
+                    transaction_id: tx_id.clone(),
+                    status: crate::two_phase_commit::TransactionStatus::RolledBack.as_str().to_string(),
+                    participants: vec![participant],
+                    created_at: now.clone(),
+                    updated_at: chrono::Utc::now().to_rfc3339(),
+                    executed_count: 0,
+                    statement_count: parsed.len(),
+                    error: Some("Connection not available for deploy".to_string()),
+                    metadata: serde_json::json!({"source": "schema_diff_deploy", "mode": "single_connection_tx"}),
+                };
+            }
+        }
     };
-    let ddl_atomic = {
+    let has_transactional_path = {
         let conns = state.connections.read().await;
-        conns.get(&pool_key).is_some_and(|p| {
-            matches!(p, PoolKind::Postgres(_) | PoolKind::Mysql(_, _) | PoolKind::Sqlite(_) | PoolKind::CloudflareD1(_))
-        })
+        conns.get(&pool_key).is_some_and(pool_kind_has_transactional_path)
     };
+    let atomicity = classify_schema_diff_atomicity(db_type, &parsed, has_transactional_path);
 
     match execute_statements_in_transaction_on_pool(state, &pool_key, connection_id, database, &parsed, schema).await {
         Ok(result) => SchemaDiffDeployResult {
@@ -2642,25 +2751,24 @@ pub async fn execute_schema_diff_deploy(
             }),
         },
         Err(e) => {
-            let status = if ddl_atomic {
-                crate::two_phase_commit::TransactionStatus::RolledBack
-            } else {
-                // MySQL DDL auto-commits, TxPath::None has no BEGIN — partial effects may persist.
-                crate::two_phase_commit::TransactionStatus::Mixed
-            };
+            let (status, executed_count) = schema_diff_failure_outcome(atomicity, &e, parsed.len());
             SchemaDiffDeployResult {
                 transaction_id: tx_id,
                 status: status.as_str().to_string(),
                 participants: vec![participant],
                 created_at: now.clone(),
                 updated_at: chrono::Utc::now().to_rfc3339(),
-                executed_count: if ddl_atomic { 0 } else { parsed.len() },
+                executed_count,
                 statement_count: parsed.len(),
                 error: Some(e.clone()),
                 metadata: serde_json::json!({
                     "source": "schema_diff_deploy",
                     "mode": "single_connection_tx",
-                    "ddl_atomic": ddl_atomic,
+                    "ddl_atomic": atomicity.ddl_atomic(),
+                    "atomicity": match atomicity {
+                        SchemaDiffAtomicity::GuaranteedRollback => "guaranteed_rollback",
+                        SchemaDiffAtomicity::PartialEffectsPossible => "partial_effects_possible",
+                    },
                     "error": e,
                 }),
             }
@@ -3707,6 +3815,132 @@ mod tests {
         InstalledPlugin, PluginDriverManifest, PluginDriverSession, PluginManifest, PluginRuntimeEnv,
     };
     use crate::storage::Storage;
+
+    #[test]
+    fn schema_diff_atomicity_marks_mysql_ddl_as_partial() {
+        let atomicity = classify_schema_diff_atomicity(
+            Some(DatabaseType::Mysql),
+            &["CREATE TABLE users (id INT)".to_string(), "ALTER TABLE users ADD COLUMN name VARCHAR(32)".to_string()],
+            true,
+        );
+
+        assert_eq!(atomicity, SchemaDiffAtomicity::PartialEffectsPossible);
+    }
+
+    #[test]
+    fn schema_diff_atomicity_marks_oracle_ddl_as_partial() {
+        let atomicity = classify_schema_diff_atomicity(
+            Some(DatabaseType::Oracle),
+            &["CREATE TABLE users (id INT)".to_string(), "ALTER TABLE users ADD name VARCHAR2(32)".to_string()],
+            true,
+        );
+
+        assert_eq!(atomicity, SchemaDiffAtomicity::PartialEffectsPossible);
+    }
+
+    #[test]
+    fn schema_diff_atomicity_keeps_postgres_ddl_atomic() {
+        let atomicity = classify_schema_diff_atomicity(
+            Some(DatabaseType::Postgres),
+            &["CREATE TABLE users (id INT)".to_string(), "ALTER TABLE users ADD COLUMN name VARCHAR(32)".to_string()],
+            true,
+        );
+
+        assert_eq!(atomicity, SchemaDiffAtomicity::GuaranteedRollback);
+    }
+
+    #[test]
+    fn schema_diff_atomicity_keeps_dml_atomic_when_tx_path_exists() {
+        let atomicity = classify_schema_diff_atomicity(
+            Some(DatabaseType::Mysql),
+            &["INSERT INTO users VALUES (1)".to_string(), "UPDATE users SET active = 1 WHERE id = 1".to_string()],
+            true,
+        );
+
+        assert_eq!(atomicity, SchemaDiffAtomicity::GuaranteedRollback);
+    }
+
+    #[test]
+    fn schema_diff_atomicity_marks_missing_transaction_path_as_partial() {
+        let atomicity = classify_schema_diff_atomicity(
+            Some(DatabaseType::Postgres),
+            &["CREATE TABLE users (id INT)".to_string()],
+            false,
+        );
+
+        assert_eq!(atomicity, SchemaDiffAtomicity::PartialEffectsPossible);
+    }
+
+    #[test]
+    fn executed_count_before_error_uses_failing_statement_index() {
+        assert_eq!(executed_count_before_error("Statement 1 failed: syntax error", 3), 0);
+        assert_eq!(executed_count_before_error("Statement 2 failed: syntax error", 3), 1);
+        assert_eq!(executed_count_before_error("Statement 3 failed: syntax error", 3), 2);
+    }
+
+    #[test]
+    fn schema_diff_failure_outcome_rolls_back_when_atomic() {
+        let (status, executed) =
+            schema_diff_failure_outcome(SchemaDiffAtomicity::GuaranteedRollback, "Statement 2 failed: syntax error", 3);
+        assert_eq!(status, crate::two_phase_commit::TransactionStatus::RolledBack);
+        assert_eq!(executed, 0);
+    }
+
+    #[test]
+    fn schema_diff_failure_outcome_reports_mixed_with_partial_count() {
+        let (status, executed) = schema_diff_failure_outcome(
+            SchemaDiffAtomicity::PartialEffectsPossible,
+            "Statement 2 failed: syntax error",
+            3,
+        );
+        assert_eq!(status, crate::two_phase_commit::TransactionStatus::Mixed);
+        assert_eq!(executed, 1);
+    }
+
+    #[test]
+    fn schema_diff_atomicity_keeps_sqlite_ddl_atomic() {
+        let atomicity = classify_schema_diff_atomicity(
+            Some(DatabaseType::Sqlite),
+            &["CREATE TABLE users (id INTEGER)".to_string()],
+            true,
+        );
+        assert_eq!(atomicity, SchemaDiffAtomicity::GuaranteedRollback);
+    }
+
+    /// MySQL: first DDL may already commit; second fails → mixed + executed_count = 1.
+    #[test]
+    fn mysql_second_ddl_failure_maps_to_mixed_with_partial_executed_count() {
+        let stmts = ["CREATE TABLE t1 (id INT)".to_string(), "CREATE TABLE t2 (id INT)".to_string()];
+        let atomicity = classify_schema_diff_atomicity(Some(DatabaseType::Mysql), &stmts, true);
+        assert_eq!(atomicity, SchemaDiffAtomicity::PartialEffectsPossible);
+        let (status, executed) =
+            schema_diff_failure_outcome(atomicity, "Statement 2 failed: table already exists", stmts.len());
+        assert_eq!(status, crate::two_phase_commit::TransactionStatus::Mixed);
+        assert_eq!(executed, 1);
+    }
+
+    /// Oracle: same non-transactional DDL semantics as MySQL for deploy status.
+    #[test]
+    fn oracle_second_ddl_failure_maps_to_mixed_with_partial_executed_count() {
+        let stmts = ["CREATE TABLE t1 (id NUMBER)".to_string(), "ALTER TABLE t1 ADD name VARCHAR2(32)".to_string()];
+        let atomicity = classify_schema_diff_atomicity(Some(DatabaseType::Oracle), &stmts, true);
+        assert_eq!(atomicity, SchemaDiffAtomicity::PartialEffectsPossible);
+        let (status, executed) = schema_diff_failure_outcome(atomicity, "Statement 2 failed: ORA-00942", stmts.len());
+        assert_eq!(status, crate::two_phase_commit::TransactionStatus::Mixed);
+        assert_eq!(executed, 1);
+    }
+
+    /// Postgres transactional DDL: second fails → rolled_back + executed_count = 0.
+    #[test]
+    fn postgres_second_ddl_failure_maps_to_rolled_back_zero_executed() {
+        let stmts = ["CREATE TABLE t1 (id INT)".to_string(), "CREATE TABLE t2 (id INT)".to_string()];
+        let atomicity = classify_schema_diff_atomicity(Some(DatabaseType::Postgres), &stmts, true);
+        assert_eq!(atomicity, SchemaDiffAtomicity::GuaranteedRollback);
+        let (status, executed) =
+            schema_diff_failure_outcome(atomicity, "Statement 2 failed: relation already exists", stmts.len());
+        assert_eq!(status, crate::two_phase_commit::TransactionStatus::RolledBack);
+        assert_eq!(executed, 0);
+    }
 
     #[test]
     fn query_execution_mode_deserializes_simple_client_value() {

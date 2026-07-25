@@ -29,7 +29,11 @@ export function buildDeployTxResult(txLog: any, t: (key: string, params?: Record
     return {
       success: false,
       status,
-      message: t("diff.deployMixed", { participants: txLog?.participants?.length ?? 0 }),
+      message: t("diff.deployMixed", {
+        participants: txLog?.participants?.length ?? 0,
+        executedCount: executedCount ?? 0,
+        statementCount: statementCount ?? 0,
+      }),
       error,
       executedCount,
       statementCount,

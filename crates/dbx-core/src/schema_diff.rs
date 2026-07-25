@@ -6,7 +6,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::models::connection::DatabaseType;
-use crate::sql_dialect::ddl_profile::profile_for;
+use crate::sql_dialect::ddl_profile::{profile_for, DdlDialectProfile};
 use crate::sql_dialect::descriptor::DialectKind;
 use crate::sql_dialect::inference::{ColumnType, DefaultTypeInferenceEngine, TypeInferenceEngine};
 use crate::sql_dialect::type_rewrite::{
@@ -3578,7 +3578,7 @@ fn generate_schema_sync_sql_inner(
         }
     }
 
-    // Function diffs — only emit executable SQL when profile supports it
+    // Function diffs — only emit executable SQL when profile has templates
     if !function_diffs.is_empty() {
         lines.push(String::new());
         lines.push("-- Functions".to_string());
@@ -3586,7 +3586,7 @@ fn generate_schema_sync_sql_inner(
             match diff.diff_type.as_str() {
                 "added" | "modified" => {
                     if let Some(source) = &diff.source {
-                        if profile.supports_function_ddl {
+                        if let Some(template) = profile.function_create_template {
                             let verb = if diff.diff_type == "added" { "Create" } else { "Alter" };
                             lines.push(format!("-- {verb} function: {}", diff.name));
                             let create_kw = if profile.create_function_or_replace {
@@ -3594,10 +3594,10 @@ fn generate_schema_sync_sql_inner(
                             } else {
                                 "CREATE FUNCTION"
                             };
-                            lines.push(format!(
-                                "{create_kw} {} {};",
-                                qualified_name(&diff.name, db_type, schema),
-                                source.definition
+                            let name = qualified_name(&diff.name, db_type, schema);
+                            lines.push(DdlDialectProfile::render_template(
+                                template,
+                                &[("create_kw", create_kw), ("name", &name), ("definition", &source.definition)],
                             ));
                         } else {
                             lines.push(format!(
@@ -3608,11 +3608,12 @@ fn generate_schema_sync_sql_inner(
                     }
                 }
                 "removed" => {
-                    if profile.supports_function_ddl {
+                    if let Some(template) = profile.function_drop_template {
                         lines.push(format!("-- Drop function: {}", diff.name));
-                        lines.push(format!(
-                            "DROP FUNCTION IF EXISTS {}{cascade};",
-                            qualified_name(&diff.name, db_type, schema)
+                        let name = qualified_name(&diff.name, db_type, schema);
+                        lines.push(DdlDialectProfile::render_template(
+                            template,
+                            &[("name", &name), ("cascade", cascade)],
                         ));
                     } else {
                         lines.push(format!("-- Skip drop function {}: unsupported on target", diff.name));
@@ -3631,17 +3632,21 @@ fn generate_schema_sync_sql_inner(
             match diff.diff_type.as_str() {
                 "added" => {
                     if let Some(source) = &diff.source {
-                        if profile.supports_sequence_ddl {
+                        if let Some(template) = profile.sequence_create_template {
                             lines.push(format!("-- Create sequence: {}", diff.name));
-                            lines.push(format!(
-                                "CREATE SEQUENCE {} AS {} START WITH {} INCREMENT BY {} MINVALUE {} MAXVALUE {} {};",
-                                qualified_name(&diff.name, db_type, schema),
-                                source.data_type,
-                                source.start_value,
-                                source.increment,
-                                source.min_value,
-                                source.max_value,
-                                if source.cycle { "CYCLE" } else { "NO CYCLE" }
+                            let name = qualified_name(&diff.name, db_type, schema);
+                            let cycle = if source.cycle { "CYCLE" } else { "NO CYCLE" };
+                            lines.push(DdlDialectProfile::render_template(
+                                template,
+                                &[
+                                    ("name", &name),
+                                    ("data_type", &source.data_type),
+                                    ("start_value", &source.start_value),
+                                    ("increment", &source.increment),
+                                    ("min_value", &source.min_value),
+                                    ("max_value", &source.max_value),
+                                    ("cycle", cycle),
+                                ],
                             ));
                         } else {
                             lines.push(format!(
@@ -3652,26 +3657,34 @@ fn generate_schema_sync_sql_inner(
                     }
                 }
                 "removed" => {
-                    if profile.supports_sequence_ddl {
+                    if let Some(template) = profile.sequence_drop_template {
                         lines.push(format!("-- Drop sequence: {}", diff.name));
-                        lines.push(format!("DROP SEQUENCE {}{cascade};", qualified_name(&diff.name, db_type, schema)));
+                        let name = qualified_name(&diff.name, db_type, schema);
+                        lines.push(DdlDialectProfile::render_template(
+                            template,
+                            &[("name", &name), ("cascade", cascade)],
+                        ));
                     } else {
                         lines.push(format!("-- Skip drop sequence {}: unsupported on target", diff.name));
                     }
                 }
                 "modified" => {
                     if let Some(source) = &diff.source {
-                        if profile.supports_sequence_ddl {
+                        if let Some(template) = profile.sequence_alter_template {
                             lines.push(format!("-- Alter sequence: {}", diff.name));
-                            lines.push(format!(
-                                "ALTER SEQUENCE {} AS {} START WITH {} INCREMENT BY {} MINVALUE {} MAXVALUE {} {};",
-                                qualified_name(&diff.name, db_type, schema),
-                                source.data_type,
-                                source.start_value,
-                                source.increment,
-                                source.min_value,
-                                source.max_value,
-                                if source.cycle { "CYCLE" } else { "NO CYCLE" }
+                            let name = qualified_name(&diff.name, db_type, schema);
+                            let cycle = if source.cycle { "CYCLE" } else { "NO CYCLE" };
+                            lines.push(DdlDialectProfile::render_template(
+                                template,
+                                &[
+                                    ("name", &name),
+                                    ("data_type", &source.data_type),
+                                    ("start_value", &source.start_value),
+                                    ("increment", &source.increment),
+                                    ("min_value", &source.min_value),
+                                    ("max_value", &source.max_value),
+                                    ("cycle", cycle),
+                                ],
                             ));
                         } else {
                             lines.push(format!("-- Skip alter sequence {}: unsupported on target", diff.name));
@@ -3688,36 +3701,50 @@ fn generate_schema_sync_sql_inner(
         lines.push(String::new());
         lines.push("-- Rules".to_string());
         for diff in rule_diffs {
-            if !profile.supports_rule_ddl {
+            if profile.rule_drop_template.is_none() && !profile.supports_rule_ddl {
                 lines.push(format!("-- Skip rule {}: target database does not support RULE DDL", diff.name));
                 continue;
             }
             match diff.diff_type.as_str() {
                 "added" => {
                     if let Some(source) = &diff.source {
-                        lines.push(format!("-- Create rule: {}", diff.name));
-                        lines.push(source.definition.clone());
+                        if profile.supports_rule_ddl {
+                            lines.push(format!("-- Create rule: {}", diff.name));
+                            lines.push(source.definition.clone());
+                        } else {
+                            lines
+                                .push(format!("-- Skip rule {}: target database does not support RULE DDL", diff.name));
+                        }
                     }
                 }
                 "removed" => {
-                    lines.push(format!("-- Drop rule: {}", diff.name));
-                    if let Some(source) = &diff.source {
-                        lines.push(format!(
-                            "DROP RULE IF EXISTS {} ON {};",
-                            diff.name,
-                            qualified_name(&source.table_name, db_type, schema)
-                        ));
+                    if let Some(template) = profile.rule_drop_template {
+                        lines.push(format!("-- Drop rule: {}", diff.name));
+                        if let Some(source) = &diff.source {
+                            let table_name = qualified_name(&source.table_name, db_type, schema);
+                            lines.push(DdlDialectProfile::render_template(
+                                template,
+                                &[("rule_name", &diff.name), ("table_name", &table_name)],
+                            ));
+                        }
+                    } else {
+                        lines.push(format!("-- Skip rule {}: target database does not support RULE DDL", diff.name));
                     }
                 }
                 "modified" => {
                     if let Some(source) = &diff.source {
-                        lines.push(format!("-- Alter rule: {}", diff.name));
-                        lines.push(format!(
-                            "DROP RULE IF EXISTS {} ON {};",
-                            diff.name,
-                            qualified_name(&source.table_name, db_type, schema)
-                        ));
-                        lines.push(source.definition.clone());
+                        if let Some(template) = profile.rule_drop_template {
+                            lines.push(format!("-- Alter rule: {}", diff.name));
+                            let table_name = qualified_name(&source.table_name, db_type, schema);
+                            lines.push(DdlDialectProfile::render_template(
+                                template,
+                                &[("rule_name", &diff.name), ("table_name", &table_name)],
+                            ));
+                            lines.push(source.definition.clone());
+                        } else {
+                            lines
+                                .push(format!("-- Skip rule {}: target database does not support RULE DDL", diff.name));
+                        }
                     }
                 }
                 _ => {}
@@ -3731,17 +3758,17 @@ fn generate_schema_sync_sql_inner(
         lines.push("-- Owners".to_string());
         for diff in owner_diffs {
             if let (Some(source), Some(_target)) = (&diff.source, &diff.target) {
-                if profile.supports_owner_ddl {
+                if let Some(template) = profile.owner_alter_template {
                     let object_type = match source.object_type.as_str() {
                         "TABLE" => "TABLE",
                         "VIEW" => "VIEW",
                         "SEQUENCE" => "SEQUENCE",
                         _ => "TABLE",
                     };
-                    lines.push(format!(
-                        "ALTER {object_type} {} OWNER TO {};",
-                        qualified_name(&diff.object_name, db_type, schema),
-                        source.owner
+                    let name = qualified_name(&diff.object_name, db_type, schema);
+                    lines.push(DdlDialectProfile::render_template(
+                        template,
+                        &[("object_type", object_type), ("name", &name), ("owner", &source.owner)],
                     ));
                 } else {
                     lines.push(format!("-- Skip OWNER change for {}: unsupported on target", diff.object_name));
@@ -8185,5 +8212,95 @@ mod tests {
             Some("character(100)".to_string()),
             "Custom params already wrapped in parentheses should be kept as-is"
         );
+    }
+
+    #[test]
+    fn postgres_function_sequence_rule_owner_use_profile_templates() {
+        let fn_diff = FunctionDiff {
+            diff_type: "added".into(),
+            name: "f1".into(),
+            source: Some(FunctionInfo {
+                name: "f1".into(),
+                function_type: "FUNCTION".into(),
+                data_type: "int".into(),
+                definition: "RETURNS int LANGUAGE sql AS $$ SELECT 1 $$".into(),
+                arguments: "".into(),
+            }),
+            target: None,
+            changes: vec![],
+        };
+        let seq_diff = SequenceDiff {
+            diff_type: "added".into(),
+            name: "s1".into(),
+            source: Some(SequenceInfo {
+                name: "s1".into(),
+                data_type: "bigint".into(),
+                start_value: "1".into(),
+                min_value: "1".into(),
+                max_value: "100".into(),
+                increment: "1".into(),
+                cycle: false,
+                last_value: None,
+            }),
+            target: None,
+            changes: vec![],
+        };
+        let rule_diff = RuleDiff {
+            diff_type: "removed".into(),
+            name: "r1".into(),
+            source: Some(RuleInfo {
+                name: "r1".into(),
+                table_name: "t1".into(),
+                definition: "CREATE RULE r1 AS ON INSERT TO t1 DO NOTHING".into(),
+            }),
+            target: None,
+            changes: vec![],
+        };
+        let owner_diff = OwnerDiff {
+            diff_type: "modified".into(),
+            object_name: "t1".into(),
+            source: Some(OwnerInfo { object_name: "t1".into(), object_type: "TABLE".into(), owner: "app".into() }),
+            target: Some(OwnerInfo { object_name: "t1".into(), object_type: "TABLE".into(), owner: "old".into() }),
+            changes: vec![],
+        };
+
+        let sql = generate_schema_sync_sql(
+            &[],
+            &[fn_diff],
+            &[seq_diff],
+            &[rule_diff],
+            &[owner_diff],
+            DatabaseType::Postgres,
+            Some("public"),
+            true,
+            None,
+            &[],
+        );
+        assert!(sql.contains("CREATE OR REPLACE FUNCTION"), "{sql}");
+        assert!(sql.contains("CREATE SEQUENCE"), "{sql}");
+        assert!(sql.contains("NO CYCLE"), "{sql}");
+        assert!(sql.contains("DROP RULE IF EXISTS r1 ON"), "{sql}");
+        assert!(sql.contains("OWNER TO app"), "{sql}");
+        assert!(sql.contains("CASCADE"), "{sql}");
+    }
+
+    #[test]
+    fn mysql_skips_function_sequence_when_templates_absent() {
+        let fn_diff = FunctionDiff {
+            diff_type: "added".into(),
+            name: "f1".into(),
+            source: Some(FunctionInfo {
+                name: "f1".into(),
+                function_type: "FUNCTION".into(),
+                data_type: "int".into(),
+                definition: "RETURNS int RETURN 1".into(),
+                arguments: "".into(),
+            }),
+            target: None,
+            changes: vec![],
+        };
+        let sql = generate_schema_sync_sql(&[], &[fn_diff], &[], &[], &[], DatabaseType::Mysql, None, false, None, &[]);
+        assert!(sql.contains("-- Skip function f1"), "{sql}");
+        assert!(!sql.contains("CREATE FUNCTION"), "{sql}");
     }
 }

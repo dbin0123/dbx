@@ -730,4 +730,22 @@ mod tests {
         assert_eq!(result.statement_count, 0);
         assert!(result.error.is_none());
     }
+
+    #[tokio::test]
+    async fn execute_script_with_2pc_propagates_structured_failure_fields() {
+        let state = test_app_state().await;
+        let result = execute_script_with_2pc_core(
+            state,
+            "missing-conn".to_string(),
+            "testdb".to_string(),
+            vec!["CREATE TABLE t1 (id INT)".to_string(), "CREATE TABLE t2 (id INT)".to_string()],
+            None,
+        )
+        .await;
+
+        assert!(result.status == "rolled_back" || result.status == "mixed", "status={}", result.status);
+        assert_eq!(result.statement_count, 2);
+        assert!(result.error.as_ref().is_some_and(|e| !e.is_empty()));
+        assert_eq!(result.executed_count, 0);
+    }
 }

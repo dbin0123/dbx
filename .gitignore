@@ -64,4 +64,3 @@ DBX_*_x64-portable.zip
 .pnpm-store/*
 .dbx-web
 .npmrc
-*.err

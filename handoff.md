@@ -1,87 +1,113 @@
 # 🤝 Context Handoff
 
 ## Meta
-- **exported_at**: 2026-07-04T08:28:27+08:00
+- **exported_at**: 2026-07-24T21:38:36.3992945+08:00
 - **exported_from**: opencode
-- **session_id**: 790504
+- **session_id**: a8f3c1
 
 ## Project
 - **name**: dbx
-- **stack**: Rust, Tauri 2, Vue 3, TypeScript, shadcn-vue, Tailwind CSS, pnpm
+- **stack**: Rust, TypeScript, Vue 3, Tauri, Axum, PNPM
 - **root**: D:\Developments\jetbrains\workspace\rust\dbx
 - **package_manager**: pnpm
 
 ## Current Task
-在"比较架构"（Schema Diff）页面中增强字段映射规则功能。当源和目标数据库类型不同时（如 MySQL→达梦），支持用户自定义字段类型映射关系，每条映射可控制参数策略（Preserve/Custom），并提供常见数据库对的预设映射。
+We are finishing the review-driven stabilization of the Schema Diff and synchronization tool. The main active blocker is in `crates/dbx-core/src/query.rs`, specifically `execute_schema_diff_deploy`, which currently distinguishes `committed`, `rolled_back`, and `mixed`, but still needs a stronger DDL atomicity model based on both target database behavior and SQL type semantics. This affects the Desktop and Web deploy flow exposed through `src-tauri/src/commands/query.rs`, `crates/dbx-web/src/routes/query.rs`, and the frontend orchestration in `apps/desktop/src/components/diff/SchemaDiffDialog.vue`. In parallel, we documented the overall problem and optimization plan in a new requirements doc and completed a long-term DDL architecture refactor that introduced `DdlDialectProfile` and `type_rewrite` for cross-database DDL generation.
 
 ## Progress
-- [x] 后端：添加 ParamStrategy 枚举（Preserve/Custom），更新 FieldMapping 结构体
-- [x] 后端：重写 apply_with_params 支持三种策略
-- [x] 后端：修复 type_supports_params 中 source_type trim 后切片错位 bug
-- [x] 后端：修复 diff_columns_with_compatibility 使用 apply 而非 apply_with_params 的问题
-- [x] 后端：5 个单元测试覆盖三种策略及边界情况
-- [x] 后端：build.rs 自动扫描 plugins/dialects/*.yaml，编译时嵌入所有方言 YAML
-- [x] 后端：register_core_dialects() 在首次使用时将所有方言注册到全局 DialectRegistry
-- [x] 后端：type_supports_params 改用 get_by_kind 查找方言（解决注册 key 与 label 不一致问题）
-- [x] 后端：移除硬编码的 type_supports_params_hardcoded 回退逻辑
-- [x] 前端：更新 FieldMappingEntry 类型（paramStrategy + customParams）
-- [x] 前端：创建 fieldMappingPresets.ts（MySQL→达梦/PostgreSQL/Oracle）
-- [x] 前端：重写 FieldMappingPanel.vue（预设选择、参数策略下拉、自定义输入）
-- [x] 前端：更新 SchemaDiffDialog.vue 序列化格式
-- [x] i18n：更新/新增 7 种语言的 fieldMapping 翻译
-- [x] 后端测试通过（5/5）
+- [x] Merged latest `origin/main` into local `main`, then merged local `main` into local `cmp`
+- [x] Preserved cmp branch functionality after merge, including schema-diff deploy and rollback completeness changes
+- [x] Replaced fake per-statement 2PC deploy path with `execute_schema_diff_deploy` single-connection deploy result flow
+- [x] Unified Schema Diff DDL panel execution and deploy-review confirmation through the same guarded frontend path (`executeDeploySql`)
+- [x] Added structured rollback completeness fields: `rollbackCompleteness` and `missingRollbackObjects`
+- [x] Blocked incomplete rollback execution in the frontend UI
+- [x] Fixed `two_phase_commit` mixed-status logic to avoid re-running `commit()` as a probe
+- [x] Added `detectTableRenames` option and separated table-rename detection from column rename detection
+- [x] Aligned Schema Diff field mapping type source with table structure editor using `listDataTypes(connectionId, database)` + `getDataTypeOptions(dbType)`
+- [x] Introduced `crates/dbx-core/src/sql_dialect/ddl_profile.rs`
+- [x] Introduced `crates/dbx-core/src/sql_dialect/type_rewrite.rs`
+- [x] Migrated CREATE/ALTER table, index, FK, comment, trigger, rename, and permission SQL generation onto profile/type-rewrite driven behavior
+- [x] Reworked MySQL -> Access CREATE TABLE generation to use Access-compatible types and `COUNTER`
+- [x] Added a new documentation artifact capturing current issues and long-term optimization plan in `需求问题/2026年7月24日-结构比对与同步工具-问题与优化方案.md`
+- [ ] Finish the remaining review blocker: make `execute_schema_diff_deploy` classify DDL atomicity by target database + SQL semantics instead of only by pool path
+- [ ] Add explicit tests for MySQL / Oracle non-transactional DDL partial-failure status propagation
+- [ ] Optionally finish template-level profile datafication for function / sequence / rule / owner SQL shapes if continuing the architecture cleanup after the blocker is fixed
 
 ## Active Files
-- `crates/dbx-core/build.rs` — 构建脚本，扫描 plugins/dialects/ 目录，生成嵌入所有 YAML 的 core_dialects.rs
-- `crates/dbx-core/src/schema_diff.rs` — FieldMapping 结构体、ParamStrategy 枚举、apply/apply_with_params 逻辑、type_supports_params（改用 get_by_kind）、diff_columns_with_compatibility
-- `crates/dbx-core/src/sql_dialect/dialect_loader.rs` — register_core_dialects() 函数，编译时嵌入并注册所有方言 YAML
-- `crates/dbx-core/src/sql_dialect.rs` — lazy_init() 调用 register_core_dialects()
-- `apps/desktop/src/types/schemaDiff.ts` — FieldMappingEntry / FieldMappingParamStrategy 类型定义
-- `apps/desktop/src/lib/fieldMappingPresets.ts` — 预设映射定义（MySQL→达梦/PostgreSQL/Oracle）
-- `apps/desktop/src/components/diff/FieldMappingPanel.vue` — 字段映射 UI 组件（预设、参数策略、自定义参数）
-- `apps/desktop/src/components/diff/SchemaDiffDialog.vue` — Schema Diff 对话框，序列化 fieldMappings
-- `apps/desktop/src/components/diff/SchemaDiffConfigStep.vue` — 配置步骤，集成 FieldMappingPanel
-- `apps/desktop/src/i18n/locales/en.ts` — 英文翻译（已更新）
-- `apps/desktop/src/i18n/locales/zh-CN.ts` — 简体中文翻译（已新增）
-- `apps/desktop/src/i18n/locales/zh-TW.ts` — 繁体中文翻译（已新增）
-- `apps/desktop/src/i18n/locales/ja.ts` — 日文翻译（已新增）
-- `apps/desktop/src/i18n/locales/es.ts` — 西班牙语翻译（已新增）
-- `apps/desktop/src/i18n/locales/it.ts` — 意大利语翻译（已新增）
-- `apps/desktop/src/i18n/locales/pt-BR.ts` — 葡萄牙语翻译（已新增）
-- `docs/superpowers/specs/2026-07-03-field-mapping-rules-design.md` — 设计文档
-- `docs/superpowers/plans/2026-07-03-field-mapping-rules.md` — 实现计划
+- `handoff.md` — this handoff document for the next AI
+- `需求问题/2026年7月24日-结构比对与同步工具-问题与优化方案.md` — new problem statement and optimization plan based on current code
+- `crates/dbx-core/src/query.rs` — `SchemaDiffDeployResult` and `execute_schema_diff_deploy`; current blocker lives here
+- `src-tauri/src/commands/query.rs` — Tauri deploy endpoint now delegates to `execute_schema_diff_deploy`
+- `crates/dbx-web/src/routes/query.rs` — Web deploy route now delegates to `execute_schema_diff_deploy`; includes tests
+- `crates/dbx-core/src/two_phase_commit.rs` — mixed / rolled_back logic no longer probes by re-calling `commit()`
+- `crates/dbx-core/src/schema_diff.rs` — main schema diff DDL generation path; profile-driven create/alter/index/fk/comment/trigger logic
+- `crates/dbx-core/src/script_generator.rs` — idempotent wrapper and lock-timeout behavior now profile-driven
+- `crates/dbx-core/src/sql_dialect.rs` — exports for new ddl_profile and type_rewrite modules
+- `crates/dbx-core/src/sql_dialect/ddl_profile.rs` — target `DatabaseType` profile registry and DDL behavior knobs
+- `crates/dbx-core/src/sql_dialect/type_rewrite.rs` — type rewrite pipeline and auto-increment helpers
+- `apps/desktop/src/components/diff/SchemaDiffDialog.vue` — unified protected deploy flow, rollback completeness handling, field mapping dialog wiring
+- `apps/desktop/src/components/diff/SchemaDiffDdlPanel.vue` — rollback incomplete banner and execution block props
+- `apps/desktop/src/components/diff/SchemaDiffDeployStep.vue` — deploy-step rollback incomplete banner and disabled deploy state
+- `apps/desktop/src/lib/schema/deployTxResult.ts` — deploy result status/message mapping including `mixed` and `rolled_back`
+- `apps/desktop/src/lib/schema/__tests__/deployTxResult.spec.ts` — frontend unit tests for deploy result interpretation
+- `apps/desktop/src/lib/schema/schemaDiff.ts` — frontend types for `SchemaDiffPreparation`, rollback completeness, and missing rollback objects
+- `apps/desktop/src/components/diff/FieldMappingPanel.vue` — field mapping types now use the same live/static source strategy as table structure editor
+- `apps/desktop/src/components/diff/FieldMappingDialog.vue` — passes source/target connection and database context into field mapping panel
+- `apps/desktop/src/types/database.ts` — expanded frontend deploy result / transaction fields
+- `apps/desktop/src/i18n/locales/en.ts` — new rollback incomplete strings and detect-table-renames strings
+- `apps/desktop/src/i18n/locales/zh-CN.ts` — Chinese strings for rollback incomplete and table rename detection
+- `apps/desktop/src/i18n/locales/zh-TW.ts` — same strings for Traditional Chinese
+- `apps/desktop/src/i18n/locales/es.ts` — same strings for Spanish
+- `apps/desktop/src/i18n/locales/it.ts` — same strings for Italian
+- `apps/desktop/src/i18n/locales/ja.ts` — same strings for Japanese
+- `apps/desktop/src/i18n/locales/pt-BR.ts` — same strings for Brazilian Portuguese
+- `crates/dbx-web/src/state.rs` — added `WebState::for_tests` helper to avoid missing new fields in scattered test fixtures
+- `crates/dbx-web/src/routes/connection.rs` — updated tests to use `WebState::for_tests`
+- `crates/dbx-web/src/routes/mongo.rs` — updated tests to use `WebState::for_tests`
+- `crates/dbx-core/tests/api_contract_verification.rs` — full options initializer updated with `detect_table_renames`
+- `crates/dbx-core/tests/bidirectional_diff_e2e.rs` — rename detection test updated to enable table rename detection explicitly
 
 ## Blocker
-None
+Current blocker: `execute_schema_diff_deploy` still classifies DDL rollback safety too coarsely. It currently treats some paths as atomic based on pool kind, but the review requires atomicity to be decided by **database behavior + SQL semantics**, not just connection path. In particular, MySQL DDL can implicitly commit, so returning `rolled_back` with `executed_count = 0` remains misleading in some real-world DDL failure paths.
 
 ## Key Decisions
-1. Strip 策略已移除（与 Preserve 在目标不支持参数时行为重复），只保留 Preserve + Custom 两个策略
-2. Preserve 策略：目标类型支持参数则保留源类型参数，不支持则自动丢弃
-3. Custom 策略：允许用户手动输入自定义参数（如 `(200)` 或 `(10,2)`）
-4. 预设映射从 YAML 方言定义推导 + 代码硬编码补充，目前支持 MySQL→达梦/PostgreSQL/Oracle 三组
-5. diff_columns_with_compatibility 必须使用 apply_with_params（带参数保留），而非 apply（裸类型映射）
-6. **方言 YAML 通过 build.rs 自动扫描 plugins/dialects/ 目录，编译时嵌入并注册到 DialectRegistry**，无需硬编码类型列表
-7. type_supports_params 使用 get_by_kind(kind) 查找方言，而非 get(kind.label())，避免因注册 key 不同导致查找失败
-8. register_core_dialects() 通过 lazy_init() 在首次解析方言时触发，使用 Once 确保只执行一次
+- The table structure editor must **not** be modified further in this task.
+- Schema Diff field mapping must use the same type source strategy as table structure editor: `listDataTypes(connectionId, database)` plus `getDataTypeOptions(dbType)` fallback.
+- Do **not** revert to `listDialectDataTypes` for field mapping dropdowns.
+- Cross-database DDL generation must be driven by `DdlDialectProfile` + `type_rewrite`, not by scattered `if Access` / `if Mysql` / `if SqlServer` branches in generators.
+- `profile_for(DatabaseType)` is the only acceptable place to register target-database-specific DDL behavior.
+- Incomplete rollback must remain structurally represented (`rollbackCompleteness`, `missingRollbackObjects`) and blocked in the UI.
+- Schema Diff deploy execution paths must remain unified through a single protected frontend flow using `executeWithProductionSqlGuard`.
+- `two_phase_commit` must never determine partial commit state by re-running `commit()`.
 
 ## Environment
-- **Node**: v22.20.0
-- **Rust**: rustc 1.96.0 / cargo 1.96.0
-- **Branch**: cmp
-- **Dev command**: `make dev` (Tauri desktop) / `make dev-web` + `make dev-backend` (web)
-- **Rust test**: `cargo test -p dbx-core --no-default-features -- <test_name>`
-- **Type check**: `npx vue-tsc --noEmit`
+- Runtime version: not fully verified locally; Rust workspace compile on this Windows host is limited by missing OpenSSL/Perl toolchain for some crates
+- Relevant env vars: GitHub Actions workflow issues referenced `I18N_BOT_TOKEN`; local work did not rely on it
+- Dev command: `pnpm check` for frontend; Rust checks typically via `cargo check` / `cargo test`
+- Package manager: `pnpm`
+- Platform: Windows local development, CI issues referenced Linux runners
+- Known local limitation: `cargo check` for the full workspace can fail or hang due to OpenSSL build prerequisites (`perl` missing) on this machine
 
 ## Next Steps
-1. 启动 Tauri 开发环境（`make dev`），在浏览器中验证字段映射 UI 是否正常显示
-2. 验证预设映射加载和参数策略切换交互
-3. 实际执行一次跨库 Schema Diff（如 MySQL→达梦），检查生成的 DDL/SQL 是否正确应用映射规则
-4. 考虑是否需要为其他数据库对添加预设映射（如 MySQL→SQL Server、PostgreSQL→达梦 等）
+1. Replace the current `ddl_atomic` pool-kind heuristic in `execute_schema_diff_deploy` with an explicit atomicity classifier based on target database + SQL semantics.
+2. Introduce a clear `unsupported` or `partial` status model if needed, instead of overloading `mixed` and `rolled_back`.
+3. Add targeted tests for MySQL / Oracle non-transactional DDL partial failure and status propagation to Desktop/Web/UI.
+4. Only after the blocker is closed, continue the optional optimization of moving object-level SQL templates (function / sequence / rule / owner) fully into `DdlDialectProfile` data.
 
 ## For the Next AI
 - Read all Active Files before doing anything.
 - Do NOT change Key Decisions without flagging first.
-- This feature is on branch `cmp` — work on that branch.
-- Backend tests pass but compilation with DuckDB feature (`cargo test -p dbx-core` without `--no-default-features`) takes very long — use `--no-default-features` for quick iteration.
-- The `FieldMapping::apply()` simple method still exists for backward compatibility but should NOT be used in new code — always prefer `apply_with_params()`.
-- Core dialect YAMLs are embedded at compile time via `crates/dbx-core/build.rs`. To add a new dialect YAML, just drop the file in `plugins/dialects/` and rebuild — no code changes needed.
+- Start from `crates/dbx-core/src/query.rs`; that is the last review blocker that is still not fully solved.
+- Treat the new DDL profile architecture as the canonical direction; do not reintroduce scattered database-specific generator branches.
+- Do not touch table structure editor code.
+- Use the requirements doc in `需求问题/2026年7月24日-结构比对与同步工具-问题与优化方案.md` as the planning baseline.
+
+---
+
+✅ handoff.md written to project root.
+Switch to your next tool and run /handoff-load to continue.
+
+Summary:
+- Task: finalize Schema Diff deploy correctness and long-term DDL profile architecture
+- Next step: replace pool-kind DDL atomicity heuristic with database+SQL semantic classification in execute_schema_diff_deploy
+- Blocker: MySQL/Oracle and other non-transactional DDL paths may still report rolled_back too optimistically
