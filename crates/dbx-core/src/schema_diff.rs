@@ -4668,6 +4668,8 @@ mod tests {
             DatabaseType::Mysql,
             Some("dbx_issue_4114"),
             false,
+            None,
+            &[],
         );
 
         assert!(sql.contains("DROP INDEX `test_UNIQUE` ON `dbx_issue_4114`.`test`;"));
