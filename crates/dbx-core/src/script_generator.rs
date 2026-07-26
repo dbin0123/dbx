@@ -844,13 +844,13 @@ fn generate_shadow_table_script(
 
             if let Some(dc) = data_compare {
                 if dc.sync_sql.contains(&diff.name) {
-                    lines.push(format!("-- Step 2b: Apply data sync on shadow table"));
+                    lines.push("-- Step 2b: Apply data sync on shadow table".to_string());
                     lines.push(dc.sync_sql.clone());
                     lines.push(String::new());
                 }
             }
 
-            lines.push(format!("-- Step 3: Begin transaction and swap tables"));
+            lines.push("-- Step 3: Begin transaction and swap tables".to_string());
             lines.push("BEGIN;".to_string());
             lines.push(format!("ALTER TABLE {} RENAME TO _old_{};", diff.name, diff.name));
             lines.push(format!("ALTER TABLE {shadow_name} RENAME TO {};", diff.name));
@@ -862,7 +862,7 @@ fn generate_shadow_table_script(
             lines.push("COMMIT;".to_string());
             lines.push(String::new());
 
-            lines.push(format!("-- Step 4: Drop old table (after verification)"));
+            lines.push("-- Step 4: Drop old table (after verification)".to_string());
             lines.push(format!("DROP TABLE IF EXISTS _old_{};", diff.name));
             lines.push(String::new());
         }
@@ -961,7 +961,7 @@ impl BatchController {
 
         let total = statements.len();
         let batch_size = self.config.max_statements_per_batch.max(1);
-        let num_batches = (total + batch_size - 1) / batch_size;
+        let num_batches = total.div_ceil(batch_size);
         let engine = &self.engine;
 
         let mut batches = Vec::new();
@@ -1103,10 +1103,8 @@ pub fn generate_enhanced_rollback_sql(
             idempotent_strategy: strategy,
         };
         Some(generate_rollback_script(graph, &options))
-    } else if let Some(sql) = &schema_diff.rollback_sync_sql {
-        Some(apply_idempotent_strategy(sql, db_type, strategy))
     } else {
-        None
+        schema_diff.rollback_sync_sql.as_ref().map(|sql| apply_idempotent_strategy(sql, db_type, strategy))
     }
 }
 
@@ -1283,7 +1281,7 @@ mod tests {
     use crate::sql_dialect::descriptor::{
         DialectCapabilityDescriptor, DialectKind, CAP_CREATE_OR_REPLACE, CAP_CREATE_TABLE, CAP_IF_NOT_EXISTS,
     };
-    use crate::types::{ColumnInfo, IndexInfo, TableInfo, TriggerInfo};
+    use crate::types::{ColumnInfo, TableInfo};
 
     fn make_table_info(name: &str) -> TableInfo {
         TableInfo {
