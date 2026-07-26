@@ -220,9 +220,11 @@ pub async fn execute_in_transaction(
     .await
 }
 
-/// Schema Diff deploy: single-connection real transaction (exact-once on success/failure).
-/// Each participant is a single statement; if all prepare successfully they all commit,
-/// otherwise they roll back and report Mixed status.
+/// Schema Diff deploy entrypoint (legacy command name kept for API compatibility).
+///
+/// Executes as one single-connection transaction via [`execute_schema_diff_deploy`].
+/// On failure, status is `rolled_back` when DDL/DML atomicity is guaranteed for the
+/// target, otherwise `mixed` with a best-effort `executed_count` (e.g. MySQL/Oracle DDL).
 pub async fn execute_script_with_2pc_core(
     app: Arc<AppState>,
     connection_id: String,
@@ -230,7 +232,6 @@ pub async fn execute_script_with_2pc_core(
     statements: Vec<String>,
     schema: Option<String>,
 ) -> dbx_core::query::SchemaDiffDeployResult {
-    // Single-connection real transaction (not per-statement auto-commit 2PC).
     dbx_core::query::execute_schema_diff_deploy(&app, &connection_id, &database, &statements, schema.as_deref()).await
 }
 

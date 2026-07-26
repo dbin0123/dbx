@@ -813,6 +813,10 @@ function handleDeployReview() {
 }
 
 async function handleDeploy() {
+  if (deploySqlMode.value === "rollback" && rollbackCompleteness.value === "incomplete") {
+    toast(t("diff.rollbackIncompleteBlocked"), 5000);
+    return;
+  }
   showConfirmDialog.value = true;
 }
 

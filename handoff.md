@@ -20,7 +20,7 @@ We are finishing the review-driven stabilization of the Schema Diff and synchron
 - [x] Replaced fake per-statement 2PC deploy path with `execute_schema_diff_deploy` single-connection deploy result flow
 - [x] Unified Schema Diff DDL panel execution and deploy-review confirmation through the same guarded frontend path (`executeDeploySql`)
 - [x] Added structured rollback completeness fields: `rollbackCompleteness` and `missingRollbackObjects`
-- [x] Blocked incomplete rollback execution in the frontend UI
+- [x] Blocked incomplete rollback execution in the frontend UI (button disable + toast + confirm-dialog gate)
 - [x] Fixed `two_phase_commit` mixed-status logic to avoid re-running `commit()` as a probe
 - [x] Added `detectTableRenames` option and separated table-rename detection from column rename detection
 - [x] Aligned Schema Diff field mapping type source with table structure editor using `listDataTypes(connectionId, database)` + `getDataTypeOptions(dbType)`
@@ -28,10 +28,12 @@ We are finishing the review-driven stabilization of the Schema Diff and synchron
 - [x] Introduced `crates/dbx-core/src/sql_dialect/type_rewrite.rs`
 - [x] Migrated CREATE/ALTER table, index, FK, comment, trigger, rename, and permission SQL generation onto profile/type-rewrite driven behavior
 - [x] Reworked MySQL -> Access CREATE TABLE generation to use Access-compatible types and `COUNTER`
-- [x] Added a new documentation artifact capturing current issues and long-term optimization plan in `需求问题/2026年7月24日-结构比对与同步工具-问题与优化方案.md`
-- [ ] Finish the remaining review blocker: make `execute_schema_diff_deploy` classify DDL atomicity by target database + SQL semantics instead of only by pool path
-- [ ] Add explicit tests for MySQL / Oracle non-transactional DDL partial-failure status propagation
-- [ ] Optionally finish template-level profile datafication for function / sequence / rule / owner SQL shapes if continuing the architecture cleanup after the blocker is fixed
+- [x] `execute_schema_diff_deploy` classifies atomicity by DB capability (`CAP_TRANSACTIONAL_DDL`) + SQL risk + transactional path
+- [x] Unit tests cover MySQL/Oracle partial DDL failure → `mixed` + executed_count, Postgres → `rolled_back` + 0
+- [x] Frontend `deployTxResult` maps mixed/rolled_back with executedCount/statementCount
+- [x] Merged main into cmp; fixed functional-index test 10-arg call site
+- [ ] Optionally finish template-level profile datafication for function / sequence / rule / owner SQL shapes
+- [ ] Live DB e2e for deploy partial-failure (optional; unit/web structured tests already present)
 
 ## Active Files
 - `handoff.md` — this handoff document for the next AI
@@ -68,7 +70,9 @@ We are finishing the review-driven stabilization of the Schema Diff and synchron
 - `crates/dbx-core/tests/bidirectional_diff_e2e.rs` — rename detection test updated to enable table rename detection explicitly
 
 ## Blocker
-Current blocker: `execute_schema_diff_deploy` still classifies DDL rollback safety too coarsely. It currently treats some paths as atomic based on pool kind, but the review requires atomicity to be decided by **database behavior + SQL semantics**, not just connection path. In particular, MySQL DDL can implicitly commit, so returning `rolled_back` with `executed_count = 0` remains misleading in some real-world DDL failure paths.
+PR #3861 owner review items (2PC fake prepare, structured rollback, status mapping) are implemented on `cmp`.
+Residual risk: no live MySQL/Oracle integration test against a real server for partial DDL failure; classification is covered by pure unit tests + web structured endpoint tests.
+GitHub still may show `mergeable_state: dirty` until rechecked after push.
 
 ## Key Decisions
 - The table structure editor must **not** be modified further in this task.
@@ -89,10 +93,9 @@ Current blocker: `execute_schema_diff_deploy` still classifies DDL rollback safe
 - Known local limitation: `cargo check` for the full workspace can fail or hang due to OpenSSL build prerequisites (`perl` missing) on this machine
 
 ## Next Steps
-1. Replace the current `ddl_atomic` pool-kind heuristic in `execute_schema_diff_deploy` with an explicit atomicity classifier based on target database + SQL semantics.
-2. Introduce a clear `unsupported` or `partial` status model if needed, instead of overloading `mixed` and `rolled_back`.
-3. Add targeted tests for MySQL / Oracle non-transactional DDL partial failure and status propagation to Desktop/Web/UI.
-4. Only after the blocker is closed, continue the optional optimization of moving object-level SQL templates (function / sequence / rule / owner) fully into `DdlDialectProfile` data.
+1. Push latest `cmp` and re-request review on PR #3861 with a short reply mapping each review point to commits.
+2. Optionally add live MySQL/Oracle partial-DDL e2e if CI has those services.
+3. Optional architecture cleanup: move function/sequence/rule/owner templates fully into `DdlDialectProfile` data.
 
 ## For the Next AI
 - Read all Active Files before doing anything.
