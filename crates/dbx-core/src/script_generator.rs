@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::correction::JointCorrectionPlan;
 use crate::data_compare::DataCompareFromTablesPreparation;
-use crate::dml_binding::{BindingEngine, BindingResult};
+use crate::dml_binding::BindingEngine;
 use crate::models::connection::DatabaseType;
 use crate::schema_diff::{
     generate_schema_sync_sql, ColumnCompatibilityWarning, RollbackGraph, SchemaDiffPreparation, TableDiff,
@@ -344,25 +344,28 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
     let mut current = String::new();
     let mut in_string = false;
     let mut string_char = ' ';
+    let mut chars = sql.chars().peekable();
 
-    for ch in sql.chars() {
+    while let Some(ch) = chars.next() {
         if in_string {
             current.push(ch);
             if ch == string_char {
-                in_string = false;
+                // SQL escaped quote: '' or "" stays inside the string.
+                if chars.peek() == Some(&string_char) {
+                    current.push(chars.next().unwrap());
+                } else {
+                    in_string = false;
+                }
             }
+        } else if ch == '\'' || ch == '"' {
+            in_string = true;
+            string_char = ch;
+            current.push(ch);
+        } else if ch == ';' {
+            current.push(ch);
+            statements.push(std::mem::take(&mut current));
         } else {
-            if ch == '\'' || ch == '"' {
-                in_string = true;
-                string_char = ch;
-                current.push(ch);
-            } else if ch == ';' {
-                current.push(ch);
-                statements.push(current.clone());
-                current.clear();
-            } else {
-                current.push(ch);
-            }
+            current.push(ch);
         }
     }
 
@@ -393,14 +396,17 @@ fn wrap_if_not_exists(sql: &str, db_type: DatabaseType) -> String {
         let idx = sql.find("CREATE TABLE").unwrap_or(0) + "CREATE TABLE".len();
         let (prefix, suffix) = sql.split_at(idx);
         format!("{prefix} IF NOT EXISTS{suffix}")
-    } else if upper.starts_with("CREATE INDEX") || upper.starts_with("CREATE UNIQUE INDEX") {
+    } else if upper.starts_with("CREATE UNIQUE INDEX") || upper.starts_with("CREATE INDEX") {
         if !profile.create_index_if_not_exists {
             return sql.to_string();
         }
         if upper.contains("IF NOT EXISTS") {
             return sql.to_string();
         }
-        let idx = sql.find("CREATE").unwrap_or(0) + "CREATE".len();
+        // PostgreSQL/MySQL: CREATE [UNIQUE] INDEX IF NOT EXISTS name ON ...
+        // (not CREATE IF NOT EXISTS INDEX ...)
+        let keyword = if upper.starts_with("CREATE UNIQUE INDEX") { "CREATE UNIQUE INDEX" } else { "CREATE INDEX" };
+        let idx = upper.find(keyword).unwrap_or(0) + keyword.len();
         let (prefix, suffix) = sql.split_at(idx);
         format!("{prefix} IF NOT EXISTS{suffix}")
     } else if upper.starts_with("DROP TABLE") {
@@ -464,21 +470,55 @@ fn wrap_create_or_replace(sql: &str, db_type: DatabaseType) -> String {
 fn wrap_conditional_check(sql: &str, db_type: DatabaseType) -> String {
     use crate::sql_dialect::ddl_profile::profile_for;
     let profile = profile_for(db_type);
-    let trimmed = sql.trim_start();
+    let trimmed = sql.trim().trim_end_matches(';').trim_end();
     let upper = trimmed.to_uppercase();
     let first_word = upper_first_word(trimmed);
 
     if first_word == "CREATE" && upper.contains("TABLE") {
-        let table_name = extract_table_name(trimmed, "TABLE");
-        // Prefer engines that expose information_schema-style table catalogs.
+        // Prefer native IF NOT EXISTS — never append bare DDL after a SELECT CASE
+        // (SELECT does not execute the string payload).
         if profile.create_table_if_not_exists {
-            return format!(
-                "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table_name}') THEN 'EXECUTE: {0}' ELSE 'TABLE_EXISTS: {table_name}' END;\n{0}",
-                trimmed.replace('\'', "''"),
-                table_name = table_name
-            );
+            return wrap_if_not_exists(sql, db_type);
         }
-    } else if first_word == "DROP" {
+        let table_name = extract_table_name(trimmed, "TABLE");
+        let name_literal = table_name.replace('\'', "''");
+        let ddl_literal = trimmed.replace('\'', "''");
+        return match db_type {
+            DatabaseType::Postgres
+            | DatabaseType::Gaussdb
+            | DatabaseType::OpenGauss
+            | DatabaseType::Kingbase
+            | DatabaseType::Highgo
+            | DatabaseType::Vastbase
+            | DatabaseType::Uxdb
+            | DatabaseType::Redshift => {
+                format!(
+                    "DO $dbx_idempotent$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM information_schema.tables\n    WHERE table_name = lower('{name_literal}')\n       OR table_name = '{name_literal}'\n  ) THEN\n    EXECUTE $dbx_ddl${trimmed}$dbx_ddl$;\n  END IF;\nEND\n$dbx_idempotent$;"
+                )
+            }
+            DatabaseType::Oracle
+            | DatabaseType::Dameng
+            | DatabaseType::OceanbaseOracle
+            | DatabaseType::Yashandb
+            | DatabaseType::Xugu
+            | DatabaseType::Iris => {
+                // ORA-00955: name is already used by an existing object
+                format!(
+                    "BEGIN\n  EXECUTE IMMEDIATE '{ddl_literal}';\nEXCEPTION\n  WHEN OTHERS THEN\n    IF SQLCODE != -955 THEN RAISE; END IF;\nEND;"
+                )
+            }
+            _ => {
+                format!("-- ConditionalCheck: run only if table {table_name} does not exist\n{trimmed};")
+            }
+        };
+    }
+
+    if first_word == "DROP" {
+        let rebuilt = format!("{trimmed};");
+        let guarded = wrap_if_not_exists(&rebuilt, db_type);
+        if guarded != rebuilt && guarded.contains("IF EXISTS") {
+            return guarded;
+        }
         let obj_type = if upper.contains("TABLE") {
             "TABLE"
         } else if upper.contains("INDEX") {
@@ -488,12 +528,7 @@ fn wrap_conditional_check(sql: &str, db_type: DatabaseType) -> String {
         };
         if !obj_type.is_empty() {
             let obj_name = extract_table_name(trimmed, obj_type);
-            return format!(
-                "-- Conditional: only execute if {obj_type} {obj_name} exists\n{trimmed}",
-                obj_type = obj_type,
-                obj_name = obj_name,
-                trimmed = trimmed
-            );
+            return format!("-- Conditional: only execute if {obj_type} {obj_name} exists\n{trimmed};");
         }
     }
 
@@ -1276,6 +1311,9 @@ mod tests {
             numeric_precision: None,
             numeric_scale: None,
             character_maximum_length: None,
+            enum_values: None,
+            character_set: None,
+            collation: None,
         }
     }
 
@@ -1447,7 +1485,16 @@ mod tests {
     fn idempotent_create_index_if_not_exists_postgres() {
         let sql = "CREATE INDEX idx_name ON users (name);";
         let result = apply_idempotent_strategy(sql, DatabaseType::Postgres, IdempotentStrategy::IfNotExists);
-        assert!(result.contains("CREATE IF NOT EXISTS"), "Got: {result}");
+        assert!(result.contains("CREATE INDEX IF NOT EXISTS"), "Got: {result}");
+        assert!(!result.contains("CREATE IF NOT EXISTS INDEX"), "wrong IF NOT EXISTS placement: {result}");
+    }
+
+    #[test]
+    fn idempotent_create_unique_index_if_not_exists_postgres() {
+        let sql = "CREATE UNIQUE INDEX idx_email ON users (email);";
+        let result = apply_idempotent_strategy(sql, DatabaseType::Postgres, IdempotentStrategy::IfNotExists);
+        assert!(result.contains("CREATE UNIQUE INDEX IF NOT EXISTS"), "Got: {result}");
+        assert!(!result.contains("CREATE IF NOT EXISTS"), "wrong IF NOT EXISTS placement: {result}");
     }
 
     #[test]
@@ -1522,6 +1569,42 @@ mod tests {
     }
 
     #[test]
+    fn split_sql_respects_escaped_single_quotes() {
+        let sql = "INSERT INTO t VALUES ('it''s ok'); CREATE TABLE u (id INT);";
+        let parts = split_sql_statements(sql);
+        assert_eq!(parts.len(), 2, "parts={parts:?}");
+        assert!(parts[0].contains("it''s ok"), "first={:?}", parts[0]);
+        assert!(parts[1].to_uppercase().contains("CREATE TABLE"), "second={:?}", parts[1]);
+    }
+
+    #[test]
+    fn conditional_check_does_not_emit_unconditional_ddl_after_select() {
+        let sql = "CREATE TABLE users (id INT);";
+        let mysql = apply_idempotent_strategy(sql, DatabaseType::Mysql, IdempotentStrategy::ConditionalCheck);
+        assert!(mysql.contains("CREATE TABLE IF NOT EXISTS"), "mysql={mysql}");
+        assert!(!mysql.contains("THEN 'EXECUTE:"), "must not use inert SELECT CASE: {mysql}");
+
+        let pg = apply_idempotent_strategy(sql, DatabaseType::Postgres, IdempotentStrategy::ConditionalCheck);
+        assert!(pg.contains("DO $dbx_idempotent$") || pg.contains("IF NOT EXISTS"), "pg={pg}");
+        assert!(!pg.contains("THEN 'EXECUTE:"), "must not use inert SELECT CASE: {pg}");
+        // Body is inside EXECUTE dollar-quote, not as a bare follow-up statement.
+        let after_do = pg.find("DO $dbx_idempotent$").map(|i| &pg[i..]).unwrap_or(&pg);
+        assert!(!after_do.contains("\nCREATE TABLE users"), "bare CREATE must not follow check: {pg}");
+
+        let oracle = apply_idempotent_strategy(sql, DatabaseType::Oracle, IdempotentStrategy::ConditionalCheck);
+        assert!(oracle.contains("EXECUTE IMMEDIATE") || oracle.contains("BEGIN"), "oracle={oracle}");
+        assert!(!oracle.contains("THEN 'EXECUTE:"), "must not use inert SELECT CASE: {oracle}");
+    }
+
+    #[test]
+    fn conditional_check_object_exists_path_uses_if_exists_when_available() {
+        let sql = "DROP TABLE users;";
+        let result = apply_idempotent_strategy(sql, DatabaseType::Postgres, IdempotentStrategy::ConditionalCheck);
+        assert!(result.contains("DROP TABLE IF EXISTS") || result.contains("Conditional:"), "Got: {result}");
+        assert!(!result.contains("THEN 'EXECUTE:"), "{result}");
+    }
+
+    #[test]
     fn idempotent_empty_string() {
         let result = apply_idempotent_strategy("", DatabaseType::Mysql, IdempotentStrategy::IfNotExists);
         assert_eq!(result, "");
@@ -1531,8 +1614,10 @@ mod tests {
     fn idempotent_conditional_check_drop() {
         let sql = "DROP TABLE old_data;";
         let result = apply_idempotent_strategy(sql, DatabaseType::Sqlite, IdempotentStrategy::ConditionalCheck);
-        assert!(result.contains("Conditional"), "Got: {result}");
+        // Prefer real IF EXISTS over an inert comment+DDL pair.
+        assert!(result.contains("DROP TABLE IF EXISTS") || result.contains("Conditional"), "Got: {result}");
         assert!(result.contains("old_data"), "Got: {result}");
+        assert!(!result.contains("THEN 'EXECUTE:"), "{result}");
     }
 
     #[test]
@@ -2092,6 +2177,9 @@ mod tests {
                 numeric_precision: None,
                 numeric_scale: None,
                 character_maximum_length: None,
+                enum_values: None,
+                character_set: None,
+                collation: None,
             }),
             target: Some(ColumnInfo {
                 name: "large_val".to_string(),
@@ -2104,6 +2192,9 @@ mod tests {
                 numeric_precision: None,
                 numeric_scale: None,
                 character_maximum_length: None,
+                enum_values: None,
+                character_set: None,
+                collation: None,
             }),
             changes: vec!["data_type BIGINT → INT".to_string()],
         };
@@ -2118,7 +2209,22 @@ mod tests {
 
         let prep = SchemaDiffPreparation { diffs: vec![table_diff], ..Default::default() };
 
-        let _ = crate::dml_binding::DmlCleanRuleRegistry::load_default();
+        // Seed a pair-specific rule so the test does not depend on CWD for YAML files.
+        {
+            use crate::dml_binding::{DmlCleanRule, DmlCleanRuleRegistry};
+            if let Ok(mut registry) = DmlCleanRuleRegistry::global().write() {
+                registry.rules = vec![DmlCleanRule {
+                    name: "bigint_to_int".to_string(),
+                    source_type: "BIGINT".to_string(),
+                    target_type: "INT".to_string(),
+                    max_fidelity: 1.0,
+                    pre_transform_sql: Some(
+                        "UPDATE {table} SET {column} = NULL WHERE {column} > 2147483647".to_string(),
+                    ),
+                    description: None,
+                }];
+            }
+        }
 
         let sql = generate_all_dml_clean_sql(&prep, 0.8);
         assert!(!sql.is_empty(), "DML should be generated for BIGINT→INT");

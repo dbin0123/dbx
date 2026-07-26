@@ -273,11 +273,7 @@ fn append_table_schema_step(
         None
     };
 
-    let rollback_risk = if has_incomplete_triggers {
-        CorrectionRiskLevel::Blocked
-    } else {
-        risk_level
-    };
+    let rollback_risk = if has_incomplete_triggers { CorrectionRiskLevel::Blocked } else { risk_level.clone() };
 
     let rollback_desc = if has_incomplete_triggers {
         format!(

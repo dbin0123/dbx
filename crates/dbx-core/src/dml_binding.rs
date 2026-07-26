@@ -57,7 +57,7 @@ fn normalize_type(t: &str) -> String {
 // ============================================================================
 
 pub struct DmlCleanRuleRegistry {
-    rules: Vec<DmlCleanRule>,
+    pub(crate) rules: Vec<DmlCleanRule>,
 }
 
 impl DmlCleanRuleRegistry {

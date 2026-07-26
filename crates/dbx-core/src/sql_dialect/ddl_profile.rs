@@ -157,7 +157,22 @@ impl DdlDialectProfile {
             QuoteStyle::Backtick => format!("`{}`", name.replace('`', "``")),
             QuoteStyle::DoubleQuote => format!("\"{}\"", name.replace('"', "\"\"")),
             QuoteStyle::Brackets => format!("[{}]", name.replace(']', "]]")),
-            QuoteStyle::UnquotedUpper => name.to_uppercase(),
+            // Oracle: unquoted identifiers fold to uppercase. Mixed-case names and
+            // special characters must be double-quoted with original spelling preserved.
+            QuoteStyle::UnquotedUpper => {
+                let has_lower = name.chars().any(|c| c.is_ascii_lowercase());
+                let has_upper = name.chars().any(|c| c.is_ascii_uppercase());
+                let has_special = name.chars().any(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '$' && c != '#');
+                let bad_start =
+                    name.is_empty() || !name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+                // All-lower "emp" stays unquoted → EMP (Oracle fold). Mixed "empMixed" → "empMixed".
+                let needs_quotes = (has_lower && has_upper) || has_special || bad_start;
+                if needs_quotes {
+                    format!("\"{}\"", name.replace('"', "\"\""))
+                } else {
+                    name.to_uppercase()
+                }
+            }
         }
     }
 
@@ -697,6 +712,10 @@ mod tests {
         assert_eq!(profile_for(DatabaseType::Mysql).quote_ident("a`b"), "`a``b`");
         assert_eq!(profile_for(DatabaseType::Access).quote_ident(r#"a"b"#), "\"a\"\"b\"");
         assert_eq!(profile_for(DatabaseType::Oracle).quote_ident("emp"), "EMP");
+        assert_eq!(profile_for(DatabaseType::Oracle).quote_ident("EMP"), "EMP");
+        // Mixed-case must preserve spelling via quotes (not EMPMIXED).
+        assert_eq!(profile_for(DatabaseType::Oracle).quote_ident("empMixed"), "\"empMixed\"");
+        assert_eq!(profile_for(DatabaseType::Oracle).quote_ident("Emp"), "\"Emp\"");
     }
 
     #[test]
