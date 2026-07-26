@@ -3720,11 +3720,12 @@ fn generate_schema_sync_sql_inner(
                 "removed" => {
                     if let Some(template) = profile.rule_drop_template {
                         lines.push(format!("-- Drop rule: {}", diff.name));
-                        if let Some(source) = &diff.source {
-                            let table_name = qualified_name(&source.table_name, db_type, schema);
+                        // Removed diffs store the object on `target`; tests may put it on `source`.
+                        if let Some(rule) = diff.source.as_ref().or(diff.target.as_ref()) {
+                            let table_name = qualified_name(&rule.table_name, db_type, schema);
                             lines.push(DdlDialectProfile::render_template(
                                 template,
-                                &[("rule_name", &diff.name), ("table_name", &table_name)],
+                                &[("rule_name", &diff.name), ("table_name", &table_name), ("cascade", cascade)],
                             ));
                         }
                     } else {
@@ -3738,7 +3739,7 @@ fn generate_schema_sync_sql_inner(
                             let table_name = qualified_name(&source.table_name, db_type, schema);
                             lines.push(DdlDialectProfile::render_template(
                                 template,
-                                &[("rule_name", &diff.name), ("table_name", &table_name)],
+                                &[("rule_name", &diff.name), ("table_name", &table_name), ("cascade", cascade)],
                             ));
                             lines.push(source.definition.clone());
                         } else {
@@ -4025,8 +4026,10 @@ mod tests {
         let sql_without = gen_sql(wrap_table_diff("t", diffs), DatabaseType::Postgres, None);
         assert!(sql_with.contains("INTEGER"), "with: int(11)→INTEGER: {sql_with}");
         assert!(sql_with.contains("TIMESTAMP"), "with: datetime→TIMESTAMP: {sql_with}");
-        assert!(sql_without.contains("int(11)"), "without: preserved: {sql_without}");
-        assert!(sql_without.contains("datetime"), "without: preserved: {sql_without}");
+        // No source dialect: matrix skipped, but target profile still strips display width.
+        assert!(sql_without.contains("INT"), "without: display width stripped: {sql_without}");
+        assert!(!sql_without.contains("int(11)"), "without: no MySQL display width: {sql_without}");
+        assert!(sql_without.contains("datetime"), "without: datetime preserved: {sql_without}");
     }
 
     // -- 4. Reverse: PostgreSQL → MySQL --
@@ -4148,8 +4151,9 @@ mod tests {
                 true,
             );
             let sql = gen_sql(wrap_table_diff("t", diffs), target, Some(DialectKind::Mysql));
-            // These pairs have no type-mapping rules → types pass through
-            assert!(sql.contains("int(11)"), "{target:?} preserves int(11): {sql}");
+            // No dialect-pair matrix for these targets; profile still strips MySQL display width.
+            assert!(sql.contains("INT"), "{target:?} strips display width to INT: {sql}");
+            assert!(!sql.contains("int(11)"), "{target:?} no MySQL display width: {sql}");
             assert!(!sql.contains('`'), "{target:?} no backticks: {sql}");
         }
     }
@@ -4159,7 +4163,9 @@ mod tests {
     fn without_source_dialect_types_preserved() {
         let diffs = make_col_diffs(&[("id", "int(11)"), ("flag", "tinyint")], &[("id", "bigint")], false);
         let sql = gen_sql(wrap_table_diff("t", diffs), DatabaseType::Postgres, None);
-        assert!(sql.contains("int(11)"), "passthrough int(11): {sql}");
+        // No source dialect → no matrix mapping; PG profile still strips display width.
+        assert!(sql.contains("INT"), "display width stripped to INT: {sql}");
+        assert!(!sql.contains("int(11)"), "no MySQL display width: {sql}");
         assert!(sql.contains("tinyint"), "passthrough tinyint: {sql}");
     }
 
@@ -4431,10 +4437,10 @@ mod tests {
     fn postgresql_to_sqlite_no_type_mapping() {
         let diffs = make_col_diffs(&[("id", "integer"), ("data", "text"), ("ts", "timestamp")], &[], false);
         let sql = gen_sql(wrap_table_diff("t", diffs), DatabaseType::Sqlite, Some(DialectKind::Postgres));
-        // No PG→SQLite mapping rules → types pass through
-        assert!(sql.contains("integer"), "passthrough integer: {sql}");
-        assert!(sql.contains("text"), "passthrough text: {sql}");
-        assert!(sql.contains("timestamp"), "passthrough timestamp: {sql}");
+        // No PG→SQLite dialect matrix, but SQLite profile type_map still rewrites affinities.
+        assert!(sql.contains("INTEGER"), "integer→INTEGER: {sql}");
+        assert!(sql.contains("TEXT"), "text/timestamp→TEXT: {sql}");
+        assert!(!sql.contains("timestamp"), "timestamp mapped away: {sql}");
     }
 
     // -- 24. All MySQL-like databases with rename + type change --

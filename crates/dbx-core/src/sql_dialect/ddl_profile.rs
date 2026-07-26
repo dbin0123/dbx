@@ -178,7 +178,7 @@ const SEQ_CREATE: &str =
 const SEQ_ALTER: &str =
     "ALTER SEQUENCE {name} AS {data_type} START WITH {start_value} INCREMENT BY {increment} MINVALUE {min_value} MAXVALUE {max_value} {cycle};";
 const SEQ_DROP: &str = "DROP SEQUENCE {name}{cascade};";
-const RULE_DROP: &str = "DROP RULE IF EXISTS {rule_name} ON {table_name};";
+const RULE_DROP: &str = "DROP RULE IF EXISTS {rule_name} ON {table_name}{cascade};";
 const OWNER_ALTER: &str = "ALTER {object_type} {name} OWNER TO {owner};";
 
 // ---------------------------------------------------------------------------

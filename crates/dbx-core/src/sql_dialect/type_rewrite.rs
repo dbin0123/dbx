@@ -51,13 +51,17 @@ fn apply_template(template: &str, params: Option<&str>, max_varchar_len: Option<
 }
 
 /// Strip MySQL-style display width: `INT(11)` → `INT`, keep `DECIMAL(10,2)` / `VARCHAR(100)`.
+///
+/// When keeping length/precision params, original casing is preserved (passthrough-ish).
+/// When stripping display width, the base is uppercased as a normalized form.
 pub fn strip_display_width_if_needed(source_type: &str, profile: &DdlDialectProfile) -> String {
     if profile.supports_display_width {
         return source_type.trim().to_string();
     }
-    let (base, params) = split_type_base_params(source_type);
+    let trimmed = source_type.trim();
+    let (base, params) = split_type_base_params(trimmed);
     let Some(params) = params else {
-        return source_type.trim().to_string();
+        return trimmed.to_string();
     };
     // Keep types where parentheses are meaningful precision/length for most targets.
     let keep_params = matches!(
@@ -81,9 +85,14 @@ pub fn strip_display_width_if_needed(source_type: &str, profile: &DdlDialectProf
             | "SET"
     );
     if keep_params {
-        format!("{base}({params})")
+        // Reconstruct from the original slice so casing stays source-faithful.
+        let orig_base = trimmed.split('(').next().unwrap_or(trimmed).trim();
+        let open = trimmed.find('(').unwrap_or(orig_base.len());
+        let close = trimmed.rfind(')').unwrap_or(trimmed.len());
+        let orig_params = if open < close { trimmed[open + 1..close].trim() } else { params.as_str() };
+        format!("{orig_base}({orig_params})")
     } else {
-        // INT(11), BIGINT(20), TINYINT(2), YEAR(4), …
+        // INT(11), BIGINT(20), TINYINT(2), YEAR(4), … — normalized uppercase base.
         base
     }
 }
