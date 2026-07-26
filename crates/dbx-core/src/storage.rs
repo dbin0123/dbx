@@ -380,7 +380,7 @@ const SCHEMA_STATEMENTS: &[&str] = &[
         value BLOB NOT NULL,
         content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
         version INTEGER NOT NULL DEFAULT 1,
-        payload BLOB DEFAULT (x'')
+        payload BLOB DEFAULT x''
     )",
     "CREATE TABLE IF NOT EXISTS prompt_templates (
         id TEXT PRIMARY KEY,
@@ -583,11 +583,12 @@ fn ensure_table_columns(conn: &Connection, table_name: &str, columns: &[(&str, &
 fn ensure_state_store_columns_sync(conn: &Connection) -> Result<(), String> {
     conn.execute("CREATE TABLE IF NOT EXISTS state_store (key TEXT PRIMARY KEY, value BLOB NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/octet-stream', version INTEGER NOT NULL DEFAULT 1)", []).map_err(|e| e.to_string())?;
 
+    // SQLite ALTER TABLE ADD COLUMN rejects parenthesized default expressions.
     const COLUMNS: &[(&str, &str)] = &[
-        ("value", "BLOB NOT NULL DEFAULT (x'')"),
+        ("value", "BLOB NOT NULL DEFAULT x''"),
         ("content_type", "TEXT NOT NULL DEFAULT 'application/octet-stream'"),
         ("version", "INTEGER NOT NULL DEFAULT 1"),
-        ("payload", "BLOB DEFAULT (x'')"),
+        ("payload", "BLOB DEFAULT x''"),
     ];
     ensure_table_columns(conn, "state_store", COLUMNS)
 }

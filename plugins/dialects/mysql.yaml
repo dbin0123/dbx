@@ -148,8 +148,9 @@ online_safety:
     level: "NON_BLOCKING"
     cost: "LOW"
   osc_template:
-    gh_ost: "gh-ost --alter='{ddl}' --host={host} --user={user} --password={password} --database={database} --table={table} --execute"
-    pt_osc: "pt-online-schema-change --alter='{ddl}' --execute h={host},u={user},p={password},D={database},t={table}"
+    # Credentials via conf/defaults-file only — never interpolate {password} into argv/scripts/logs.
+    gh_ost: "gh-ost --alter='{ddl}' --conf={defaults_file} --database={database} --table={table} --execute"
+    pt_osc: "pt-online-schema-change --defaults-file={defaults_file} --alter='{ddl}' --execute D={database},t={table}"
 
 destruction_level:
   drop_table: "FATAL"
