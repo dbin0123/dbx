@@ -265,7 +265,7 @@ impl IdempotentStrategy {
 }
 
 fn dialect_supports(descriptor: Option<&DialectCapabilityDescriptor>, flag: u64) -> bool {
-    descriptor.map_or(false, |d| d.flags & flag != 0)
+    descriptor.is_some_and(|d| d.flags & flag != 0)
 }
 
 pub fn select_strategy(
@@ -838,7 +838,7 @@ fn generate_shadow_table_script(
                 lines.push(String::new());
             }
 
-            lines.push(format!("-- Step 2: Copy data to shadow table"));
+            lines.push("-- Step 2: Copy data to shadow table".to_string());
             lines.push(format!("INSERT INTO {shadow_name} SELECT * FROM {};", diff.name));
             lines.push(String::new());
 
@@ -1310,28 +1310,6 @@ mod tests {
             enum_values: None,
             character_set: None,
             collation: None,
-        }
-    }
-
-    fn make_index_info(name: &str) -> IndexInfo {
-        IndexInfo {
-            name: name.to_string(),
-            columns: vec!["id".to_string()],
-            is_unique: false,
-            is_primary: false,
-            filter: None,
-            index_type: None,
-            included_columns: None,
-            comment: None,
-        }
-    }
-
-    fn make_trigger_info(name: &str) -> TriggerInfo {
-        TriggerInfo {
-            name: name.to_string(),
-            event: "INSERT".to_string(),
-            timing: "AFTER".to_string(),
-            statement: Some("BEGIN NULL; END;".to_string()),
         }
     }
 

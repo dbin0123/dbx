@@ -29,19 +29,14 @@ pub struct CorrectionStep {
     pub depends_on: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum CorrectionRiskLevel {
     Safe,
+    #[default]
     Caution,
     Dangerous,
     Blocked,
-}
-
-impl Default for CorrectionRiskLevel {
-    fn default() -> Self {
-        CorrectionRiskLevel::Caution
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
