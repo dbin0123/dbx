@@ -475,6 +475,7 @@ fn duckdb_value_to_json(row: &duckdb::Row<'_>, idx: usize) -> serde_json::Value 
         | ValueRef::Map(..)
         | ValueRef::Enum(..)
         | ValueRef::Union(..) => duckdb_owned_value_to_json(&value_ref.to_owned()),
+        _ => duckdb_owned_value_to_json(&value_ref.to_owned()),
     }
 }
 
@@ -534,6 +535,7 @@ fn duckdb_owned_value_to_json(value: &Value) -> serde_json::Value {
                 .collect(),
         ),
         Value::Union(value) => duckdb_owned_value_to_json(value),
+        _ => serde_json::Value::Null,
     }
 }
 

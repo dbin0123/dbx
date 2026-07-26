@@ -320,7 +320,7 @@ fn append_table_schema_step(
 fn append_data_steps(
     data_compare: Option<&DataCompareFromTablesPreparation>,
     steps: &mut Vec<CorrectionStep>,
-    rollback_steps: &mut Vec<CorrectionStep>,
+    _rollback_steps: &mut Vec<CorrectionStep>,
     options: &JointCorrectionOptions,
     mut step_index: usize,
 ) -> usize {
@@ -389,7 +389,7 @@ fn append_table_data_step(
     data_prep: &DataCompareResult,
     tbl_name: &str,
     steps: &mut Vec<CorrectionStep>,
-    rollback_steps: &mut Vec<CorrectionStep>,
+    _rollback_steps: &mut Vec<CorrectionStep>,
     _options: &JointCorrectionOptions,
     mut step_index: usize,
 ) -> usize {

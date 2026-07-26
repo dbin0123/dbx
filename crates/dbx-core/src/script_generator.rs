@@ -1279,11 +1279,7 @@ pub fn lock_timeout_statement(db_type: DatabaseType) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::correction::*;
-    use crate::data_compare::{DataCompareFromTablesPreparation, DataCompareResult};
-    use crate::schema_diff::{
-        ColumnDiff, DiffNode, ForeignKeyDiff, IndexDiff, RollbackGraph, SchemaDiffPreparation, TableDiff,
-        TableSchemaDetail, TriggerDiff,
-    };
+    use crate::schema_diff::{ColumnDiff, DiffNode, RollbackGraph, SchemaDiffPreparation, TableDiff};
     use crate::sql_dialect::descriptor::{
         DialectCapabilityDescriptor, DialectKind, CAP_CREATE_OR_REPLACE, CAP_CREATE_TABLE, CAP_IF_NOT_EXISTS,
     };
