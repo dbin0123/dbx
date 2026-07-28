@@ -48,6 +48,7 @@ import type { CollectionInfo } from "@/types/database";
 import type { SchemaDiffPreparation, SchemaDiffPreparationOptions, TableDiff, FunctionDiff, SequenceDiff, RuleDiff, OwnerDiff } from "@/lib/schema/schemaDiff";
 import type { SidebarObjectKind } from "@/lib/database/databaseObjectCapabilities";
 import type { AiConfig, AiTestConnectionResult } from "@/stores/settingsStore";
+import type { AiChatSelectionState, AiEffortCapability } from "@/types/ai";
 import type {
   AgentDriverInfo,
   AiCompletionRequest,
@@ -67,11 +68,15 @@ import type {
   UpdateDownloadSource,
   RedisCollectionPage,
   RedisDatabaseInfo,
+  RedisStreamConsumer,
+  RedisStreamGroup,
+  RedisStreamPendingPage,
   RedisValue,
   RedisScanResult,
   RedisCommandResult,
   RedisSlowlogEntry,
   RedisNodeEndpoint,
+  KvInt64,
   KvValue,
   KvListPrefixResponse,
   KvListPrefixOptions,
@@ -79,7 +84,10 @@ import type {
   KvGetOptions,
   KvPutOptions,
   KvPutResponse,
+  KvDeleteOptions,
   KvDeleteResponse,
+  KvHistoryResponse,
+  KvStatusResponse,
   DocumentQueryResult,
   MongoDocumentResult,
   MongoCollectionStatsResult,
@@ -117,6 +125,7 @@ import type {
   MongoGridFsFileInfo,
   AppSupportInfo,
   PromptTemplate,
+  SshPromptResolution,
 } from "@/lib/backend/tauri";
 import type { QueryEditability } from "@/lib/sql/sqlAnalysis";
 import { isTerminalTransferProgress } from "@/lib/backend/transferProgress";
@@ -131,6 +140,7 @@ import type {
   DataGridSaveStatementOptions,
   HiveTablePropertiesSqlOptions,
 } from "@/lib/dataGrid/dataGridSql";
+import type { DataGridExtractRequest, DataGridExtractResult } from "@/lib/dataGrid/dataGridCopyExtractor";
 import type { BuildTableStructureChangeSqlOptions, BuildSingleColumnAlterSqlOptions, SqliteTableStructureChangePreview, TableStructureChangeSql } from "@/lib/table/tableStructureEditorSql";
 import type { BuildTableSelectSqlOptions } from "@/lib/table/tableSelectSql";
 import type { DatabaseSearchSql, DatabaseSearchSqlOptions, SearchResultWhereOptions } from "@/lib/database/databaseSearch";
@@ -166,6 +176,8 @@ import type {
   NacosInstanceInfo,
   NacosInstanceQuery,
   NacosInstanceUpdate,
+  NacosDashboardQuery,
+  NacosDashboardSnapshot,
   NacosNamespaceCreate,
   NacosNamespaceInfo,
   NacosNamespaceUpdate,
@@ -311,6 +323,10 @@ export async function saveTunnelProfiles(profiles: TunnelProfile[]): Promise<voi
 
 export async function testTunnelProfile(profile: TunnelProfile): Promise<string> {
   return post("/api/tunnel-profiles/test", profile);
+}
+
+export async function resolveSshPrompt(resolution: SshPromptResolution): Promise<void> {
+  await post("/api/ssh/prompts/resolve", resolution);
 }
 
 export async function readKeychainPassword(_service: string): Promise<string> {
@@ -715,6 +731,10 @@ export async function getTableDdl(connectionId: string, database: string, schema
   return get(`/api/schema/ddl?${qs({ connection_id: connectionId, database, schema, table, object_type: objectType, catalog })}`);
 }
 
+export async function getTableDisplayDdl(connectionId: string, database: string, schema: string, table: string, objectType?: ObjectSourceKind, catalog?: string): Promise<string> {
+  return get(`/api/schema/ddl?${qs({ connection_id: connectionId, database, schema, table, object_type: objectType, catalog, include_postgres_access: true })}`);
+}
+
 export async function prepareSchemaDiff(options: SchemaDiffPreparationOptions): Promise<SchemaDiffPreparation> {
   return post("/api/schema-diff/prepare", options);
 }
@@ -802,6 +822,37 @@ export async function executeMulti(
   },
 ): Promise<QueryResult[]> {
   return post("/api/query/execute-multi", { connectionId, database, sql, schema, executionId, ...options });
+}
+
+export interface ExecuteMultiProgress {
+  executionId: string;
+  completed: number;
+  total: number;
+  success: boolean;
+}
+
+export async function executeMultiWithProgress(
+  connectionId: string,
+  database: string,
+  sql: string,
+  onProgress: (progress: ExecuteMultiProgress) => void,
+  schema?: string,
+  options?: {
+    maxRows?: number;
+    fetchSize?: number;
+    pageSize?: number;
+    resultSessionId?: string;
+    clientSessionId?: string;
+    timeoutSecs?: number;
+    useTransaction?: boolean;
+    continueOnError?: boolean;
+    executionMode?: "simple";
+  },
+): Promise<QueryResult[]> {
+  const executionId = crypto.randomUUID();
+  const results = await executeMulti(connectionId, database, sql, schema, executionId, options);
+  onProgress({ executionId, completed: results.length, total: results.length, success: !results.some((result) => result.execution_error === true) });
+  return results;
 }
 
 export async function closeQuerySession(connectionId: string, database: string, sessionId: string, clientSessionId?: string): Promise<boolean> {
@@ -1003,6 +1054,10 @@ export async function prepareDataGridSave(options: DataGridSaveStatementOptions)
   return post("/api/query/prepare-data-grid-save", { options });
 }
 
+export async function extractDataGridSelection(request: DataGridExtractRequest): Promise<DataGridExtractResult> {
+  return post("/api/query/extract-data-grid-selection", { request });
+}
+
 export async function buildDataGridCopyUpdateStatements(options: DataGridCopyUpdateStatementOptions): Promise<string[]> {
   return post("/api/query/build-data-grid-copy-update-statements", { options });
 }
@@ -1124,17 +1179,42 @@ export async function aiListModels(config: AiConfig): Promise<AiModelInfo[]> {
   return post("/api/ai/models", { config });
 }
 
+export async function aiResolveModelEffort(config: AiConfig, modelId: string): Promise<AiEffortCapability> {
+  return post("/api/ai/model-effort", { config, modelId });
+}
+
+export async function saveAiChatSelection(selection: AiChatSelectionState): Promise<void> {
+  return post("/api/ai/chat-selection", { selection });
+}
+
+export async function loadAiChatSelection(): Promise<AiChatSelectionState | null> {
+  return get("/api/ai/chat-selection");
+}
+
 export type { AgentEvent } from "@/lib/backend/tauri";
 
 function isAgentEvent(v: unknown): v is import("@/lib/backend/tauri").AgentEvent {
   return typeof v === "object" && v !== null && "type" in v && typeof (v as Record<string, unknown>).type === "string";
 }
 
-export async function aiAgentStream(sessionId: string, request: AiCompletionRequest, connectionId: string, database: string, dbType: string, onEvent: (event: import("@/lib/backend/tauri").AgentEvent) => void, mode?: string, allowWriteSql = false, signal?: AbortSignal): Promise<string> {
+export async function aiAgentStream(
+  sessionId: string,
+  request: AiCompletionRequest,
+  connectionId: string,
+  database: string,
+  dbType: string,
+  onEvent: (event: import("@/lib/backend/tauri").AgentEvent) => void,
+  mode?: string,
+  allowWriteSql = false,
+  confirmedWriteSql?: string,
+  confirmedConnectionId?: string,
+  confirmedDatabase?: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const res = await fetch(apiUrl("/api/ai/agent-stream"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId, request, connectionId, database, dbType, mode: mode || "ask", allowWriteSql }),
+    body: JSON.stringify({ sessionId, request, connectionId, database, dbType, mode: mode || "ask", allowWriteSql, confirmedWriteSql, confirmedConnectionId, confirmedDatabase }),
     signal,
   });
   if (!res.ok) throw new Error(await res.text());
@@ -1891,13 +1971,14 @@ function downloadTextFile(filePath: string, fallbackFileName: string, content: s
   URL.revokeObjectURL(url);
 }
 
-export async function exportQueryResultXlsx(filePath: string, sheetName: string | undefined, columns: string[], columnTypes: string[], rows: readonly (readonly XlsxCellValue[])[]): Promise<void> {
+export async function exportQueryResultXlsx(filePath: string, sheetName: string | undefined, columns: string[], columnTypes: string[], rows: readonly (readonly XlsxCellValue[])[], numericColumnRightAlign?: boolean): Promise<void> {
   const { buildXlsxWorkbook } = await import("@/lib/export/xlsxExport");
   const workbook = buildXlsxWorkbook({
     sheetName: sheetName || "Export",
     columns,
     columnTypes,
     rows,
+    numericColumnRightAlign,
   });
   const fileName = filePath.split(/[\\/]/).pop() || "export.xlsx";
   const blob = new Blob([new Uint8Array(workbook)], {
@@ -1911,7 +1992,7 @@ export async function exportQueryResultXlsx(filePath: string, sheetName: string 
   URL.revokeObjectURL(url);
 }
 
-export async function exportQueryResultsXlsx(filePath: string, worksheets: readonly { sheetName?: string; columns: readonly string[]; columnTypes?: readonly string[]; rows: readonly (readonly XlsxCellValue[])[] }[]): Promise<void> {
+export async function exportQueryResultsXlsx(filePath: string, worksheets: readonly { sheetName?: string; columns: readonly string[]; columnTypes?: readonly string[]; rows: readonly (readonly XlsxCellValue[])[]; numericColumnRightAlign?: boolean }[]): Promise<void> {
   const { buildXlsxWorkbookMulti } = await import("@/lib/export/xlsxExport");
   const workbook = buildXlsxWorkbookMulti(worksheets);
   const fileName = filePath.split(/[\\/]/).pop() || "export.xlsx";
@@ -1958,6 +2039,18 @@ export async function redisScanValues(connectionId: string, db: number, cursor: 
 
 export async function redisGetValue(connectionId: string, db: number, keyRaw: string): Promise<RedisValue> {
   return post("/api/redis/get-value", { connectionId, db, keyRaw });
+}
+
+export async function redisGetStreamGroups(connectionId: string, db: number, keyRaw: string): Promise<RedisStreamGroup[]> {
+  return post("/api/redis/get-stream-groups", { connectionId, db, keyRaw });
+}
+
+export async function redisGetStreamConsumers(connectionId: string, db: number, keyRaw: string, groupRaw: string): Promise<RedisStreamConsumer[]> {
+  return post("/api/redis/get-stream-consumers", { connectionId, db, keyRaw, groupRaw });
+}
+
+export async function redisGetStreamPending(connectionId: string, db: number, keyRaw: string, groupRaw: string, cursor?: string, consumerRaw?: string): Promise<RedisStreamPendingPage> {
+  return post("/api/redis/get-stream-pending", { connectionId, db, keyRaw, groupRaw, cursor, ...(consumerRaw === undefined ? {} : { consumerRaw }) });
 }
 
 export async function redisSetString(connectionId: string, db: number, keyRaw: string, value: string, ttl?: number): Promise<void> {
@@ -2020,6 +2113,10 @@ export async function redisSetTtl(connectionId: string, db: number, keyRaw: stri
   return post("/api/redis/set-ttl", { connectionId, db, keyRaw, ttl });
 }
 
+export async function redisSetExpireAt(connectionId: string, db: number, keyRaw: string, expireAt: number): Promise<void> {
+  return post("/api/redis/set-expire-at", { connectionId, db, keyRaw, expireAt });
+}
+
 export async function redisDeleteKeys(connectionId: string, db: number, keyRaws: string[]): Promise<number> {
   return post("/api/redis/delete-keys", { connectionId, db, keyRaws });
 }
@@ -2056,8 +2153,8 @@ export async function redisClusterMasterNodes(connectionId: string): Promise<Red
 // etcd
 // ---------------------------------------------------------------------------
 
-export async function etcdListPrefix(connectionId: string, prefix: string, limit: number, continuation?: string | null): Promise<KvListPrefixResponse> {
-  return post("/api/etcd/list-prefix", { connectionId, prefix, limit, continuation });
+export async function etcdListPrefix(connectionId: string, prefix: string, limit: number, continuation?: string | null, options?: KvListPrefixOptions | null): Promise<KvListPrefixResponse> {
+  return post("/api/etcd/list-prefix", { connectionId, prefix, limit, continuation, revision: options?.revision ?? null, includeValues: options?.includeValues ?? null });
 }
 
 export async function etcdSupportsTtl(connectionId: string): Promise<boolean> {
@@ -2065,7 +2162,7 @@ export async function etcdSupportsTtl(connectionId: string): Promise<boolean> {
 }
 
 export async function etcdGet(connectionId: string, key: string, options?: KvGetOptions | null): Promise<KvGetResponse> {
-  return post("/api/etcd/get", { connectionId, key, metadataOnly: options?.metadataOnly ?? null });
+  return post("/api/etcd/get", { connectionId, key, keyBytes: options?.keyBytes ?? null, revision: options?.revision ?? null, metadataOnly: options?.metadataOnly ?? null });
 }
 
 export async function etcdPut(connectionId: string, key: string, value: KvValue, options?: KvPutOptions | number | null): Promise<KvPutResponse> {
@@ -2078,11 +2175,26 @@ export async function etcdPut(connectionId: string, key: string, value: KvValue,
     lease: legacyLease ?? putOptions?.lease ?? null,
     ttl: putOptions?.ttl ?? null,
     preserveLease: putOptions?.preserveLease ?? null,
+    keyBytes: putOptions?.keyBytes ?? null,
+    expectedModRevision: putOptions?.expectedModRevision ?? null,
+    expectedCreateRevision: putOptions?.expectedCreateRevision ?? null,
   });
 }
 
-export async function etcdDelete(connectionId: string, key: string): Promise<KvDeleteResponse> {
-  return post("/api/etcd/delete", { connectionId, key });
+export async function etcdDelete(connectionId: string, key: string, options?: KvDeleteOptions | null): Promise<KvDeleteResponse> {
+  return post("/api/etcd/delete", { connectionId, key, keyBytes: options?.keyBytes ?? null, expectedModRevision: options?.expectedModRevision ?? null });
+}
+
+export async function etcdRename(connectionId: string, request: { key: string; keyBytes?: KvValue | null; newKey: string; expectedModRevision?: KvInt64 | null }): Promise<{ renamed: boolean; revision?: KvInt64 | null }> {
+  return post("/api/etcd/rename", { connectionId, request });
+}
+
+export async function etcdHistory(connectionId: string, request: { key: string; keyBytes?: KvValue | null; startRevision?: KvInt64 | null; endRevision?: KvInt64 | null; limit: number }): Promise<KvHistoryResponse> {
+  return post("/api/etcd/history", { connectionId, request });
+}
+
+export async function etcdStatus(connectionId: string): Promise<KvStatusResponse> {
+  return post("/api/etcd/status", { connectionId });
 }
 
 // ---------------------------------------------------------------------------
@@ -2260,8 +2372,44 @@ export async function nacosUpdateInstance(connectionId: string, req: NacosInstan
   return post("/api/nacos/instances/update", { connectionId, req });
 }
 
+export async function nacosGetDashboard(connectionId: string, query: NacosDashboardQuery): Promise<NacosDashboardSnapshot> {
+  return post("/api/nacos/dashboard", { connectionId, query });
+}
+
 export async function nacosRawRequest(connectionId: string, req: NacosRawRequest): Promise<NacosRawResponse> {
   return post("/api/nacos/raw", { connectionId, req });
+}
+
+// ---------------------------------------------------------------------------
+// HBase
+// ---------------------------------------------------------------------------
+
+export async function hbaseGetTableSchema(connectionId: string, namespace: string, table: string): Promise<import("@/types/hbase").HBaseTableSchema> {
+  return post("/api/hbase/table-schema", { connectionId, namespace, table });
+}
+
+export async function hbaseScanRows(connectionId: string, namespace: string, table: string, rowKeyPrefix: string | undefined, limit: number): Promise<import("@/types/hbase").HBaseScanResult> {
+  return post("/api/hbase/scan-rows", { connectionId, namespace, table, rowKeyPrefix, limit });
+}
+
+export async function hbaseGetRow(connectionId: string, namespace: string, table: string, rowKey: string, rowKeyEncoding?: import("@/types/hbase").HBaseValueEncoding): Promise<import("@/types/hbase").HBaseRow | null> {
+  return post("/api/hbase/get-row", { connectionId, namespace, table, rowKey, rowKeyEncoding });
+}
+
+export async function hbasePutRow(connectionId: string, namespace: string, table: string, input: import("@/types/hbase").HBasePutRowInput): Promise<void> {
+  return post("/api/hbase/put-row", { connectionId, namespace, table, input });
+}
+
+export async function hbaseDeleteRow(connectionId: string, namespace: string, table: string, rowKey: string, rowKeyEncoding?: import("@/types/hbase").HBaseValueEncoding): Promise<void> {
+  return post("/api/hbase/delete-row", { connectionId, namespace, table, rowKey, rowKeyEncoding });
+}
+
+export async function hbaseCreateTable(connectionId: string, namespace: string, table: string, columnFamilies: string[]): Promise<void> {
+  return post("/api/hbase/create-table", { connectionId, namespace, table, columnFamilies });
+}
+
+export async function hbaseDeleteTable(connectionId: string, namespace: string, table: string): Promise<void> {
+  return post("/api/hbase/delete-table", { connectionId, namespace, table });
 }
 
 // ---------------------------------------------------------------------------

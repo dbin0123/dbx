@@ -2443,6 +2443,12 @@ pub fn diff_indexes(source: &[IndexInfo], target: &[IndexInfo]) -> Vec<IndexDiff
     diffs
 }
 
+fn normalized_foreign_key_action(action: Option<&str>) -> Option<String> {
+    action
+        .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_uppercase())
+        .filter(|value| !value.is_empty())
+}
+
 pub fn diff_foreign_keys(source: &[ForeignKeyInfo], target: &[ForeignKeyInfo]) -> Vec<ForeignKeyDiff> {
     let mut diffs = Vec::new();
     let target_map: HashMap<&str, &ForeignKeyInfo> = target.iter().map(|fk| (fk.name.as_str(), fk)).collect();
@@ -2476,6 +2482,24 @@ pub fn diff_foreign_keys(source: &[ForeignKeyInfo], target: &[ForeignKeyInfo]) -
         }
         if source_fk.ref_column != target_fk.ref_column {
             changes.push(format!("ref column: {} → {}", target_fk.ref_column, source_fk.ref_column));
+        }
+        let source_on_delete = normalized_foreign_key_action(source_fk.on_delete.as_deref());
+        let target_on_delete = normalized_foreign_key_action(target_fk.on_delete.as_deref());
+        if source_on_delete != target_on_delete {
+            changes.push(format!(
+                "delete: {} → {}",
+                target_on_delete.as_deref().unwrap_or(""),
+                source_on_delete.as_deref().unwrap_or("")
+            ));
+        }
+        let source_on_update = normalized_foreign_key_action(source_fk.on_update.as_deref());
+        let target_on_update = normalized_foreign_key_action(target_fk.on_update.as_deref());
+        if source_on_update != target_on_update {
+            changes.push(format!(
+                "update: {} → {}",
+                target_on_update.as_deref().unwrap_or(""),
+                source_on_update.as_deref().unwrap_or("")
+            ));
         }
         if !changes.is_empty() {
             diffs.push(ForeignKeyDiff {
@@ -2892,11 +2916,13 @@ fn drop_foreign_key_sql(table_name: &str, fk_name: &str, db_type: DatabaseType, 
 
 fn add_foreign_key_sql(table_name: &str, fk: &ForeignKeyInfo, db_type: DatabaseType, schema: Option<&str>) -> String {
     let table = qualified_name(table_name, db_type, schema);
+    let ref_table = qualified_name(&fk.ref_table, db_type, fk.ref_schema.as_deref().or(schema));
+    let on_delete = fk.on_delete.as_ref().map(|action| format!(" ON DELETE {action}")).unwrap_or_default();
+    let on_update = fk.on_update.as_ref().map(|action| format!(" ON UPDATE {action}")).unwrap_or_default();
     format!(
-        "ALTER TABLE {table} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({});",
+        "ALTER TABLE {table} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {ref_table} ({}){on_delete}{on_update};",
         quote_id(&fk.name, db_type),
         quote_id(&fk.column, db_type),
-        quote_id(&fk.ref_table, db_type),
         quote_id(&fk.ref_column, db_type)
     )
 }
@@ -3396,6 +3422,7 @@ fn generate_schema_sync_sql_inner(
         }
 
         let mut parts = Vec::new();
+        let mut standalone_statements = Vec::new();
         if let Some(foreign_keys) = &diff.foreign_keys {
             for fk in foreign_keys {
                 if fk.diff_type == "removed" || fk.diff_type == "modified" {
@@ -3486,8 +3513,8 @@ fn generate_schema_sync_sql_inner(
                                     let target_table = qualified_name(&diff.name, db_type, schema);
                                     let full_obj_path =
                                         format!("{target_table}.{}", quote_id(&target_col.name, db_type));
-                                    parts.push(format!(
-                                        "  EXEC sp_rename '{}', '{}', 'COLUMN';",
+                                    standalone_statements.push(format!(
+                                        "EXEC sp_rename '{}', '{}', 'COLUMN';",
                                         full_obj_path.replace('\'', "''"),
                                         column.name.replace('\'', "''")
                                     ));
@@ -3500,14 +3527,17 @@ fn generate_schema_sync_sql_inner(
             }
         }
 
-        if !parts.is_empty() {
+        if !standalone_statements.is_empty() || !parts.is_empty() {
             lines.push(format!("-- Alter table: {}", diff.name));
-            if profile.alter_batches_clauses {
-                lines.push(format!("ALTER TABLE {table}"));
-                lines.push(format!("{};", parts.join(",\n")));
-            } else {
-                for part in parts {
-                    lines.push(format!("ALTER TABLE {table}{part};"));
+            lines.extend(standalone_statements);
+            if !parts.is_empty() {
+                if profile.alter_batches_clauses {
+                    lines.push(format!("ALTER TABLE {table}"));
+                    lines.push(format!("{};", parts.join(",\n")));
+                } else {
+                    for part in parts {
+                        lines.push(format!("ALTER TABLE {table}{part};"));
+                    }
                 }
             }
             lines.push(String::new());
@@ -4095,6 +4125,8 @@ mod tests {
         let sql = gen_sql(wrap_table_diff("orders", diffs), DatabaseType::SqlServer, None);
         assert!(sql.contains("sp_rename"), "SQL Server uses sp_rename: {sql}");
         assert!(sql.contains("\"orders\""), "sp_rename table path: {sql}");
+        assert!(!sql.contains("ALTER TABLE \"orders\"  EXEC sp_rename"), "sp_rename must be standalone: {sql}");
+        assert!(sql.lines().any(|line| line.starts_with("EXEC sp_rename")), "standalone sp_rename: {sql}");
         assert!(!sql.contains('`'), "SQL Server no backticks: {sql}");
     }
 
@@ -7134,6 +7166,80 @@ mod tests {
         );
         assert_eq!(diffs.len(), 1, "local column change");
     }
+
+    #[test]
+    fn foreign_key_referential_action_change() {
+        let diffs = diff_foreign_keys(
+            &[foreign_key(ForeignKeyInfo {
+                name: "fk_t".into(),
+                column: "user_id".into(),
+                ref_schema: Some("auth".into()),
+                ref_table: "users".into(),
+                ref_column: "id".into(),
+                on_update: Some("cascade".into()),
+                on_delete: Some("SET NULL".into()),
+            })],
+            &[foreign_key(ForeignKeyInfo {
+                name: "fk_t".into(),
+                column: "user_id".into(),
+                ref_schema: Some("auth".into()),
+                ref_table: "users".into(),
+                ref_column: "id".into(),
+                on_update: Some("NO ACTION".into()),
+                on_delete: Some("RESTRICT".into()),
+            })],
+        );
+        assert_eq!(diffs.len(), 1, "referential action change: {diffs:?}");
+        assert!(diffs[0].changes.iter().any(|change| change == "delete: RESTRICT → SET NULL"));
+        assert!(diffs[0].changes.iter().any(|change| change == "update: NO ACTION → CASCADE"));
+    }
+
+    #[test]
+    fn modified_foreign_key_sql_preserves_reference_schema_and_actions() {
+        let table_diff = TableDiff {
+            diff_type: "modified".into(),
+            object_type: Some("table".into()),
+            name: "orders".into(),
+            columns: None,
+            indexes: None,
+            foreign_keys: Some(vec![ForeignKeyDiff {
+                diff_type: "modified".into(),
+                name: "orders_user_fk".into(),
+                source: Some(foreign_key(ForeignKeyInfo {
+                    name: "orders_user_fk".into(),
+                    column: "user_id".into(),
+                    ref_schema: Some("identity".into()),
+                    ref_table: "users".into(),
+                    ref_column: "id".into(),
+                    on_update: Some("CASCADE".into()),
+                    on_delete: Some("SET NULL".into()),
+                })),
+                target: None,
+                changes: vec![],
+            }]),
+            triggers: None,
+            ddl: None,
+            target_ddl: None,
+            source_table_comment: None,
+            target_table_comment: None,
+            sync_sql: None,
+        };
+        let sql = generate_schema_sync_sql(
+            &[table_diff],
+            &[],
+            &[],
+            &[],
+            &[],
+            DatabaseType::Postgres,
+            Some("sales"),
+            false,
+            None,
+            &[],
+        );
+        assert!(sql.contains("REFERENCES \"identity\".\"users\" (\"id\")"), "schema: {sql}");
+        assert!(sql.contains("ON DELETE SET NULL ON UPDATE CASCADE"), "actions: {sql}");
+    }
+
     #[test]
     fn column_index_fk_combined_diff() {
         let col_diffs = make_col_diffs(

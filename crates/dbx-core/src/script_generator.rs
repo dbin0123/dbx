@@ -480,8 +480,8 @@ fn wrap_conditional_check(sql: &str, db_type: DatabaseType) -> String {
         if profile.create_table_if_not_exists {
             return wrap_if_not_exists(sql, db_type);
         }
+        let table_identifier = extract_object_identifier(trimmed, "TABLE");
         let table_name = extract_table_name(trimmed, "TABLE");
-        let name_literal = table_name.replace('\'', "''");
         let ddl_literal = trimmed.replace('\'', "''");
         return match db_type {
             DatabaseType::Postgres
@@ -492,8 +492,14 @@ fn wrap_conditional_check(sql: &str, db_type: DatabaseType) -> String {
             | DatabaseType::Vastbase
             | DatabaseType::Uxdb
             | DatabaseType::Redshift => {
+                let (schema_name, table_name) = postgres_table_identity(table_identifier);
+                let schema_predicate = schema_name.map_or_else(
+                    || "table_schema = current_schema()".to_string(),
+                    |schema| format!("table_schema = '{}'", schema.replace('\'', "''")),
+                );
+                let table_literal = table_name.replace('\'', "''");
                 format!(
-                    "DO $dbx_idempotent$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM information_schema.tables\n    WHERE table_name = lower('{name_literal}')\n       OR table_name = '{name_literal}'\n  ) THEN\n    EXECUTE $dbx_ddl${trimmed}$dbx_ddl$;\n  END IF;\nEND\n$dbx_idempotent$;"
+                    "DO $dbx_idempotent$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM information_schema.tables\n    WHERE {schema_predicate}\n      AND table_name = '{table_literal}'\n  ) THEN\n    EXECUTE $dbx_ddl${trimmed}$dbx_ddl$;\n  END IF;\nEND\n$dbx_idempotent$;"
                 )
             }
             DatabaseType::Oracle
@@ -535,15 +541,72 @@ fn wrap_conditional_check(sql: &str, db_type: DatabaseType) -> String {
     sql.to_string()
 }
 
-fn extract_table_name<'a>(sql: &'a str, keyword: &str) -> &'a str {
+fn extract_object_identifier<'a>(sql: &'a str, keyword: &str) -> &'a str {
     let upper = sql.to_uppercase();
     let search = format!(" {} ", keyword);
     if let Some(pos) = upper.find(&search) {
-        let after = &sql[pos + search.len()..].trim();
-        let end = after.find(|c: char| c.is_whitespace() || c == '(' || c == ';').unwrap_or(after.len());
-        after[..end].trim().trim_matches('"').trim_matches('`').trim_matches('[').trim_matches(']')
+        let mut after = sql[pos + search.len()..].trim();
+        if after.to_ascii_uppercase().starts_with("IF NOT EXISTS ") {
+            after = after["IF NOT EXISTS ".len()..].trim_start();
+        }
+
+        let mut quote = None;
+        let mut end = after.len();
+        for (index, ch) in after.char_indices() {
+            match quote {
+                Some('"') if ch == '"' => quote = None,
+                Some('`') if ch == '`' => quote = None,
+                Some(']') if ch == ']' => quote = None,
+                Some(_) => {}
+                None if ch == '"' || ch == '`' => quote = Some(ch),
+                None if ch == '[' => quote = Some(']'),
+                None if ch.is_whitespace() || ch == '(' || ch == ';' => {
+                    end = index;
+                    break;
+                }
+                None => {}
+            }
+        }
+        after[..end].trim()
     } else {
         "unknown"
+    }
+}
+
+fn extract_table_name<'a>(sql: &'a str, keyword: &str) -> &'a str {
+    extract_object_identifier(sql, keyword).trim_matches('"').trim_matches('`').trim_matches('[').trim_matches(']')
+}
+
+fn postgres_table_identity(identifier: &str) -> (Option<String>, String) {
+    let mut quote = false;
+    let mut separator = None;
+    let chars: Vec<(usize, char)> = identifier.char_indices().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        let (byte_index, ch) = chars[index];
+        if ch == '"' {
+            if quote && chars.get(index + 1).is_some_and(|(_, next)| *next == '"') {
+                index += 1;
+            } else {
+                quote = !quote;
+            }
+        } else if ch == '.' && !quote {
+            separator = Some(byte_index);
+        }
+        index += 1;
+    }
+
+    let (schema, table) = separator
+        .map_or((None, identifier), |separator| (Some(&identifier[..separator]), &identifier[separator + 1..]));
+    (schema.map(postgres_identifier_value), postgres_identifier_value(table))
+}
+
+fn postgres_identifier_value(identifier: &str) -> String {
+    let identifier = identifier.trim();
+    if identifier.starts_with('"') && identifier.ends_with('"') && identifier.len() >= 2 {
+        identifier[1..identifier.len() - 1].replace("\"\"", "\"")
+    } else {
+        identifier.to_lowercase()
     }
 }
 
@@ -1566,6 +1629,33 @@ mod tests {
         let oracle = apply_idempotent_strategy(sql, DatabaseType::Oracle, IdempotentStrategy::ConditionalCheck);
         assert!(oracle.contains("EXECUTE IMMEDIATE") || oracle.contains("BEGIN"), "oracle={oracle}");
         assert!(!oracle.contains("THEN 'EXECUTE:"), "must not use inert SELECT CASE: {oracle}");
+    }
+
+    #[test]
+    fn conditional_check_postgres_matches_schema_and_table_separately() {
+        let qualified = apply_idempotent_strategy(
+            "CREATE TABLE sales.users (id INT);",
+            DatabaseType::Postgres,
+            IdempotentStrategy::ConditionalCheck,
+        );
+        assert!(qualified.contains("table_schema = 'sales'"), "qualified={qualified}");
+        assert!(qualified.contains("table_name = 'users'"), "qualified={qualified}");
+        assert!(!qualified.contains("table_name = 'sales.users'"), "qualified={qualified}");
+
+        let unqualified = apply_idempotent_strategy(
+            "CREATE TABLE users (id INT);",
+            DatabaseType::Postgres,
+            IdempotentStrategy::ConditionalCheck,
+        );
+        assert!(unqualified.contains("table_schema = current_schema()"), "unqualified={unqualified}");
+
+        let quoted = apply_idempotent_strategy(
+            "CREATE TABLE \"Sales\".\"Users\" (id INT);",
+            DatabaseType::Postgres,
+            IdempotentStrategy::ConditionalCheck,
+        );
+        assert!(quoted.contains("table_schema = 'Sales'"), "quoted={quoted}");
+        assert!(quoted.contains("table_name = 'Users'"), "quoted={quoted}");
     }
 
     #[test]

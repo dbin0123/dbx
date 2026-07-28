@@ -5,6 +5,6 @@ const dataGridSource = readFileSync(new URL("../DataGrid.vue", import.meta.url),
 
 describe("DataGrid native clipboard regions", () => {
   it("keeps table info text selection out of grid copy shortcuts", () => {
-    expect(dataGridSource).toMatch(/<div[\s\S]{0,120}v-if="showTableInfo"[\s\S]{0,120}data-native-clipboard/);
+    expect(dataGridSource).toMatch(/<div\b(?=[^>]*\bv-if="showTableInfo")(?=[^>]*\bdata-native-clipboard)[^>]*>/);
   });
 });

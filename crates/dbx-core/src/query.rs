@@ -80,6 +80,8 @@ pub struct ExecuteMultiResult {
     pub statement_index: Option<usize>,
 }
 
+pub type ExecuteMultiProgressCallback = Arc<dyn Fn(usize, usize, bool) + Send + Sync>;
+
 impl ExecuteMultiResult {
     fn execution_error(result: db::QueryResult) -> Self {
         Self { result, execution_error: true, statement_index: None }
@@ -676,6 +678,7 @@ pub fn duckdb_execute_with_max_rows(
             truncated,
             session_id: None,
             has_more: false,
+            elasticsearch_raw_body: None,
         })
     } else {
         let affected = con.execute(sql, []).map_err(|e| e.to_string())?;
@@ -689,6 +692,7 @@ pub fn duckdb_execute_with_max_rows(
             truncated: false,
             session_id: None,
             has_more: false,
+            elasticsearch_raw_body: None,
         })
     }
 }
@@ -1698,6 +1702,7 @@ pub async fn do_execute(
             .await
             .map(|result| truncate_result_with_max_rows(result, max_rows))
         }
+        PoolKind::HBase(_) => Err("SQL execution is not supported for HBase connections".to_string()),
     };
     result.map(normalize_query_result_for_js)
 }
@@ -2021,6 +2026,30 @@ pub async fn execute_multi_core_with_options_for_client(
     cancel_token: Option<CancellationToken>,
     options: QueryExecutionOptions,
 ) -> Result<Vec<ExecuteMultiResult>, String> {
+    execute_multi_core_with_options_for_client_and_progress(
+        state,
+        connection_id,
+        database,
+        sql,
+        schema,
+        cancel_token,
+        options,
+        None,
+    )
+    .await
+}
+
+/// Executes a SQL batch and reports each completed statement to the optional callback.
+pub async fn execute_multi_core_with_options_for_client_and_progress(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    sql: &str,
+    schema: Option<&str>,
+    cancel_token: Option<CancellationToken>,
+    options: QueryExecutionOptions,
+    progress: Option<ExecuteMultiProgressCallback>,
+) -> Result<Vec<ExecuteMultiResult>, String> {
     // Reject MongoDB queries that fall through to the generic executor.
     if connection_is_mongodb(state, connection_id).await {
         return Err(MONGO_SHELL_COMMAND_HINT.to_string());
@@ -2123,6 +2152,7 @@ pub async fn execute_multi_core_with_options_for_client(
             &statements,
             cancel_token,
             options,
+            progress.as_ref(),
         )
         .await;
     }
@@ -2144,10 +2174,18 @@ pub async fn execute_multi_core_with_options_for_client(
         )
         .await
         {
-            Ok(r) => results.push(ExecuteMultiResult::success_with_index(r, statement_index)),
+            Ok(r) => {
+                results.push(ExecuteMultiResult::success_with_index(r, statement_index));
+                if let Some(progress) = progress.as_ref() {
+                    progress(statement_index + 1, statements.len(), true);
+                }
+            }
             Err(e) => {
                 let action = query_pool_error_action(db_type, stmt, &e);
                 results.push(ExecuteMultiResult::execution_error_with_index(error_query_result(e), statement_index));
+                if let Some(progress) = progress.as_ref() {
+                    progress(statement_index + 1, statements.len(), false);
+                }
                 if !should_continue_batch_after_error(options.continue_on_error, action) {
                     break;
                 }
@@ -2194,6 +2232,7 @@ async fn execute_mysql_batch_statements<E>(
     db_type: Option<DatabaseType>,
     cancel_token: Option<CancellationToken>,
     continue_on_error: bool,
+    progress: Option<&ExecuteMultiProgressCallback>,
 ) -> (Vec<ExecuteMultiResult>, Option<PoolErrorAction>)
 where
     E: MysqlBatchStatementExecutor,
@@ -2206,10 +2245,18 @@ where
         }
 
         match executor.execute_statement(statement).await {
-            Ok(result) => results.push(ExecuteMultiResult::success_with_index(result, statement_index)),
+            Ok(result) => {
+                results.push(ExecuteMultiResult::success_with_index(result, statement_index));
+                if let Some(progress) = progress {
+                    progress(statement_index + 1, statements.len(), true);
+                }
+            }
             Err(err) => {
                 let action = pool_error_action(db_type, &err);
                 results.push(ExecuteMultiResult::execution_error_with_index(error_query_result(err), statement_index));
+                if let Some(progress) = progress {
+                    progress(statement_index + 1, statements.len(), false);
+                }
                 // Statement errors are safe to collect, but connection-level failures leave
                 // the protocol state unusable and must still trigger pool cleanup.
                 if !should_continue_batch_after_error(continue_on_error, action) {
@@ -2232,6 +2279,7 @@ async fn execute_multi_mysql(
     statements: &[String],
     cancel_token: Option<CancellationToken>,
     options: QueryExecutionOptions,
+    progress: Option<&ExecuteMultiProgressCallback>,
 ) -> Result<Vec<ExecuteMultiResult>, String> {
     let query_timeout = resolve_query_timeout(options.timeout_secs);
     let operation_budget = operation_budget_for_pool_key(state, pool_key, query_timeout).await;
@@ -2265,9 +2313,15 @@ async fn execute_multi_mysql(
         max_rows,
         dialect,
     };
-    let (results, error_action) =
-        execute_mysql_batch_statements(&mut executor, statements, db_type, cancel_token, options.continue_on_error)
-            .await;
+    let (results, error_action) = execute_mysql_batch_statements(
+        &mut executor,
+        statements,
+        db_type,
+        cancel_token,
+        options.continue_on_error,
+        progress,
+    )
+    .await;
     drop(executor);
 
     if matches!(error_action, Some(PoolErrorAction::Discard | PoolErrorAction::ReconnectAndRetry)) {
@@ -2288,6 +2342,7 @@ fn error_query_result(message: String) -> db::QueryResult {
         truncated: false,
         session_id: None,
         has_more: false,
+        elasticsearch_raw_body: None,
     }
 }
 
@@ -2302,6 +2357,7 @@ fn empty_query_result(execution_time_ms: u128) -> db::QueryResult {
         truncated: false,
         session_id: None,
         has_more: false,
+        elasticsearch_raw_body: None,
     }
 }
 
@@ -2333,6 +2389,7 @@ async fn execute_multi_sqlserver(
                 truncated: false,
                 session_id: None,
                 has_more: false,
+                elasticsearch_raw_body: None,
             });
             break;
         }
@@ -2384,6 +2441,7 @@ async fn execute_multi_sqlserver(
                     truncated: false,
                     session_id: None,
                     has_more: false,
+                    elasticsearch_raw_body: None,
                 });
                 if matches!(action, PoolErrorAction::Discard | PoolErrorAction::ReconnectAndRetry) {
                     state.remove_pool_by_key(pool_key).await;
@@ -2406,6 +2464,7 @@ async fn execute_multi_sqlserver(
             truncated: false,
             session_id: None,
             has_more: false,
+            elasticsearch_raw_body: None,
         });
     }
 
@@ -2523,6 +2582,7 @@ pub async fn execute_statements(
         truncated: false,
         session_id: None,
         has_more: false,
+        elasticsearch_raw_body: None,
     })
 }
 
@@ -2642,6 +2702,7 @@ fn pool_kind_has_transactional_path(pool: &PoolKind) -> bool {
         | PoolKind::Agent(_) => true,
         PoolKind::MessageQueue
         | PoolKind::Nacos
+        | PoolKind::HBase(_)
         | PoolKind::DuckDb(_)
         | PoolKind::DuckDbWorker(_)
         | PoolKind::Redis(_)
@@ -2835,7 +2896,7 @@ pub async fn execute_statements_in_transaction_on_pool(
             | PoolKind::Turso(_)
             | PoolKind::SqlServer(_)
             | PoolKind::Agent(_) => TxPath::Explicit,
-            PoolKind::MessageQueue | PoolKind::Nacos => TxPath::None,
+            PoolKind::MessageQueue | PoolKind::Nacos | PoolKind::HBase(_) => TxPath::None,
             #[cfg(feature = "duckdb-bundled")]
             PoolKind::DuckDb(_)
             | PoolKind::DuckDbWorker(_)
@@ -2959,6 +3020,7 @@ async fn exec_tx_pg_inner(
             truncated: false,
             session_id: None,
             has_more: false,
+            elasticsearch_raw_body: None,
         }),
         (Err(e), Ok(_)) => Err(e),
         (Ok(_), Err(reset_err)) => Err(reset_err),
@@ -3038,6 +3100,7 @@ async fn exec_tx_mysql_inner(
         truncated: false,
         session_id: None,
         has_more: false,
+        elasticsearch_raw_body: None,
     })
 }
 
@@ -3101,6 +3164,7 @@ async fn exec_tx_sqlite_inner(
                 truncated: false,
                 session_id: None,
                 has_more: false,
+                elasticsearch_raw_body: None,
             })
         })
     })
@@ -3190,6 +3254,7 @@ async fn exec_tx_explicit_inner(
         truncated: false,
         session_id: None,
         has_more: false,
+        elasticsearch_raw_body: None,
     })
 }
 
@@ -3232,6 +3297,7 @@ async fn exec_tx_none_inner(
         truncated: false,
         session_id: None,
         has_more: false,
+        elasticsearch_raw_body: None,
     })
 }
 
@@ -3695,6 +3761,7 @@ async fn execute_manual_txn_postgres_statement(
             truncated: false,
             session_id: None,
             has_more: false,
+            elasticsearch_raw_body: None,
         })
     }
 }
@@ -3734,6 +3801,7 @@ async fn execute_manual_txn_mysql_statement(
             truncated,
             session_id: None,
             has_more: false,
+            elasticsearch_raw_body: None,
         })
     } else {
         let result = conn.query_iter(sql).await.map_err(|e| format!("Query failed: {e}"))?;
@@ -3749,6 +3817,7 @@ async fn execute_manual_txn_mysql_statement(
             truncated: false,
             session_id: None,
             has_more: false,
+            elasticsearch_raw_body: None,
         })
     }
 }
@@ -3781,6 +3850,7 @@ pub async fn commit_manual_transaction(state: &AppState, txn_session_id: &str) -
         truncated: false,
         session_id: None,
         has_more: false,
+        elasticsearch_raw_body: None,
     })
 }
 
@@ -3805,6 +3875,7 @@ pub async fn rollback_manual_transaction(state: &AppState, txn_session_id: &str)
         truncated: false,
         session_id: None,
         has_more: false,
+        elasticsearch_raw_body: None,
     })
 }
 
@@ -3956,6 +4027,7 @@ mod tests {
         ConnectionConfig {
             id: "conn-1".to_string(),
             name: "Connection".to_string(),
+            note: String::new(),
             db_type,
             driver_profile: None,
             driver_label: None,
@@ -4126,13 +4198,43 @@ mod tests {
         };
 
         let (results, error_action) =
-            execute_mysql_batch_statements(&mut executor, &statements, Some(DatabaseType::Mysql), None, false).await;
+            execute_mysql_batch_statements(&mut executor, &statements, Some(DatabaseType::Mysql), None, false, None)
+                .await;
 
         assert_eq!(executor.executed, vec!["first", "fails"]);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].statement_index, Some(0));
         assert_eq!(results[1].statement_index, Some(1));
         assert!(results[1].execution_error);
+        assert_eq!(error_action, Some(PoolErrorAction::Keep));
+    }
+
+    #[tokio::test]
+    async fn mysql_batch_reports_progress_for_each_completed_statement() {
+        let statements = vec!["first".to_string(), "fails".to_string(), "must-not-run".to_string()];
+        let mut executor = FakeMysqlBatchExecutor {
+            outcomes: std::collections::VecDeque::from([Ok(empty_query_result(0)), Err("Duplicate entry".to_string())]),
+            executed: Vec::new(),
+        };
+        let progress_events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let progress: ExecuteMultiProgressCallback = {
+            let progress_events = Arc::clone(&progress_events);
+            Arc::new(move |completed, total, success| progress_events.lock().unwrap().push((completed, total, success)))
+        };
+
+        let (results, error_action) = execute_mysql_batch_statements(
+            &mut executor,
+            &statements,
+            Some(DatabaseType::Mysql),
+            None,
+            false,
+            Some(&progress),
+        )
+        .await;
+
+        assert_eq!(executor.executed, vec!["first", "fails"]);
+        assert_eq!(results.len(), 2);
+        assert_eq!(*progress_events.lock().unwrap(), vec![(1, 3, true), (2, 3, false)]);
         assert_eq!(error_action, Some(PoolErrorAction::Keep));
     }
 
@@ -4145,7 +4247,8 @@ mod tests {
         };
 
         let (results, error_action) =
-            execute_mysql_batch_statements(&mut executor, &statements, Some(DatabaseType::Mysql), None, false).await;
+            execute_mysql_batch_statements(&mut executor, &statements, Some(DatabaseType::Mysql), None, false, None)
+                .await;
 
         assert_eq!(executor.executed, vec!["fails"]);
         assert_eq!(results.len(), 1);
@@ -4166,7 +4269,8 @@ mod tests {
         };
 
         let (results, error_action) =
-            execute_mysql_batch_statements(&mut executor, &statements, Some(DatabaseType::Mysql), None, true).await;
+            execute_mysql_batch_statements(&mut executor, &statements, Some(DatabaseType::Mysql), None, true, None)
+                .await;
 
         assert_eq!(executor.executed, statements);
         assert_eq!(results.len(), 3);
@@ -4187,7 +4291,8 @@ mod tests {
         };
 
         let (results, error_action) =
-            execute_mysql_batch_statements(&mut executor, &statements, Some(DatabaseType::Mysql), None, true).await;
+            execute_mysql_batch_statements(&mut executor, &statements, Some(DatabaseType::Mysql), None, true, None)
+                .await;
 
         assert_eq!(executor.executed, statements);
         assert_eq!(results.len(), 2);
@@ -4208,7 +4313,8 @@ mod tests {
         };
 
         let (results, error_action) =
-            execute_mysql_batch_statements(&mut executor, &statements, Some(DatabaseType::Mysql), None, true).await;
+            execute_mysql_batch_statements(&mut executor, &statements, Some(DatabaseType::Mysql), None, true, None)
+                .await;
 
         assert_eq!(executor.executed, vec!["first", "disconnects"]);
         assert_eq!(results.len(), 2);
@@ -4426,6 +4532,7 @@ mod tests {
                 truncated: false,
                 session_id: None,
                 has_more: false,
+                elasticsearch_raw_body: None,
             })
         })
         .await;
@@ -4447,6 +4554,7 @@ mod tests {
                 truncated: false,
                 session_id: None,
                 has_more: false,
+                elasticsearch_raw_body: None,
             })
         })
         .await;
@@ -4539,7 +4647,13 @@ mod tests {
         assert!(still_present);
 
         drop(extra_reference);
-        timeout(Duration::from_secs(5), async {
+        // The draining-cleanup task (spawn_duckdb_draining_cleanup) cannot drop
+        // the pool until the cancelled query's blocking DuckDB task has fully
+        // unwound — the connection must stay alive while the query still holds
+        // it. That unwind is near-instant on an idle runner but can exceed the
+        // original 5s window under heavy CI load, flaking this test, so allow
+        // ample headroom.
+        timeout(Duration::from_secs(30), async {
             loop {
                 if !state.connections.read().await.contains_key(pool_key) {
                     break;
@@ -5037,6 +5151,7 @@ mod tests {
         let config = ConnectionConfig {
             id: "jdbc-1".to_string(),
             name: "JDBC".to_string(),
+            note: String::new(),
             db_type: DatabaseType::Jdbc,
             driver_profile: None,
             driver_label: None,
@@ -5361,6 +5476,7 @@ mod tests {
             truncated: false,
             session_id: None,
             has_more: false,
+            elasticsearch_raw_body: None,
         };
 
         let normalized = normalize_query_result_for_js(result);
